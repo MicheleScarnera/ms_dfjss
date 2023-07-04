@@ -1,6 +1,8 @@
 import numpy as np
 from string import ascii_lowercase as alphabet
 
+import dfjss_exceptions
+
 DEFAULT_FEATURES = alphabet
 
 DEFAULT_OPERATIONS = {
@@ -15,7 +17,7 @@ DEFAULT_OPERATIONS = {
 FORBIDDEN_CHARACTERS = ['(', ')']
 
 
-class PriorityFunctionTree():
+class PriorityFunctionTree:
     """
     This object is used to construct mathematical expressions, given a set of
     features and operations that it can have. The expression has a tree-like
@@ -58,7 +60,7 @@ class PriorityFunctionTree():
         return self.root_branch.run(self.operations, features_values)
 
 
-class PriorityFunctionBranch():
+class PriorityFunctionBranch:
     """
     This object is a tree branch which takes a left feature, an operation, and a
     right feature. The operation is a string, while features can either be strings
@@ -129,10 +131,10 @@ class PriorityFunctionBranch():
 def assert_features_and_operations_validity(features, operations):
     for c in FORBIDDEN_CHARACTERS:
         if c in features:
-            raise Exception(f"Forbidden character: Forbidden character \'{c}\' found in features")
+            raise dfjss_exceptions.ForbiddenCharacterError(f"Forbidden character \'{c}\' found in features")
 
         if c in operations.keys():
-            raise Exception(f"Forbidden character: Forbidden character \'{c}\' found in operations")
+            raise dfjss_exceptions.ForbiddenCharacterError(f"Forbidden character \'{c}\' found in operations")
 
 
 def representation_to_priority_function_tree(representation, features=None, operations=None, max_iter=500, verbose=0):
@@ -171,11 +173,10 @@ def representation_to_root_branch(representation, features=None, operations=None
             no_closed += 1
 
     if no_open != no_closed:
-        raise Exception(
-            f"Bad syntax: Representation \'{representation}\' has different amounts of open and closed parentheses")
+        raise dfjss_exceptions.BadSyntaxRepresentationError(f"Representation \'{representation}\' has different amounts of open and closed parentheses")
 
     if len(par_stack) > 0:
-        raise Exception(f"Bad syntax: Representation \'{representation}\' has ill formed parentheses")
+        raise dfjss_exceptions.BadSyntaxRepresentationError(f"Representation \'{representation}\' has ill formed parentheses")
 
     def begins_with(containing_string, contained_string):
         return (len(containing_string) >= len(contained_string)) and (
@@ -217,8 +218,8 @@ def representation_to_root_branch(representation, features=None, operations=None
                     break
 
         if not found_anything:
-            raise Exception(
-                f"Bad syntax: Unknown character \'{c}\' present which is not a parenthesis, nor the beginning of the name of a feature/operation")
+            raise dfjss_exceptions.BadSyntaxRepresentationError(
+                f"Unknown character \'{c}\' present which is not a parenthesis, nor the beginning of the name of a feature/operation")
 
     def parentheses_locations():
         # creates a list of 2-tuples containing the index of open and closed parentheses
@@ -237,7 +238,7 @@ def representation_to_root_branch(representation, features=None, operations=None
             if isinstance(crumbs[0], PriorityFunctionBranch):
                 return crumbs[0]
             else:
-                raise Exception(f"Unknown error: Final crumb {crumbs[0]} is not a PriorityFunctionBranch")
+                raise dfjss_exceptions.BadFinalCrumbRepresentationError(f"Final crumb {crumbs[0]} is not a PriorityFunctionBranch", crumb=crumbs[0])
 
         max_iter -= 1
         par_locs = parentheses_locations()
@@ -253,8 +254,7 @@ def representation_to_root_branch(representation, features=None, operations=None
 
                 # syntax checks
                 if (end - start) != 4:
-                    raise Exception(
-                        f"Bad syntax: Expression inside parentheses {''.join([str(crumb) for crumb in crumbs[start:end + 1]])} is too {'long' if (end - start) > 4 else 'short'}. Paretheses should just contain the first feature, one operation, and the second feature")
+                    raise dfjss_exceptions.BadSyntaxRepresentationError(f"Expression inside parentheses {''.join([str(crumb) for crumb in crumbs[start:end + 1]])} is too {'long' if (end - start) > 4 else 'short'}. Paretheses should just contain the first feature, one operation, and the second feature")
 
                 sub_crumbs = crumbs[start + 1:end]
 
@@ -271,10 +271,9 @@ def representation_to_root_branch(representation, features=None, operations=None
             print(crumbs)
 
     if max_iter == 0:
-        raise Exception(f"Iteration error: Maximum number of iterations reached (final crumbs state: {crumbs})")
+        raise dfjss_exceptions.TooManyIterationsRepresentationError(f"Maximum number of iterations reached (final crumbs state: {crumbs})", crumbs=crumbs)
     else:
-        raise Exception(
-            f"Unexpected loop end error: Loop ended unexpectedly with no result (final crumbs state: {crumbs})")
+        raise dfjss_exceptions.UnexpectedLoopEndRepresentationError(f"Loop ended unexpectedly with no result (final crumbs state: {crumbs})", crumbs=crumbs)
 
 
 # UNIT TESTS
