@@ -1,22 +1,11 @@
+from typing import List, Any
+
 import numpy as np
 from string import ascii_lowercase as alphabet
 
 import dfjss_exceptions
-
-DEFAULT_FAMILIES = ["heat", "boil", "thaw", "freeze", "lick", "kiss"]
-
-DEFAULT_RECIPIES = {
-    "heat": ["microwave", "gas_oven", "gas_burner", "electric_oven", "electric_burner"],
-    "boil": ["gas_oven", "gas_burner", "electric_oven", "electric_burner"],
-    "thaw": ["microwave"],
-    "freeze": ["freezer"],
-    "lick": ["thin_tongue", "wide_tongue"],
-    "kiss": ["light_kiss", "french_kiss"],
-}
-
-MANDATORY_OPERATION_FEATURES = ["family"]
-MANDATORY_JOB_FEATURES = []
-MANDATORY_MACHINE_FEATURES = ["recipe"]
+import dfjss_defaults as DEFAULTS
+import dfjss_misc as misc
 
 
 def check_mandatory_features(features_we_have, features_we_require, name):
@@ -32,7 +21,7 @@ def check_mandatory_features(features_we_have, features_we_require, name):
         )
 
 
-class DFJSSOperation:
+class Operation:
     """
 
     """
@@ -41,11 +30,11 @@ class DFJSSOperation:
         self.features = features
 
         # check mandatory features
-        check_mandatory_features(features_we_have=features, features_we_require=MANDATORY_OPERATION_FEATURES,
+        check_mandatory_features(features_we_have=features, features_we_require=DEFAULTS.MANDATORY_OPERATION_FEATURES,
                                  name="Operation")
 
 
-class DFJSSJob:
+class Job:
     """
 
     """
@@ -54,7 +43,7 @@ class DFJSSJob:
         self.operations = operations
 
         for operation in operations:
-            if type(operation) != DFJSSOperation:
+            if type(operation) != Operation:
                 raise dfjss_exceptions.JobWithBadOperationsError(
                     f"Some operations given to a job are not DFJSSOperation objects. Operations' types: {[type(op) for op in operations]}",
                     operations=operations
@@ -63,11 +52,11 @@ class DFJSSJob:
         self.features = features
 
         # check mandatory features
-        check_mandatory_features(features_we_have=features, features_we_require=MANDATORY_JOB_FEATURES,
+        check_mandatory_features(features_we_have=features, features_we_require=DEFAULTS.MANDATORY_JOB_FEATURES,
                                  name="Job")
 
 
-class DFJSSMachine:
+class Machine:
     """
 
     """
@@ -76,6 +65,94 @@ class DFJSSMachine:
         self.features = features
 
         # check mandatory features
-        check_mandatory_features(features_we_have=features, features_we_require=MANDATORY_MACHINE_FEATURES,
+        check_mandatory_features(features_we_have=features, features_we_require=DEFAULTS.MANDATORY_MACHINE_FEATURES,
                                  name="Machine")
-        
+
+# WAREHOUSE
+
+
+class WarehouseSettings:
+    def __init__(self):
+        self.families = DEFAULTS.FAMILIES
+        self.recipes = DEFAULTS.RECIPES
+
+        self.generation_operation_ranges = DEFAULTS.GENERATION_OPERATION_RANGES
+        self.generation_job_ranges = DEFAULTS.GENERATION_JOB_RANGES
+        self.generation_machine_ranges = DEFAULTS.GENERATION_MACHINE_RANGES
+
+
+def generate_features(rng, ranges_dict):
+    features = dict()
+    # add other features
+    for mandatory_feature, (v_low, v_high) in ranges_dict.items():
+        if mandatory_feature in DEFAULTS.REQUIRES_INTEGERS:
+            features[mandatory_feature] = rng.integers(low=int(v_low), high=int(v_high))
+        else:
+            features[mandatory_feature] = rng.uniform(low=v_low, high=v_high)
+
+    return features
+
+
+class Warehouse:
+    settings: WarehouseSettings
+    machines: list[Machine]
+    jobs: list[Job]
+
+    def __init__(self, settings=None, rng_seed=None):
+        self.rng = np.random.default_rng(seed=rng_seed)
+
+        if settings is None:
+            settings = WarehouseSettings()
+
+        self.settings = settings
+
+        self.machines = []
+
+        self.jobs = []
+
+    def add_machine(self, recipe=None):
+        if recipe is None:
+            recipe = self.rng.choice(a=misc.dict_melt(self.settings.recipes))
+
+        # features
+        # generate numeric features first
+        features = generate_features(self.rng, self.settings.generation_machine_ranges)
+
+        # add recipe
+        features["machine_recipe"] = recipe
+
+        new_machine = Machine(features=features)
+        self.machines.append(new_machine)
+
+        return new_machine
+
+    def create_operations(self, amount):
+        result = []
+
+        for i in range(amount):
+            features = dict()
+
+            # features
+            # generate numeric features first
+            features = generate_features(self.rng, self.settings.generation_operation_ranges)
+
+            # add family
+            features["operation_family"] = self.rng.choice(a=self.settings.families)
+
+            new_operation = Operation(features=features)
+            result.append(new_operation)
+
+        return result
+
+    def add_job(self):
+        # features
+        # generate numeric features first
+        features = generate_features(self.rng, self.settings.generation_job_ranges)
+
+        new_job = Job(operations=self.create_operations(amount=features["job_number_of_operations"]),
+                            features=features)
+
+        self.jobs.append(new_job)
+        return new_job
+
+    #def simulate(self, duration=120):
