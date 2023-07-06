@@ -6,7 +6,7 @@ def flatten(l):
     return [item for sublist in l for item in sublist]
 
 
-def dict_melt(d):
+def dict_flatten_values(d):
     """
 
     :type d: dict

@@ -2,6 +2,7 @@ import numpy as np
 from string import ascii_lowercase as alphabet
 
 import dfjss_exceptions
+import dfjss_objects as dfjss
 
 DEFAULT_FEATURES = alphabet
 
@@ -56,8 +57,8 @@ class PriorityFunctionTree:
     def depth(self):
         return self.root_branch.depth()
 
-    def run(self, features_values):
-        return self.root_branch.run(self.operations, features_values)
+    def run(self, features):
+        return self.root_branch.run(self.operations, features)
 
 
 class PriorityFunctionBranch:
@@ -275,6 +276,42 @@ def representation_to_root_branch(representation, features=None, operations=None
     else:
         raise dfjss_exceptions.UnexpectedLoopEndRepresentationError(f"Loop ended unexpectedly with no result (final crumbs state: {crumbs})", crumbs=crumbs)
 
+# DECISION RULE
+
+class PriorityFunctionTreeDecisionRule(dfjss.BaseDecisionRule):
+    priority_function_tree: PriorityFunctionTree
+
+    def __init__(self, priority_function_tree):
+        """
+
+        :type priority_function_tree: PriorityFunctionTree
+        """
+
+        self.priority_function_tree = priority_function_tree
+
+    def make_decision(self, warehouse):
+        machines = warehouse.available_machines()
+        operations = warehouse.operations_from_available_jobs()
+
+        M, O = len(machines), len(operations)
+        priority_values = np.fill(shape=(M, O), fill_value=np.nan)
+
+        for m, machine in enumerate(machines):
+            for o, operation in enumerate(operations):
+                if not dfjss.machine_operation_compatible(machine, operation):
+                    continue
+
+                features = warehouse.warehouse_features | machine.features | operation.features
+
+                priority_values[m, o] = self.priority_function_tree.run(features=features)
+
+        if np.all(np.isnan(priority_values)):
+            #raise dfjss_exceptions.WarehouseStuckError("Warehouse does not have the machines to fulfill any operation", orphan_operations=operations)
+            return dfjss.DecisionRuleOutput(success=False)
+
+        m_max, o_max = np.unravel_index(np.argmax(a=priority_values, axis=None), (M, O))
+
+        return dfjss.DecisionRuleOutput(success=True, machine=machines[m_max], operation=operations[o_max])
 
 # UNIT TESTS
 

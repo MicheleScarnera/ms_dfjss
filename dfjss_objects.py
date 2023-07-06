@@ -1,7 +1,6 @@
-from typing import List, Any
+from typing import List, Any, Dict
 
 import numpy as np
-from string import ascii_lowercase as alphabet
 
 import dfjss_exceptions
 import dfjss_defaults as DEFAULTS
@@ -39,8 +38,10 @@ class Job:
 
     """
 
-    def __init__(self, operations, features):
+    def __init__(self, operations, features, busy=False):
         self.operations = operations
+
+        self.busy = busy
 
         for operation in operations:
             if type(operation) != Operation:
@@ -61,12 +62,59 @@ class Machine:
 
     """
 
-    def __init__(self, features):
+    def __init__(self, features, busy=False):
         self.features = features
+
+        self.busy = busy
 
         # check mandatory features
         check_mandatory_features(features_we_have=features, features_we_require=DEFAULTS.MANDATORY_MACHINE_FEATURES,
                                  name="Machine")
+
+def machine_operation_compatible(machine, operation):
+    """
+
+    :type machine: Machine
+    :type operation: Operation
+    """
+    return machine.features["machine_recipe"] in operation.features["operation_family"]
+
+
+# DECISION RULES
+
+class BaseDecisionRule:
+    def make_decision(self, warehouse):
+        raise NotImplementedError("dfjss.BaseDecisionRule was used directly. Please make a class that inherits from BaseDecisionRule and overrides make_decision")
+
+
+class RandomDecisionRule(BaseDecisionRule):
+    def make_decision(self, warehouse):
+        machines = warehouse.available_machines()
+        operations = warehouse.operations_from_available_jobs()
+
+        compatible = np.array([[machine_operation_compatible(machine, operation) for operation in operations] for machine in machines])
+
+        if not np.any(compatible):
+            return DecisionRuleOutput(success=False)
+        else:
+            m, o = warehouse.rng.choice(a=np.argwhere(compatible), size=1, axis=0)
+
+            return DecisionRuleOutput(success=True, machine=machines[m], operation=operations[o])
+
+
+class DecisionRuleOutput:
+    success: bool
+    machine: Machine
+    operation: Operation
+
+    def __init__(self, success, machine=None, operation=None):
+        self.success = success
+
+        if success and (machine is None or operation is None):
+            raise ValueError(f"DecisionRuleOutput has success=True but machine ({machine}) or operation ({operation}) are None")
+        
+        self.machine = machine
+        self.operation = operation
 
 # WAREHOUSE
 
@@ -75,6 +123,8 @@ class WarehouseSettings:
     def __init__(self):
         self.families = DEFAULTS.FAMILIES
         self.recipes = DEFAULTS.RECIPES
+
+        self.decision_rule = RandomDecisionRule()
 
         self.generation_operation_ranges = DEFAULTS.GENERATION_OPERATION_RANGES
         self.generation_job_ranges = DEFAULTS.GENERATION_JOB_RANGES
@@ -94,9 +144,11 @@ def generate_features(rng, ranges_dict):
 
 
 class Warehouse:
+    rng: np.random.Generator
     settings: WarehouseSettings
     machines: list[Machine]
     jobs: list[Job]
+    warehouse_features: dict[str, Any]
 
     def __init__(self, settings=None, rng_seed=None):
         self.rng = np.random.default_rng(seed=rng_seed)
@@ -110,9 +162,20 @@ class Warehouse:
 
         self.jobs = []
 
+        self.warehouse_features = dict()
+
+    def available_machines(self):
+        return [machine for machine in self.machines if not machine.busy]
+
+    def available_jobs(self):
+        return [job for job in self.jobs if not job.busy]
+
+    def operations_from_available_jobs(self):
+        return [job.operations[0] for job in self.jobs if not job.busy]
+
     def add_machine(self, recipe=None):
         if recipe is None:
-            recipe = self.rng.choice(a=misc.dict_melt(self.settings.recipes))
+            recipe = self.rng.choice(a=misc.dict_flatten_values(self.settings.recipes))
 
         # features
         # generate numeric features first

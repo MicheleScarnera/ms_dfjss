@@ -39,3 +39,7 @@ class JobWithBadOperationsError(Exception):
         super().__init__(message)
         self.operations = operations
 
+class WarehouseStuckError(Exception):
+    def __init__(self, message, orphan_operations):
+        super().__init__(message)
+        self.orphan_operations = orphan_operations
