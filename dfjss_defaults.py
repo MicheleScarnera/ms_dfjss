@@ -1,7 +1,3 @@
-import dfjss_misc as misc
-
-FAMILIES = ["heat", "boil", "thaw", "freeze", "lick", "kiss"]
-
 RECIPES = {
     "heat": ["microwave", "gas_oven", "gas_burner", "electric_oven", "electric_burner"],
     "boil": ["gas_oven", "gas_burner", "electric_oven", "electric_burner"],
@@ -11,9 +7,14 @@ RECIPES = {
     "kiss": ["light_kiss", "french_kiss"],
 }
 
+FAMILIES = list(RECIPES.keys())
+
 # INTERVALS FOR NUMERIC VARIABLES
 
-REQUIRES_INTEGERS = ["job_number_of_operations"]
+REQUIRES_INTEGERS = [
+    "job_number_of_operations",
+    "warehouse_number_of_starting_machines_over_essential"
+]
 
 GENERATION_OPERATION_RANGES = {
     # WORK REQUIRED
@@ -58,16 +59,29 @@ GENERATION_MACHINE_RANGES = {
     "machine_cooldown": (0, 60),
 }
 
+GENERATION_WAREHOUSE_RANGES = {
+    # NUMBER OF STARTING MACHINES OVER ESSENTIAL
+    # Number of machines to generate at the start, beyond the "essential" ones (one for each family)
+    # Units: potatoes
+    "warehouse_number_of_starting_machines_over_essential": (1, 10),
+
+    # NUMBER OF STARTING JOBS
+    # Number of jobs to generate at the start
+    # Units: potatoes
+    "warehouse_number_of_starting_jobs": (5, 10),
+}
+
 # MANDATORY FEATURES
 # Features are mandatory, like operation_family and machine_recipe...
 
 MANDATORY_OPERATION_FEATURES = ["operation_family"]
 MANDATORY_JOB_FEATURES = []
 MANDATORY_MACHINE_FEATURES = ["machine_recipe"]
+MANDATORY_WAREHOUSE_FEATURES = []
 
 # ...and also whatever numeric feature was defined above
 
 MANDATORY_OPERATION_FEATURES.extend(GENERATION_OPERATION_RANGES.keys())
 MANDATORY_JOB_FEATURES.extend(GENERATION_JOB_RANGES.keys())
 MANDATORY_MACHINE_FEATURES.extend(GENERATION_MACHINE_RANGES.keys())
-
+MANDATORY_WAREHOUSE_FEATURES.extend(GENERATION_WAREHOUSE_RANGES.keys())

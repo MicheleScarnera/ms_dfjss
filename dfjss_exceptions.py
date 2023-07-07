@@ -39,6 +39,36 @@ class JobWithBadOperationsError(Exception):
         super().__init__(message)
         self.operations = operations
 
+
+class JobOperationsConflictError(Exception):
+    def __init__(self, message, new_job, old_job, operation):
+        super().__init__(message)
+        self.new_job = new_job
+        self.old_job = old_job
+        self.operation = operation
+
+
+class WarehouseIncompatibleThingsError(Exception):
+    def __init__(self, message, job, machine):
+        super().__init__(message)
+        self.job = job
+        self.machine = machine
+
+
+class WarehouseAssigningBusyThingsError(Exception):
+    def __init__(self, message, job, machine):
+        super().__init__(message)
+        self.job = job
+        self.machine = machine
+
+
+class WarehouseIncorrectlyOrphanOperationWarning(Warning):
+    def __init__(self, message, assumed_job, operation):
+        super().__init__(message)
+        self.assumed_job = assumed_job
+        self.operation = operation
+
+
 class WarehouseStuckError(Exception):
     def __init__(self, message, orphan_operations):
         super().__init__(message)

@@ -291,6 +291,7 @@ class PriorityFunctionTreeDecisionRule(dfjss.BaseDecisionRule):
 
     def make_decision(self, warehouse):
         machines = warehouse.available_machines()
+        jobs = warehouse.available_jobs()
         operations = warehouse.operations_from_available_jobs()
 
         M, O = len(machines), len(operations)
@@ -306,12 +307,17 @@ class PriorityFunctionTreeDecisionRule(dfjss.BaseDecisionRule):
                 priority_values[m, o] = self.priority_function_tree.run(features=features)
 
         if np.all(np.isnan(priority_values)):
-            #raise dfjss_exceptions.WarehouseStuckError("Warehouse does not have the machines to fulfill any operation", orphan_operations=operations)
             return dfjss.DecisionRuleOutput(success=False)
 
         m_max, o_max = np.unravel_index(np.argmax(a=priority_values, axis=None), (M, O))
 
-        return dfjss.DecisionRuleOutput(success=True, machine=machines[m_max], operation=operations[o_max])
+        chosen_job = warehouse.job_of_operation(operations[o_max])
+
+        return dfjss.DecisionRuleOutput(success=True,
+                                        machine=machines[m_max],
+                                        job=chosen_job,
+                                        operation=operations[o_max])
+
 
 # UNIT TESTS
 
