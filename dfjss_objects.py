@@ -417,7 +417,9 @@ class Warehouse:
         return smallest_time
 
     def simulate(self, duration=86400):
-        # set all machines/jobs to not busy
+        # set all machines/jobs to not busy and not waiting
+        self.waiting_machines = []
+        self.waiting_jobs = []
         self.busy_couples = []
 
         # add 1 machine for each family, each machine has a random recipe from within the family
