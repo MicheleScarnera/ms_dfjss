@@ -1,5 +1,6 @@
 import numpy as np
 from string import ascii_lowercase as alphabet
+import numbers
 
 import dfjss_exceptions
 import dfjss_objects as dfjss
@@ -118,11 +119,15 @@ class PriorityFunctionBranch:
     def run(self, operations, features_values):
         if isinstance(self.left_feature, PriorityFunctionBranch):
             left = self.left_feature.run(operations, features_values)
+        elif isinstance(self.left_feature, numbers.Number):
+            left = self.left_feature
         else:
             left = features_values[self.left_feature]
 
         if isinstance(self.right_feature, PriorityFunctionBranch):
             right = self.right_feature.run(operations, features_values)
+        elif isinstance(self.right_feature, numbers.Number):
+            right = self.right_feature
         else:
             right = features_values[self.right_feature]
 
@@ -180,6 +185,8 @@ def representation_to_root_branch(representation, features=None, operations=None
         raise dfjss_exceptions.BadSyntaxRepresentationError(f"Representation \'{representation}\' has ill formed parentheses")
 
     def begins_with(containing_string, contained_string):
+        containing_string = str(containing_string)
+        contained_string = str(contained_string)
         return (len(containing_string) >= len(contained_string)) and (
                 containing_string[0:len(contained_string)] == contained_string)
 
@@ -197,11 +204,14 @@ def representation_to_root_branch(representation, features=None, operations=None
     while i < I:
         c = representation[i]
         found_anything = False
+
+        # is c a parenthesis?
         if c in ['(', ')']:
             crumbs.append(c)
             found_anything = True
             i += 1
 
+        # is c the first character of a feature?
         if not found_anything:
             for f in features:
                 if begins_with(representation[i:], f):
@@ -210,6 +220,7 @@ def representation_to_root_branch(representation, features=None, operations=None
                     i += len(f)
                     break
 
+        # is c the first character of an operation?
         if not found_anything:
             for op in operations:
                 if begins_with(representation[i:], op):
@@ -218,9 +229,32 @@ def representation_to_root_branch(representation, features=None, operations=None
                     i += len(op)
                     break
 
+        # is c the first character of a number?
+        def is_number(s):
+            try:
+                float(s)
+                return True
+            except ValueError:
+                return False
+
+        if not found_anything:
+            # if first character is a number, keep adding characters until it is no longer a number
+            # note: since there will always be a closed parenthesis at the end of the number, any
+            # well formed representation should have no problem
+            if is_number(representation[i]):
+                j = 0
+                while (i + j) < I:
+                    if is_number(representation[i:i + j + 2]):
+                        j += 1
+                    else:
+                        crumbs.append(float(representation[i:i + j + 1]))
+                        found_anything = True
+                        i += j + 1
+                        break
+
         if not found_anything:
             raise dfjss_exceptions.BadSyntaxRepresentationError(
-                f"Unknown character \'{c}\' present which is not a parenthesis, nor the beginning of the name of a feature/operation")
+                f"Unknown character \'{c}\' present which is not a parenthesis, the beginning of the name of a feature/operation, nor a number")
 
     def parentheses_locations():
         # creates a list of 2-tuples containing the index of open and closed parentheses
@@ -278,6 +312,7 @@ def representation_to_root_branch(representation, features=None, operations=None
 
 # DECISION RULE
 
+
 class PriorityFunctionTreeDecisionRule(dfjss.BaseDecisionRule):
     priority_function_tree: PriorityFunctionTree
 
@@ -291,7 +326,6 @@ class PriorityFunctionTreeDecisionRule(dfjss.BaseDecisionRule):
 
     def make_decision(self, warehouse):
         machines = warehouse.available_machines()
-        jobs = warehouse.available_jobs()
         operations = warehouse.operations_from_available_jobs()
 
         M, O = len(machines), len(operations)
@@ -322,18 +356,16 @@ class PriorityFunctionTreeDecisionRule(dfjss.BaseDecisionRule):
 # UNIT TESTS
 
 # representation
-ut_represenation = "((e/(a+b))<g)"
-ut_priority_function = representation_to_priority_function_tree(ut_represenation)
+ut_representation = "((a/(b+3.25))<c)"
+ut_priority_function = representation_to_priority_function_tree(ut_representation)
 ut_reconstruction = repr(ut_priority_function.root_branch)
-assert ut_reconstruction == ut_represenation, \
-    f"Unit Test failed, reconstructing the reference priority function should have yielded {ut_represenation}, but yielded {ut_reconstruction} instead"
+assert ut_reconstruction == ut_representation, \
+    f"Unit Test failed: reconstructing the reference priority function should have yielded {ut_representation}, but yielded {ut_reconstruction} instead"
 
 # evaluation of expression
-ut_features_values = {'a': 51, 'b': 27, 'c': 49, 'd': 30, 'e': 38, 'f': 67, 'g': 53, 'h': 39, 'i': 7, 'j': 30, 'k': 56,
-                      'l': 60, 'm': 56, 'n': 26, 'o': 93, 'p': 55, 'q': 40, 'r': 24, 's': 24, 't': 46, 'u': 69, 'v': 35,
-                      'w': 96, 'x': 38, 'y': 1, 'z': 32}
-ut_true_result = 0.48717948717948717
+ut_features_values = {'a': 50, 'b': 6.75, 'c': 100}
+ut_true_result = 5
 ut_actual_result = ut_priority_function.run(ut_features_values)
 
 assert ut_actual_result == ut_true_result, \
-    f"Unit Test failed, evaluating the reference priority function with some reference values should have yielded {ut_true_result} as a result, but yielded {ut_actual_result} instead"
+    f"Unit Test failed: evaluating the reference priority function with some reference values should have yielded {ut_true_result} as a result, but yielded {ut_actual_result} instead"
