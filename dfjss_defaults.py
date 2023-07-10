@@ -5,6 +5,8 @@ RECIPES = {
     "freeze": ["freezer"],
     "lick": ["thin_tongue", "wide_tongue"],
     "kiss": ["light_kiss", "french_kiss"],
+    "stare": ["ill_willed_starer", "relentless_starer"],
+    "game": ["casual_gamer", "sweaty_gamer"]
 }
 
 FAMILIES = list(RECIPES.keys())
@@ -13,7 +15,8 @@ FAMILIES = list(RECIPES.keys())
 
 REQUIRES_INTEGERS = [
     "job_number_of_operations",
-    "warehouse_number_of_starting_machines_over_essential"
+    "warehouse_number_of_starting_machines_over_essential",
+    "warehouse_number_of_starting_jobs"
 ]
 
 GENERATION_OPERATION_RANGES = {
@@ -68,7 +71,7 @@ GENERATION_WAREHOUSE_RANGES = {
     # NUMBER OF STARTING JOBS
     # Number of jobs to generate at the start
     # Units: potatoes
-    "warehouse_number_of_starting_jobs": (5, 10),
+    "warehouse_number_of_starting_jobs": (10, 25),
 }
 
 # MANDATORY FEATURES

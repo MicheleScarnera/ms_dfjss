@@ -325,32 +325,20 @@ class PriorityFunctionTreeDecisionRule(dfjss.BaseDecisionRule):
         self.priority_function_tree = priority_function_tree
 
     def make_decision(self, warehouse):
-        machines = warehouse.available_machines()
-        operations = warehouse.operations_from_available_jobs()
+        compatible_pairs = warehouse.compatible_pairs()
 
-        M, O = len(machines), len(operations)
-        priority_values = np.fill(shape=(M, O), fill_value=np.nan)
-
-        for m, machine in enumerate(machines):
-            for o, operation in enumerate(operations):
-                if not dfjss.machine_operation_compatible(machine, operation):
-                    continue
-
-                features = warehouse.warehouse_features | machine.features | operation.features
-
-                priority_values[m, o] = self.priority_function_tree.run(features=features)
-
-        if np.all(np.isnan(priority_values)):
+        if len(compatible_pairs) <= 0:
             return dfjss.DecisionRuleOutput(success=False)
 
-        m_max, o_max = np.unravel_index(np.argmax(a=priority_values, axis=None), (M, O))
+        priority_values = np.array([self.priority_function_tree.run(
+            features=warehouse.warehouse_features | machine.features | job.features)
+            for machine, job in compatible_pairs])
 
-        chosen_job = warehouse.job_of_operation(operations[o_max])
+        index_max = np.argmax(priority_values)
 
         return dfjss.DecisionRuleOutput(success=True,
-                                        machine=machines[m_max],
-                                        job=chosen_job,
-                                        operation=operations[o_max])
+                                        machine=compatible_pairs[index_max][0],
+                                        job=compatible_pairs[index_max][1])
 
 
 # UNIT TESTS

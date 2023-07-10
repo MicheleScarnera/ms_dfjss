@@ -1,5 +1,6 @@
 from typing import List, Any, Dict
 import warnings
+from collections import Counter
 
 import numpy as np
 
@@ -81,15 +82,6 @@ class Machine:
                                  name="Machine")
 
 
-def machine_operation_compatible(machine, operation):
-    """
-
-    :type machine: Machine
-    :type operation: Operation
-    """
-    return machine.features["machine_recipe"] in operation.features["operation_family"]
-
-
 # DECISION RULES
 
 class BaseDecisionRule:
@@ -100,44 +92,37 @@ class BaseDecisionRule:
 
 class RandomDecisionRule(BaseDecisionRule):
     def make_decision(self, warehouse):
-        machines = warehouse.available_machines()
-        jobs = warehouse.available_jobs()
-        operations = warehouse.operations_from_available_jobs()
+        compatible_pairs = warehouse.compatible_pairs(include_busy=False)
 
-        compatible = np.array(
-            [[machine_operation_compatible(machine, operation) for operation in operations] for machine in machines])
-
-        if not np.any(compatible):
+        if len(compatible_pairs) <= 0:
             return DecisionRuleOutput(success=False)
-        else:
-            m, o = warehouse.rng.choice(a=np.argwhere(compatible), size=1, axis=0)
 
-            chosen_job = warehouse.job_of_operation(operations[o])
-
-            return DecisionRuleOutput(success=True, machine=machines[m], job=chosen_job, operation=operations[o])
+        m, j = warehouse.rng.choice(a=compatible_pairs, size=1).reshape(2)
+        return DecisionRuleOutput(success=True, machine=m, job=j)
 
 
 class DecisionRuleOutput:
     success: bool
     machine: Machine
     job: Job
-    operation: Operation
 
-    def __init__(self, success, machine=None, job=None, operation=None):
+    def __init__(self, success, machine=None, job=None):
         self.success = success
 
-        if success and (machine is None or job is None or operation is None):
+        if success and (machine is None or job is None):
             raise ValueError(
-                f"DecisionRuleOutput has success=True but machine ({machine}), job ({job}) or operation ({operation}) are None")
+                f"DecisionRuleOutput has success=True but machine ({machine}) or job ({job}) are None")
 
         self.machine = machine
-        self.operation = operation
+        self.job = job
 
 
 # WAREHOUSE
 
 
 class WarehouseSettings:
+    decision_rule: BaseDecisionRule
+
     def __init__(self):
         self.families = DEFAULTS.FAMILIES
         self.recipes = DEFAULTS.RECIPES
@@ -191,6 +176,15 @@ class WaitingJob:
         self.time_needed = time_needed
 
 
+class WarehouseRoutineOutput:
+    time_passed: float
+    end_simulation: bool
+
+    def __init__(self, time_passed, end_simulation=False):
+        self.time_passed = time_passed
+        self.end_simulation = end_simulation
+
+
 class Warehouse:
     rng: np.random.Generator
     settings: WarehouseSettings
@@ -235,6 +229,33 @@ class Warehouse:
             operation.job = result
             return result
 
+    def machine_operation_compatible(self, machine, operation):
+        """
+
+        :type machine: Machine
+        :type operation: Operation
+        """
+        return machine.features["machine_recipe"] in self.settings.recipes[operation.features["operation_family"]]
+
+    def compatible_pairs(self, include_busy=False):
+        """
+        Returns all (Machine, Job) pairs that are compatible. Can optionally include machines and jobs that are busy.
+
+        :param include_busy: If True, includes machines and jobs that are busy.
+        :return: list[(Machine, Job)]
+        """
+        result = []
+
+        machines = self.machines if include_busy else self.available_machines()
+        jobs = self.jobs if include_busy else self.available_jobs()
+
+        for machine in machines:
+            for job in jobs:
+                if self.machine_operation_compatible(machine, job.operations[0]):
+                    result.append((machine, job))
+
+        return result
+
     def is_machine_busy(self, machine):
         for busy_couple in self.busy_couples:
             if busy_couple.machine == machine:
@@ -251,7 +272,7 @@ class Warehouse:
             if busy_couple.job == job:
                 return True
 
-        for waiting_job in self.waiting_machines:
+        for waiting_job in self.waiting_jobs:
             if waiting_job.job == job:
                 return True
 
@@ -265,6 +286,12 @@ class Warehouse:
 
     def operations_from_available_jobs(self):
         return [job.operations[0] for job in self.jobs if not self.is_job_busy(job)]
+
+    def first_operations_from_all_jobs(self):
+        return [job.operations[0] for job in self.jobs]
+
+    def can_operation_be_done(self, operation, eventually=True):
+        return np.any([self.machine_operation_compatible(machine, operation) for machine in self.machines if (eventually or self.is_machine_busy(machine))])
 
     def add_machine(self, recipe=None):
         if recipe is None:
@@ -311,12 +338,21 @@ class Warehouse:
         self.jobs.append(new_job)
         return new_job
 
+    def families_of_machine(self, machine, force_one_value=False):
+        result = [family for family, recipes in self.settings.recipes.items() if machine.features["machine_recipe"] in recipes]
+        if force_one_value:
+            if len(result) > 1:
+                raise ValueError("Machine has more than one family, but force_one_value is True")
+
+            return result[0]
+
+        return result
+
     def assign_job_to_machine(self, job, machine):
-        compatible = machine_operation_compatible(machine=machine, operation=job.operations[0])
+        compatible = self.machine_operation_compatible(machine=machine, operation=job.operations[0])
 
         if not compatible:
-            machine_families = [family for family, recipe in self.settings.families.items() if
-                                recipe == machine.features["machine_recipe"]]
+            machine_families = self.families_of_machine(machine)
             raise dfjss_exceptions.WarehouseIncompatibleThingsError(
                 f"Trying to assign a job to a machine, but they are incompatible (job's next operation's family is {job.operations[0].features['operation_family']} while the machine's is {machine_families})",
                 job=job,
@@ -356,8 +392,8 @@ class Warehouse:
 
         self.waiting_jobs.append(new_waiting_job)
 
-    def do_routine_once(self):
-        # release things that can be released
+    def do_routine_once(self, verbose=0):
+        # RELEASE THINGS THAT CAN BE RELEASED
 
         # operations that are finished
         for busy_couple in self.busy_couples.copy():
@@ -366,10 +402,19 @@ class Warehouse:
 
                 operation_done = busy_couple.job.operations.pop(0)
 
+                if verbose > 1:
+                    print(f"\tA \'{operation_done.features['operation_family']}\' operation with \'{busy_couple.machine.features['machine_recipe']}\' machine has finished, job and machine are going into cooldown")
+
                 # operation end times and machine cooldowns
                 job_of_operation_done = self.job_of_operation(operation_done)
-                job_wait_time = operation_done.features["operation_end_time"]
-                self.make_job_wait(job=job_of_operation_done, time_needed=job_wait_time)
+                if len(job_of_operation_done.operations) > 0:
+                    job_wait_time = operation_done.features["operation_end_time"]
+                    self.make_job_wait(job=job_of_operation_done, time_needed=job_wait_time)
+                else:
+                    self.jobs.remove(job_of_operation_done)
+
+                    if verbose > 1:
+                        print("\tA job was completed")
 
                 machine_of_operation_done = busy_couple.machine
                 machine_wait_time = machine_of_operation_done.features["machine_cooldown"]
@@ -380,9 +425,16 @@ class Warehouse:
             if waiting_machine.time_needed <= 0:
                 self.waiting_machines.remove(waiting_machine)
 
+                if verbose > 1:
+                    print(f"\tAvailable: \'{waiting_machine.machine.features['machine_recipe']}\' machine")
+
         for waiting_job in self.waiting_jobs.copy():
             if waiting_job.time_needed <= 0:
                 self.waiting_jobs.remove(waiting_job)
+
+                if verbose > 1:
+                    print(f"\tAvailable: Job with \'{waiting_job.job.operations[0].features['operation_family']}\' operation")
+
 
         # assign operations to available machines according to the decision rule
         first_time = True
@@ -394,6 +446,27 @@ class Warehouse:
             if decision_output.success:
                 self.assign_job_to_machine(job=decision_output.job, machine=decision_output.machine)
 
+                if verbose > 1:
+                    print(f"\tAssigned \'{decision_output.machine.features['machine_recipe']}\' machine to a \'{decision_output.job.operations[0].features['operation_family']}\' operation")
+
+        # CHECK END STATES
+
+        # if there are no more jobs, end simulation
+
+        if len(self.jobs) == 0:
+            return WarehouseRoutineOutput(time_passed=0, end_simulation=True)
+
+        # if there are no machines to do some operations, throw an error
+        orphan_operations = [operation
+                             for operation in self.first_operations_from_all_jobs()
+                             if not self.can_operation_be_done(operation, eventually=True)]
+        if len(orphan_operations) > 0:
+            raise dfjss_exceptions.WarehouseStuckError(
+                message=f"""There are operations that need to be done, but there are no machines to do so
+\"Orphan\" Operations\' families: {np.unique([operation.features["operation_family"] for operation in orphan_operations])}""",
+                orphan_operations=orphan_operations
+            )
+
         # progress time: time elapsed is the soonest amount of time when "something happens"
 
         times = [busy_couple.time_needed for busy_couple in self.busy_couples]
@@ -402,7 +475,7 @@ class Warehouse:
 
         smallest_time = np.min(a=times)
 
-        # elapse time
+        # ELAPSE TIME
 
         for busy_couple in self.busy_couples:
             busy_couple.time_needed -= smallest_time
@@ -413,14 +486,19 @@ class Warehouse:
         for waiting_job in self.waiting_jobs:
             waiting_job.time_needed -= smallest_time
 
-        # return value: time elapsed?
-        return smallest_time
+        return WarehouseRoutineOutput(time_passed=smallest_time, end_simulation=False)
 
-    def simulate(self, duration=86400):
+    def simulate(self, duration=86400, verbose=0):
+        if verbose > 0:
+            print("Simulating warehouse...")
+
         # set all machines/jobs to not busy and not waiting
         self.waiting_machines = []
         self.waiting_jobs = []
         self.busy_couples = []
+
+        # store starting time
+        starting_time = self.current_time
 
         # add 1 machine for each family, each machine has a random recipe from within the family
         # TODO: define creation settings for machines
@@ -435,11 +513,42 @@ class Warehouse:
         for _ in range(self.warehouse_features["warehouse_number_of_starting_machines_over_essential"]):
             self.add_machine()
 
+        if verbose > 1:
+            recipe_counter = Counter([machine.features["machine_recipe"] for machine in self.machines])
+            print(f"Number of machines by recipe: {recipe_counter}")
+
         # add jobs
         # TODO: define creation settings for jobs
 
         for _ in range(self.warehouse_features["warehouse_number_of_starting_jobs"]):
             self.add_job()
 
+        if verbose > 1:
+            print(f"Number of jobs: {len(self.jobs)}")
+
+        end_reason = "UNKNOWN"
+        routine_step = 1
         # run routine...
-        raise NotImplementedError()
+        while True:
+            if verbose > 1:
+                print(f"Routine step {routine_step} - Time: {misc.timeformat(self.current_time)}")
+
+            routine_result = self.do_routine_once(verbose=2)
+
+            if routine_result.end_simulation:
+                end_reason = "the routine ending it"
+                break
+            else:
+                self.current_time += routine_result.time_passed
+
+                if verbose > 1:
+                    print(f"Routine step {routine_step} ended - Time elapsed: {routine_result.time_passed:.2f}s", end="\n\n")
+
+            if self.current_time > (starting_time + duration):
+                end_reason = "reaching the simulation duration"
+                break
+
+            routine_step += 1
+
+        if verbose > 1:
+            print(f"Simulation ended in {misc.timeformat(self.current_time - starting_time)} due to {end_reason}")
