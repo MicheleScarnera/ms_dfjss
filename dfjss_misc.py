@@ -1,3 +1,5 @@
+import numpy as np
+
 def flatten(l):
     """
 
@@ -15,6 +17,33 @@ def dict_flatten_values(d):
 
 
 def timeformat(secs):
-    if type(secs) is not int: secs = int(secs)
-    # Formats an integer secs into a HH:MM:SS format.
-    return f"{str(secs // 3600).zfill(2)}:{str((secs // 60) % 60).zfill(2)}:{str(secs % 60).zfill(2)}"
+    if type(secs) is not int:
+        secs = int(secs)
+
+    if np.abs(secs) < 10.:
+        return f"{secs:.2f}s"
+    else:
+        return timeformat_hhmmss(secs)
+
+
+def timeformat_hhmmss(secs):
+    """
+    Formats an integer secs into a HH:MM:SS format.
+
+    :param secs:
+    :return:
+    """
+    if type(secs) is not int:
+        secs = int(secs)
+
+    sign = np.sign(secs)
+    secs = np.abs(secs)
+    return f"{'' if sign >= 0 else '-'}{str(secs // 3600).zfill(2)}:{str((secs // 60) % 60).zfill(2)}:{str(secs % 60).zfill(2)}"
+
+
+def is_number(s):
+    try:
+        float(s)
+        return True
+    except ValueError:
+        return False

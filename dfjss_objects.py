@@ -133,16 +133,29 @@ class WarehouseSettings:
         self.generation_job_ranges = DEFAULTS.GENERATION_JOB_RANGES
         self.generation_machine_ranges = DEFAULTS.GENERATION_MACHINE_RANGES
         self.generation_warehouse_ranges = DEFAULTS.GENERATION_WAREHOUSE_RANGES
+        self.generation_simulation_ranges = DEFAULTS.GENERATION_SIMULATION_RANGES
+
+        self.generation_pair_ranges = DEFAULTS.GENERATION_PAIR_RANGES
 
 
 def generate_features(rng, ranges_dict):
     features = dict()
     # add other features
-    for mandatory_feature, (v_low, v_high) in ranges_dict.items():
-        if mandatory_feature in DEFAULTS.REQUIRES_INTEGERS:
-            features[mandatory_feature] = rng.integers(low=int(v_low), high=int(v_high))
+    for mandatory_feature, value in ranges_dict.items():
+        if type(value) is tuple and len(value) == 2 and misc.is_number(value[0]) and misc.is_number(value[1]):
+            # uniform range
+            (v_low, v_high) = value
+
+            if mandatory_feature in DEFAULTS.REQUIRES_INTEGERS:
+                features[mandatory_feature] = rng.integers(low=int(v_low), high=int(v_high))
+            else:
+                features[mandatory_feature] = rng.uniform(low=v_low, high=v_high)
+        elif type(value) is list:
+            # list of possible values
+            features[mandatory_feature] = rng.choice(a=value)
         else:
-            features[mandatory_feature] = rng.uniform(low=v_low, high=v_high)
+            # constant
+            features[mandatory_feature] = value
 
     return features
 
@@ -209,6 +222,8 @@ class Warehouse:
         self.waiting_jobs = []
 
         self.warehouse_features = generate_features(self.rng, self.settings.generation_warehouse_ranges)
+
+        self.simulation_features = generate_features(self.rng, self.settings.generation_simulation_ranges)
 
         self.current_time = 0.
 
@@ -332,7 +347,10 @@ class Warehouse:
         # generate numeric features first
         features = generate_features(self.rng, self.settings.generation_job_ranges)
 
-        new_job = Job(operations=self.create_operations(amount=features["job_number_of_operations"]),
+        # job-specific adjustments to features
+        features["job_absolute_deadline"] = self.current_time + features["job_relative_deadline"]
+
+        new_job = Job(operations=self.create_operations(amount=features["job_starting_number_of_operations"]),
                       features=features)
 
         self.jobs.append(new_job)
@@ -392,6 +410,37 @@ class Warehouse:
 
         self.waiting_jobs.append(new_waiting_job)
 
+    def all_features_of_compatible_pair(self, machine, job):
+        """
+        Returns a dictionary with all of the relevant features of a given machine and job, including pair-specific ones, prefixed with 'pair_'.
+        :type machine: Machine
+        :type job: Job
+        :return: dict[str, Any]
+        """
+
+        if not self.machine_operation_compatible(machine, job.operations[0]):
+            raise dfjss_exceptions.WarehouseIncompatibleThingsError(
+                message="Trying to get features of a machine-job pair that is not compatible",
+                job=job,
+                machine=machine
+            )
+
+        operation = job.operations[0]
+
+        result = self.warehouse_features | machine.features | job.features
+
+        result["pair_number_of_compatible_machines"] = len([
+            m for m in self.available_machines() if self.machine_operation_compatible(m, operation)
+        ])
+
+        result["pair_number_of_compatible_operations"] = len([
+            j for j in self.available_jobs() if self.machine_operation_compatible(machine, j.operations[0])
+        ])
+
+        result["pair_processing_time"] = operation.features["operation_work_required"] / machine.features["machine_work_power"]
+
+        return result
+
     def do_routine_once(self, verbose=0):
         # RELEASE THINGS THAT CAN BE RELEASED
 
@@ -414,7 +463,7 @@ class Warehouse:
                     self.jobs.remove(job_of_operation_done)
 
                     if verbose > 1:
-                        print("\tA job was completed")
+                        print(f"\tA job was completed (Net earliness: {misc.timeformat(job_of_operation_done.features['job_relative_deadline'])})")
 
                 machine_of_operation_done = busy_couple.machine
                 machine_wait_time = machine_of_operation_done.features["machine_cooldown"]
@@ -435,6 +484,23 @@ class Warehouse:
                 if verbose > 1:
                     print(f"\tAvailable: Job with \'{waiting_job.job.operations[0].features['operation_family']}\' operation")
 
+        # REAL-TIME FEATURES
+
+        # utilization rate
+        self.warehouse_features["warehouse_utilization_rate"] = len(self.busy_couples) / len(self.machines)
+
+        # jobs' real time features
+        for job in self.jobs:
+            job.features["job_remaining_number_of_operations"] = len(job.operations)
+
+            job.features["job_remaining_work_to_complete"] = np.sum(
+                [op.features["operation_work_required"] for op in job.operations]
+            )
+
+            job.features["job_relative_deadline"] = job.features["job_absolute_deadline"] - self.current_time
+
+        if verbose > 1:
+            print(f"\tUtilization rate: {self.warehouse_features['warehouse_utilization_rate']:.1%}")
 
         # assign operations to available machines according to the decision rule
         first_time = True
@@ -510,7 +576,7 @@ class Warehouse:
 
         # plus some more
 
-        for _ in range(self.warehouse_features["warehouse_number_of_starting_machines_over_essential"]):
+        for _ in range(self.simulation_features["simulation_number_of_starting_machines_over_essential"]):
             self.add_machine()
 
         if verbose > 1:
@@ -520,7 +586,7 @@ class Warehouse:
         # add jobs
         # TODO: define creation settings for jobs
 
-        for _ in range(self.warehouse_features["warehouse_number_of_starting_jobs"]):
+        for _ in range(self.simulation_features["simulation_number_of_starting_jobs"]):
             self.add_job()
 
         if verbose > 1:

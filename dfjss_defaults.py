@@ -4,9 +4,6 @@ RECIPES = {
     "thaw": ["microwave"],
     "freeze": ["freezer"],
     "lick": ["thin_tongue", "wide_tongue"],
-    "kiss": ["light_kiss", "french_kiss"],
-    "stare": ["ill_willed_starer", "relentless_starer"],
-    "game": ["casual_gamer", "sweaty_gamer"]
 }
 
 FAMILIES = list(RECIPES.keys())
@@ -14,9 +11,9 @@ FAMILIES = list(RECIPES.keys())
 # INTERVALS FOR NUMERIC VARIABLES
 
 REQUIRES_INTEGERS = [
-    "job_number_of_operations",
-    "warehouse_number_of_starting_machines_over_essential",
-    "warehouse_number_of_starting_jobs"
+    "job_starting_number_of_operations",
+    "simulation_number_of_starting_machines_over_essential",
+    "simulation_number_of_starting_jobs"
 ]
 
 GENERATION_OPERATION_RANGES = {
@@ -43,9 +40,29 @@ GENERATION_OPERATION_RANGES = {
 
 GENERATION_JOB_RANGES = {
     # NUMBER OF OPERATIONS
-    # Number of operations the job has.
+    # Number of operations the job starts with.
     # Units: potatoes
-    "job_number_of_operations": (2, 12),
+    "job_starting_number_of_operations": (2, 12),
+
+    # ABSOLUTE/RELATIVE DEADLINE
+    # Amount of time to complete the job. Related to i.e. net tardiness objective functions.
+    # A late job does not affect the simulation.
+    # Relative deadline changes in real time, absolute deadline is set during job creation.
+    # Units: seconds
+    "job_absolute_deadline": -1,
+    "job_relative_deadline": (600, 3600),
+
+    # REMAINING NUMBER OF OPERATIONS
+    # Number of operations the job has left.
+    # Changes in real time.
+    # Units: potatoes
+    "job_remaining_number_of_operations": -1,
+
+    # REMAINING WORK TO COMPLETE
+    # Amount of work left to complete this job.
+    # Changes in real time.
+    # Units: "work" units
+    "job_remaining_work_to_complete": -1,
 }
 
 GENERATION_MACHINE_RANGES = {
@@ -63,15 +80,39 @@ GENERATION_MACHINE_RANGES = {
 }
 
 GENERATION_WAREHOUSE_RANGES = {
+    # UTILIZATION RATE
+    # How many machines, in percentage, are currently being used.
+    # Units: percent
+    "warehouse_utilization_rate": 0.,
+}
+
+GENERATION_PAIR_RANGES = {
+    # NUMBER OF COMPATIBLE MACHINES
+    # How many machines could also fulfill this operation, including the machine in the pair.
+    # Units: potatoes
+    "pair_number_of_compatible_machines": 0,
+
+    # NUMBER OF COMPATIBLE OPERATIONS
+    # How many fulfillable operations could also be fulfilled by this machine, including the operation in the pair.
+    # Units: potatoes
+    "pair_number_of_compatible_operations": 0,
+
+    # PROCESSING TIME
+    # The time to finish an operation, equal to (operation_work_required / machine_work_power).
+    # Units: seconds
+    "pair_processing_time": 0.
+}
+
+GENERATION_SIMULATION_RANGES = {
     # NUMBER OF STARTING MACHINES OVER ESSENTIAL
     # Number of machines to generate at the start, beyond the "essential" ones (one for each family)
     # Units: potatoes
-    "warehouse_number_of_starting_machines_over_essential": (1, 10),
+    "simulation_number_of_starting_machines_over_essential": (1, 10),
 
     # NUMBER OF STARTING JOBS
     # Number of jobs to generate at the start
     # Units: potatoes
-    "warehouse_number_of_starting_jobs": (10, 25),
+    "simulation_number_of_starting_jobs": (10, 25),
 }
 
 # MANDATORY FEATURES
@@ -81,6 +122,8 @@ MANDATORY_OPERATION_FEATURES = ["operation_family"]
 MANDATORY_JOB_FEATURES = []
 MANDATORY_MACHINE_FEATURES = ["machine_recipe"]
 MANDATORY_WAREHOUSE_FEATURES = []
+MANDATORY_SIMULATION_FEATURES = []
+MANDATORY_PAIR_FEATURES = []
 
 # ...and also whatever numeric feature was defined above
 
@@ -88,3 +131,5 @@ MANDATORY_OPERATION_FEATURES.extend(GENERATION_OPERATION_RANGES.keys())
 MANDATORY_JOB_FEATURES.extend(GENERATION_JOB_RANGES.keys())
 MANDATORY_MACHINE_FEATURES.extend(GENERATION_MACHINE_RANGES.keys())
 MANDATORY_WAREHOUSE_FEATURES.extend(GENERATION_WAREHOUSE_RANGES.keys())
+MANDATORY_SIMULATION_FEATURES.extend(GENERATION_SIMULATION_RANGES.keys())
+MANDATORY_PAIR_FEATURES.extend(GENERATION_PAIR_RANGES.keys())

@@ -331,7 +331,7 @@ class PriorityFunctionTreeDecisionRule(dfjss.BaseDecisionRule):
             return dfjss.DecisionRuleOutput(success=False)
 
         priority_values = np.array([self.priority_function_tree.run(
-            features=warehouse.warehouse_features | machine.features | job.features)
+            features=warehouse.all_features_of_compatible_pair(machine=machine, job=job))
             for machine, job in compatible_pairs])
 
         index_max = np.argmax(priority_values)

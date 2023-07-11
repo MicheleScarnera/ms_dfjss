@@ -34,6 +34,11 @@ class MissingMandatoryFeaturesError(Exception):
         self.missing_features = missing_features
 
 
+class MandatoryFeatureUnknownTypeWarning(Warning):
+    def __init__(self, message, value):
+        super().__init__(message)
+        self.value = value
+
 class JobWithBadOperationsError(Exception):
     def __init__(self, message, operations):
         super().__init__(message)
