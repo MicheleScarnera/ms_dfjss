@@ -198,6 +198,32 @@ class WarehouseRoutineOutput:
         self.end_simulation = end_simulation
 
 
+class WarehouseSimulationOutput:
+    success: bool
+    simulation_time: float
+    job_times: list[float]
+    job_relative_deadlines: list[float]
+
+    def __init__(self, simulation_time=None, job_times=None, job_relative_deadlines=None):
+        self.simulation_time = simulation_time
+
+        self.job_times = job_times
+        self.job_relative_deadlines = job_relative_deadlines
+
+    def summary(self):
+        result = "SIMULATION OUTPUT"
+
+        result += f"\nSimulation time: {self.simulation_time:.2f}s"
+        result += f"\nJob times (Mean: {np.mean(self.job_times):.2f}, Max: {np.max(self.job_times):.2f})"
+
+        result += f"\nRelative deadlines (Mean Net: {np.mean(self.job_relative_deadlines):.2f}"
+        result += f", Mean Early: {np.mean(self.job_relative_deadlines, where=np.array(self.job_relative_deadlines) > 0):.2f}"
+        result += f", Mean Late: {np.mean(self.job_relative_deadlines, where=np.array(self.job_relative_deadlines) < 0):.2f}"
+        result += ")"
+
+        return result
+
+
 class Warehouse:
     rng: np.random.Generator
     settings: WarehouseSettings
@@ -349,6 +375,7 @@ class Warehouse:
 
         # job-specific adjustments to features
         features["job_absolute_deadline"] = self.current_time + features["job_relative_deadline"]
+        features["job_initialization_time"] = self.current_time
 
         new_job = Job(operations=self.create_operations(amount=features["job_starting_number_of_operations"]),
                       features=features)
@@ -439,9 +466,16 @@ class Warehouse:
 
         result["pair_processing_time"] = operation.features["operation_work_required"] / machine.features["machine_work_power"]
 
+        # TODO: custom pair features
+
         return result
 
-    def do_routine_once(self, verbose=0):
+    def do_routine_once(self, simulation_output, verbose=0):
+        """
+
+        :type simulation_output: WarehouseSimulationOutput
+        :type verbose: int
+        """
         # RELEASE THINGS THAT CAN BE RELEASED
 
         # operations that are finished
@@ -460,7 +494,15 @@ class Warehouse:
                     job_wait_time = operation_done.features["operation_end_time"]
                     self.make_job_wait(job=job_of_operation_done, time_needed=job_wait_time)
                 else:
+                    # job finished
                     self.jobs.remove(job_of_operation_done)
+
+                    simulation_output.job_times.append(
+                        self.current_time - job_of_operation_done.features["job_initialization_time"]
+                    )
+                    simulation_output.job_relative_deadlines.append(
+                        job_of_operation_done.features["job_relative_deadline"]
+                    )
 
                     if verbose > 1:
                         print(f"\tA job was completed (Net earliness: {misc.timeformat(job_of_operation_done.features['job_relative_deadline'])})")
@@ -498,6 +540,8 @@ class Warehouse:
             )
 
             job.features["job_relative_deadline"] = job.features["job_absolute_deadline"] - self.current_time
+
+        # TODO: custom real-time features
 
         if verbose > 1:
             print(f"\tUtilization rate: {self.warehouse_features['warehouse_utilization_rate']:.1%}")
@@ -558,6 +602,14 @@ class Warehouse:
         if verbose > 0:
             print("Simulating warehouse...")
 
+        # result
+        simulation_output = WarehouseSimulationOutput(
+            simulation_time=0,
+            job_times=[],
+            job_relative_deadlines=[]
+
+        )
+
         # set all machines/jobs to not busy and not waiting
         self.waiting_machines = []
         self.waiting_jobs = []
@@ -599,7 +651,7 @@ class Warehouse:
             if verbose > 1:
                 print(f"Routine step {routine_step} - Time: {misc.timeformat(self.current_time)}")
 
-            routine_result = self.do_routine_once(verbose=2)
+            routine_result = self.do_routine_once(simulation_output=simulation_output, verbose=verbose)
 
             if routine_result.end_simulation:
                 end_reason = "the routine ending it"
@@ -616,5 +668,11 @@ class Warehouse:
 
             routine_step += 1
 
+        # SIMULATION ENDS
+
+        simulation_output.simulation_time = self.current_time - starting_time
+
         if verbose > 1:
-            print(f"Simulation ended in {misc.timeformat(self.current_time - starting_time)} due to {end_reason}")
+            print(f"Simulation ended in {misc.timeformat(simulation_output.simulation_time)} due to {end_reason}")
+
+        return simulation_output

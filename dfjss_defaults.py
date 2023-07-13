@@ -1,3 +1,5 @@
+import dfjss_misc as misc
+
 RECIPES = {
     "heat": ["microwave", "gas_oven", "gas_burner", "electric_oven", "electric_burner"],
     "boil": ["gas_oven", "gas_burner", "electric_oven", "electric_burner"],
@@ -44,13 +46,15 @@ GENERATION_JOB_RANGES = {
     # Units: potatoes
     "job_starting_number_of_operations": (2, 12),
 
-    # ABSOLUTE/RELATIVE DEADLINE
+    # ABSOLUTE/RELATIVE DEADLINE, INITIALIZATION TIME
     # Amount of time to complete the job. Related to i.e. net tardiness objective functions.
     # A late job does not affect the simulation.
-    # Relative deadline changes in real time, absolute deadline is set during job creation.
+    # Relative deadline changes in real time, while
+    # absolute deadline and initialization time are set during job creation.
     # Units: seconds
     "job_absolute_deadline": -1,
     "job_relative_deadline": (600, 3600),
+    "job_initialization_time": -1,
 
     # REMAINING NUMBER OF OPERATIONS
     # Number of operations the job has left.
@@ -107,12 +111,12 @@ GENERATION_SIMULATION_RANGES = {
     # NUMBER OF STARTING MACHINES OVER ESSENTIAL
     # Number of machines to generate at the start, beyond the "essential" ones (one for each family)
     # Units: potatoes
-    "simulation_number_of_starting_machines_over_essential": (1, 10),
+    "simulation_number_of_starting_machines_over_essential": (3, 15),
 
     # NUMBER OF STARTING JOBS
     # Number of jobs to generate at the start
     # Units: potatoes
-    "simulation_number_of_starting_jobs": (10, 25),
+    "simulation_number_of_starting_jobs": (15, 50),
 }
 
 # MANDATORY FEATURES
@@ -133,3 +137,5 @@ MANDATORY_MACHINE_FEATURES.extend(GENERATION_MACHINE_RANGES.keys())
 MANDATORY_WAREHOUSE_FEATURES.extend(GENERATION_WAREHOUSE_RANGES.keys())
 MANDATORY_SIMULATION_FEATURES.extend(GENERATION_SIMULATION_RANGES.keys())
 MANDATORY_PAIR_FEATURES.extend(GENERATION_PAIR_RANGES.keys())
+
+MANDATORY_FEATURES = misc.flatten([MANDATORY_OPERATION_FEATURES, MANDATORY_JOB_FEATURES, MANDATORY_MACHINE_FEATURES, MANDATORY_WAREHOUSE_FEATURES, MANDATORY_PAIR_FEATURES])

@@ -5,6 +5,15 @@ import numbers
 import dfjss_exceptions
 import dfjss_objects as dfjss
 
+
+def is_number(s):
+    try:
+        float(s)
+        return True
+    except ValueError:
+        return False
+
+
 DEFAULT_FEATURES = alphabet
 
 DEFAULT_OPERATIONS = {
@@ -12,54 +21,40 @@ DEFAULT_OPERATIONS = {
     "-": lambda x, y: x - y,
     "*": lambda x, y: x * y,
     "/": lambda x, y: x / y if y != 0 else x,
+    "^": lambda x, y: x ** y,
     "<": lambda x, y: min(x, y),
     ">": lambda x, y: max(x, y),
 }
 
 FORBIDDEN_CHARACTERS = ['(', ')']
 
+def latex_feature_formatting(feature_name, remove_prefix=True, join_with_underscore=False):
+    parts = feature_name.split("_")
 
-class PriorityFunctionTree:
-    """
-    This object is used to construct mathematical expressions, given a set of
-    features and operations that it can have. The expression has a tree-like
-    structure, resembling the tree-like priority functions that are used in
-    Job Shop Scheduling (JSS) problems.
-    The expression can be evaluated when passing the values of the features.
-    """
+    if remove_prefix:
+        parts.pop(0)
 
-    def __init__(self, root_branch, features=None, operations=None):
-        if features is None:
-            features = DEFAULT_FEATURES
+    if join_with_underscore:
+        return "\\texttt{{{feature}}}".format(feature="\\char`_".join(parts))
 
-        if operations is None:
-            operations = DEFAULT_OPERATIONS
+    return "\\texttt{{{feature}}}".format(feature=" ".join(parts))
 
-        assert_features_and_operations_validity(features, operations)
 
-        self.features = features
-        self.operations = operations
-        self.root_branch = root_branch
+DEFAULT_LATEX_FORMATTING = {
+    "+": lambda x, y: "{x} + {y}".format(x=x, y=y),
+    "-": lambda x, y: "{x} - {y}".format(x=x, y=y),
+    "*": lambda x, y: "{x} \\cdot {y}".format(x=x, y=y),
+    "/": lambda x, y: "\\frac{{{x}}}{{{y}}}".format(x=x, y=y),
+    "^": lambda x, y: "{{{x}}} ^ {{{y}}}".format(x=x, y=y),
+    "<": lambda x, y: "{x} \\land {y}".format(x=x, y=y),
+    ">": lambda x, y: "{x} \\lor {y}".format(x=x, y=y),
 
-    def __repr__(self):
-        result = repr(self.root_branch)
+    "feature": lambda x: latex_feature_formatting(x)
+}
 
-        if self.features is not DEFAULT_FEATURES:
-            result += f" (Custom Features: {self.features})"
-
-        if self.operations is not DEFAULT_OPERATIONS:
-            result += f" (Custom Operations: {self.operations})"
-
-        return result
-
-    def count(self):
-        return self.root_branch.count()
-
-    def depth(self):
-        return self.root_branch.depth()
-
-    def run(self, features):
-        return self.root_branch.run(self.operations, features)
+DEFAULT_LATEX_FEATURE_ABBREVIATIONS = {
+    "number of ": "\\#"
+}
 
 
 class PriorityFunctionBranch:
@@ -89,6 +84,60 @@ class PriorityFunctionBranch:
             right = self.right_feature
 
         return f"({left}{self.operation_character}{right})"
+
+    def latex(self, formatting=None, abbreviations=None, parentheses=True, recursion_step=0):
+        """
+        Returns a representation in LaTeX syntax.
+
+        :type formatting: dict[lambda Any, Any]
+        :type abbreviations: dict[str]
+        :type parentheses: bool
+        :type recursion_step: int
+
+        :param formatting: Specifies how operations get turned into syntax. If None, loads a default.
+        :param abbreviations: Specifies how some redundant phrases get abbreviated (i.e. "number of " turns into "#")
+        :param parentheses: Whether or not to have parentheses. Some "obviously not needed" parentheses will not be put.
+        :param recursion_step: Internal parameter, do not pass as argument.
+        :return: str
+        """
+        if formatting is None:
+            formatting = DEFAULT_LATEX_FORMATTING
+
+        if abbreviations is None:
+            abbreviations = DEFAULT_LATEX_FEATURE_ABBREVIATIONS
+
+        # \texttt{This is Inconsolata.}
+        shell = formatting[self.operation_character]
+        going_deeper = False
+
+        if isinstance(self.left_feature, PriorityFunctionBranch):
+            left = self.left_feature.latex(formatting=formatting, parentheses=parentheses, recursion_step=recursion_step+1)
+            going_deeper = True
+        elif is_number(self.left_feature):
+            left = self.left_feature
+        else:
+            left = formatting["feature"](self.left_feature)
+
+        if isinstance(self.right_feature, PriorityFunctionBranch):
+            right = self.right_feature.latex(formatting=formatting, parentheses=parentheses, recursion_step=recursion_step+1)
+            going_deeper = True
+        elif is_number(self.right_feature):
+            right = self.right_feature
+        else:
+            right = formatting["feature"](self.right_feature)
+
+        if recursion_step == 0:
+            for long, short in abbreviations.items():
+                if type(left) is str:
+                    left = left.replace(long, short)
+
+                if type(right) is str:
+                    right = right.replace(long, short)
+
+        parentheses_condition = parentheses and going_deeper and recursion_step > 0
+
+        return f"\\left({shell(left, right)}\\right)" if parentheses_condition else shell(left, right)
+
 
     def count(self):
         # Counts the number of sub-branches (including this one).
@@ -132,6 +181,53 @@ class PriorityFunctionBranch:
             right = features_values[self.right_feature]
 
         return operations[self.operation_character](left, right)
+
+
+class PriorityFunctionTree:
+    """
+    This object is used to construct mathematical expressions, given a set of
+    features and operations that it can have. The expression has a tree-like
+    structure, resembling the tree-like priority functions that are used in
+    Job Shop Scheduling (JSS) problems.
+    The expression can be evaluated when passing the values of the features.
+    """
+    root_branch: PriorityFunctionBranch
+
+    def __init__(self, root_branch, features=None, operations=None):
+        if features is None:
+            features = DEFAULT_FEATURES
+
+        if operations is None:
+            operations = DEFAULT_OPERATIONS
+
+        assert_features_and_operations_validity(features, operations)
+
+        self.features = features
+        self.operations = operations
+        self.root_branch = root_branch
+
+    def __repr__(self):
+        result = repr(self.root_branch)
+
+        if self.features is not DEFAULT_FEATURES:
+            result += f" (Custom Features: {self.features})"
+
+        if self.operations is not DEFAULT_OPERATIONS:
+            result += f" (Custom Operations: {self.operations})"
+
+        return result
+    
+    def latex(self, formatting=None, abbreviations=None, parentheses=True):
+        return self.root_branch.latex(formatting=formatting, abbreviations=abbreviations, parentheses=parentheses)
+    
+    def count(self):
+        return self.root_branch.count()
+
+    def depth(self):
+        return self.root_branch.depth()
+
+    def run(self, features):
+        return self.root_branch.run(self.operations, features)
 
 
 def assert_features_and_operations_validity(features, operations):
@@ -230,12 +326,6 @@ def representation_to_root_branch(representation, features=None, operations=None
                     break
 
         # is c the first character of a number?
-        def is_number(s):
-            try:
-                float(s)
-                return True
-            except ValueError:
-                return False
 
         if not found_anything:
             # if first character is a number, keep adding characters until it is no longer a number
@@ -349,6 +439,8 @@ ut_priority_function = representation_to_priority_function_tree(ut_representatio
 ut_reconstruction = repr(ut_priority_function.root_branch)
 assert ut_reconstruction == ut_representation, \
     f"Unit Test failed: reconstructing the reference priority function should have yielded {ut_representation}, but yielded {ut_reconstruction} instead"
+
+#print(ut_priority_function.latex())
 
 # evaluation of expression
 ut_features_values = {'a': 50, 'b': 6.75, 'c': 100}
