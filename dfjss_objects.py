@@ -160,15 +160,33 @@ def generate_features(rng, ranges_dict):
     return features
 
 
+class ExpectedProcessingTimeNeededBusyCoupleOutput:
+    def __init__(self, expected_time, scaling_factor):
+        self.expected_time = expected_time
+        self.scaling_factor = scaling_factor
+
+
 class BusyCouple:
     machine: Machine
     job: Job
-    time_needed: float
+    nominal_processing_time_needed: float
+    machine_start_time: float
 
-    def __init__(self, machine, job, time_needed):
+    def __init__(self, machine, job, nominal_processing_time_needed, machine_start_time):
         self.machine = machine
         self.job = job
-        self.time_needed = time_needed
+        self.nominal_processing_time_needed = nominal_processing_time_needed
+        self.machine_start_time = machine_start_time
+
+    def expected_processing_time_needed(self, warehouse):
+        pair_features = warehouse.all_features_of_compatible_pair(machine=self.machine, job=self.job)
+
+        scaling_factor = warehouse.scaling_factor_of_machine(self.machine,
+                                                             directly_provided_features=pair_features)
+
+        return ExpectedProcessingTimeNeededBusyCoupleOutput(
+            self.nominal_processing_time_needed / scaling_factor,
+            scaling_factor)
 
 
 class WaitingMachine:
@@ -217,8 +235,12 @@ class WarehouseSimulationOutput:
         result += f"\nJob times (Mean: {np.mean(self.job_times):.2f}, Max: {np.max(self.job_times):.2f})"
 
         result += f"\nRelative deadlines (Mean Net: {np.mean(self.job_relative_deadlines):.2f}"
-        result += f", Mean Early: {np.mean(self.job_relative_deadlines, where=np.array(self.job_relative_deadlines) > 0):.2f}"
-        result += f", Mean Late: {np.mean(self.job_relative_deadlines, where=np.array(self.job_relative_deadlines) < 0):.2f}"
+
+        early_mask = np.array(self.job_relative_deadlines) > 0
+        late_mask = np.array(self.job_relative_deadlines) < 0
+
+        result += f", Mean Early: {'{:.2f}'.format(np.mean(self.job_relative_deadlines, where=early_mask)) if np.any(early_mask) else 'NaN'}"
+        result += f", Mean Late: {'{:.2f}'.format(np.mean(self.job_relative_deadlines, where=late_mask)) if np.any(late_mask) else 'NaN'}"
         result += ")"
 
         return result
@@ -297,16 +319,45 @@ class Warehouse:
 
         return result
 
+    def scaling_factor_of_machine(self, machine, directly_provided_features=None):
+        if directly_provided_features is not None:
+            features = directly_provided_features
+        else:
+            features = machine.features
+
+        scaling_func = features["machine_capacity_scaling"]
+        n = max(len([None for couple in self.busy_couples if couple.machine == machine]), 1)
+
+        if scaling_func == "constant":
+            scaling_factor = 1.
+        elif scaling_func == "inverse":
+            scaling_factor = 1. / n
+        elif callable(scaling_func):
+            try:
+                scaling_factor = scaling_func(features, n)
+            except TypeError as type_error:
+                raise dfjss_exceptions.MachineBadScalingFunctionError(
+                    message="Value of machine_capacity_scaling, while being a function, does not take 2 arguments",
+                    machine=machine
+                )
+        else:
+            raise ValueError(
+                "Value of machine_capacity_scaling is not a known string preset, nor a function that takes 2 arguments"
+            )
+
+        return scaling_factor
+
+    def concurrent_operations_processing_under_machine(self, machine):
+        return len([None for busy_couple in self.busy_couples if busy_couple.machine == machine])
+
+    def concurrent_cooldowns_of_machine(self, machine):
+        return len([None for waiting_machine in self.waiting_machines if waiting_machine.machine == machine])
+
+    def slots_used_up_on_machine(self, machine):
+        return self.concurrent_operations_processing_under_machine(machine) + self.concurrent_cooldowns_of_machine(machine)
+
     def is_machine_busy(self, machine):
-        for busy_couple in self.busy_couples:
-            if busy_couple.machine == machine:
-                return True
-
-        for waiting_machine in self.waiting_machines:
-            if waiting_machine.machine == machine:
-                return True
-
-        return False
+        return self.slots_used_up_on_machine(machine) >= machine.features["machine_capacity"]
 
     def is_job_busy(self, job):
         for busy_couple in self.busy_couples:
@@ -332,7 +383,8 @@ class Warehouse:
         return [job.operations[0] for job in self.jobs]
 
     def can_operation_be_done(self, operation, eventually=True):
-        return np.any([self.machine_operation_compatible(machine, operation) for machine in self.machines if (eventually or self.is_machine_busy(machine))])
+        return np.any([self.machine_operation_compatible(machine, operation) for machine in self.machines if
+                       (eventually or self.is_machine_busy(machine))])
 
     def add_machine(self, recipe=None):
         if recipe is None:
@@ -384,7 +436,8 @@ class Warehouse:
         return new_job
 
     def families_of_machine(self, machine, force_one_value=False):
-        result = [family for family, recipes in self.settings.recipes.items() if machine.features["machine_recipe"] in recipes]
+        result = [family for family, recipes in self.settings.recipes.items() if
+                  machine.features["machine_recipe"] in recipes]
         if force_one_value:
             if len(result) > 1:
                 raise ValueError("Machine has more than one family, but force_one_value is True")
@@ -414,15 +467,17 @@ class Warehouse:
             )
 
         operation = job.operations[0]
-        time_needed = 0.
 
         # Operation's start time
-        time_needed += operation.features["operation_start_time"]
+        start_time = operation.features["operation_start_time"]
 
         # Time needed to do operation
-        time_needed += operation.features["operation_work_required"] / machine.features["machine_work_power"]
+        processing_time = operation.features["operation_work_required"] / machine.features["machine_nominal_work_power"]
 
-        new_couple = BusyCouple(machine=machine, job=job, time_needed=time_needed)
+        new_couple = BusyCouple(machine=machine,
+                                job=job,
+                                machine_start_time=start_time,
+                                nominal_processing_time_needed=processing_time)
 
         self.busy_couples.append(new_couple)
         return new_couple
@@ -456,15 +511,24 @@ class Warehouse:
 
         result = self.warehouse_features | machine.features | job.features
 
-        result["pair_number_of_compatible_machines"] = len([
+        result["pair_number_of_alternative_machines"] = len([
             m for m in self.available_machines() if self.machine_operation_compatible(m, operation)
         ])
 
-        result["pair_number_of_compatible_operations"] = len([
+        result["pair_number_of_alternative_operations"] = len([
             j for j in self.available_jobs() if self.machine_operation_compatible(machine, j.operations[0])
         ])
 
-        result["pair_processing_time"] = operation.features["operation_work_required"] / machine.features["machine_work_power"]
+        result["pair_nominal_processing_time"] = operation.features["operation_work_required"] / machine.features[
+            "machine_nominal_work_power"]
+
+        # do this one as late as possible, as it is going to use the "live" result
+        result["pair_expected_work_power"] = machine.features[
+                                                 "machine_nominal_work_power"] * self.scaling_factor_of_machine(
+            machine=machine, directly_provided_features=result)
+
+        result["pair_expected_processing_time"] = operation.features["operation_work_required"] / result[
+            "pair_expected_work_power"]
 
         # TODO: custom pair features
 
@@ -480,13 +544,14 @@ class Warehouse:
 
         # operations that are finished
         for busy_couple in self.busy_couples.copy():
-            if busy_couple.time_needed <= 0:
+            if busy_couple.nominal_processing_time_needed <= 0:
                 self.busy_couples.remove(busy_couple)
 
                 operation_done = busy_couple.job.operations.pop(0)
 
                 if verbose > 1:
-                    print(f"\tA \'{operation_done.features['operation_family']}\' operation with \'{busy_couple.machine.features['machine_recipe']}\' machine has finished, job and machine are going into cooldown")
+                    print(
+                        f"\tA \'{operation_done.features['operation_family']}\' operation with \'{busy_couple.machine.features['machine_recipe']}\' machine has finished, job and machine are going into cooldown")
 
                 # operation end times and machine cooldowns
                 job_of_operation_done = self.job_of_operation(operation_done)
@@ -505,7 +570,8 @@ class Warehouse:
                     )
 
                     if verbose > 1:
-                        print(f"\tA job was completed (Net earliness: {misc.timeformat(job_of_operation_done.features['job_relative_deadline'])})")
+                        print(
+                            f"\tA job was completed (Net earliness: {misc.timeformat(job_of_operation_done.features['job_relative_deadline'])})")
 
                 machine_of_operation_done = busy_couple.machine
                 machine_wait_time = machine_of_operation_done.features["machine_cooldown"]
@@ -524,12 +590,13 @@ class Warehouse:
                 self.waiting_jobs.remove(waiting_job)
 
                 if verbose > 1:
-                    print(f"\tAvailable: Job with \'{waiting_job.job.operations[0].features['operation_family']}\' operation")
+                    print(
+                        f"\tAvailable: Job with \'{waiting_job.job.operations[0].features['operation_family']}\' operation")
 
         # REAL-TIME FEATURES
 
         # utilization rate
-        self.warehouse_features["warehouse_utilization_rate"] = len(self.busy_couples) / len(self.machines)
+        self.warehouse_features["warehouse_utilization_rate"] = len(self.busy_couples) / np.sum([machine.features["machine_capacity"] for machine in self.machines])
 
         # jobs' real time features
         for job in self.jobs:
@@ -557,7 +624,8 @@ class Warehouse:
                 self.assign_job_to_machine(job=decision_output.job, machine=decision_output.machine)
 
                 if verbose > 1:
-                    print(f"\tAssigned \'{decision_output.machine.features['machine_recipe']}\' machine to a \'{decision_output.job.operations[0].features['operation_family']}\' operation")
+                    print(
+                        f"\tAssigned \'{decision_output.machine.features['machine_recipe']}\' machine ({self.slots_used_up_on_machine(decision_output.machine)}/{decision_output.machine.features['machine_capacity']} capacity, {'custom' if callable(decision_output.machine.features['machine_capacity_scaling']) else decision_output.machine.features['machine_capacity_scaling']} scaling) to a \'{decision_output.job.operations[0].features['operation_family']}\' operation")
 
         # CHECK END STATES
 
@@ -578,8 +646,10 @@ class Warehouse:
             )
 
         # progress time: time elapsed is the soonest amount of time when "something happens"
+        EPTs = [busy_couple.expected_processing_time_needed(warehouse=self) for busy_couple in self.busy_couples]
 
-        times = [busy_couple.time_needed for busy_couple in self.busy_couples]
+        times = [busy_couple.machine_start_time if busy_couple.machine_start_time > 0. else ept.expected_time
+                 for busy_couple, ept in zip(self.busy_couples, EPTs)]
         times.extend([waiting_machine.time_needed for waiting_machine in self.waiting_machines])
         times.extend([waiting_job.time_needed for waiting_job in self.waiting_jobs])
 
@@ -587,8 +657,11 @@ class Warehouse:
 
         # ELAPSE TIME
 
-        for busy_couple in self.busy_couples:
-            busy_couple.time_needed -= smallest_time
+        for busy_couple, ept in zip(self.busy_couples, EPTs):
+            if busy_couple.machine_start_time > 0.:
+                busy_couple.machine_start_time = min(busy_couple.machine_start_time - smallest_time, 0.)
+            else:
+                busy_couple.nominal_processing_time_needed -= smallest_time * ept.scaling_factor
 
         for waiting_machine in self.waiting_machines:
             waiting_machine.time_needed -= smallest_time
@@ -660,7 +733,8 @@ class Warehouse:
                 self.current_time += routine_result.time_passed
 
                 if verbose > 1:
-                    print(f"Routine step {routine_step} ended - Time elapsed: {routine_result.time_passed:.2f}s", end="\n\n")
+                    print(f"Routine step {routine_step} ended - Time elapsed: {routine_result.time_passed:.2f}s",
+                          end="\n\n")
 
             if self.current_time > (starting_time + duration):
                 end_reason = "reaching the simulation duration"

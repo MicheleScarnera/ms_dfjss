@@ -15,13 +15,14 @@ FAMILIES = list(RECIPES.keys())
 REQUIRES_INTEGERS = [
     "job_starting_number_of_operations",
     "simulation_number_of_starting_machines_over_essential",
-    "simulation_number_of_starting_jobs"
+    "simulation_number_of_starting_jobs",
+    "machine_capacity"
 ]
 
 GENERATION_OPERATION_RANGES = {
     # WORK REQUIRED
     # Amount of "work" this operation requires.
-    # The time to finish an operation is (operation_work_required / machine_work_power).
+    # The time to finish an operation is (operation_work_required / machine_nominal_work_power).
     # Units: "work" units (for example joules, seconds, etc)
     "operation_work_required": (10, 500),
 
@@ -70,11 +71,29 @@ GENERATION_JOB_RANGES = {
 }
 
 GENERATION_MACHINE_RANGES = {
-    # WORK POWER
+    # NOMINAL WORK POWER
     # The rate at which this machine executes "work".
-    # The time to finish an operation is (operation_work_required / machine_work_power).
+    # The time to finish an operation is (operation_work_required / machine_nominal_work_power).
     # Units: "work" units per second (for example watts, seconds/second, etc)
-    "machine_work_power": (10, 500),
+    "machine_nominal_work_power": (10, 500),
+
+    # CAPACITY
+    # How many operations can the machine do at once.
+    #
+    # Units: potatoes
+    "machine_capacity": (1, 3),
+
+    # CAPACITY SCALING
+    # How the machine scales its work power, depending on capacity.
+    # Accepted values:
+    # -"constant": the machine will apply 100% of its nominal power to each operation
+    # -"inverse": the machine will apply 100% / (no. of current operations) of its nominal power to each operation
+    # -functions with two arguments, one containing the pair (machine and operation)'s features, and the other
+    # being the number of operations currently ongoing
+    # Units: percentage
+    "machine_capacity_scaling": ["constant",
+                                 "inverse",
+                                 lambda pair_features, current_amount: (1. / current_amount) ** 0.5],
 
     # COOLDOWN
     # When a machine ends an operation, there is a
@@ -91,20 +110,31 @@ GENERATION_WAREHOUSE_RANGES = {
 }
 
 GENERATION_PAIR_RANGES = {
-    # NUMBER OF COMPATIBLE MACHINES
+    # NUMBER OF ALTERNATIVE MACHINES
     # How many machines could also fulfill this operation, including the machine in the pair.
     # Units: potatoes
-    "pair_number_of_compatible_machines": 0,
+    "pair_number_of_alternative_machines": 0,
 
-    # NUMBER OF COMPATIBLE OPERATIONS
+    # NUMBER OF ALTERNATIVE OPERATIONS
     # How many fulfillable operations could also be fulfilled by this machine, including the operation in the pair.
     # Units: potatoes
-    "pair_number_of_compatible_operations": 0,
+    "pair_number_of_alternative_operations": 0,
 
-    # PROCESSING TIME
-    # The time to finish an operation, equal to (operation_work_required / machine_work_power).
+    # EXPECTED WORK POWER
+    # Given the current situation, the work power that the machine will provide to the operation.
+    # Units: "work" units per second (for example watts, seconds/second, etc)
+    "pair_expected_work_power": -1,
+    
+    # NOMINAL PROCESSING TIME
+    # The nominal time to finish an operation, equal to (operation_work_required / machine_nominal_work_power).
     # Units: seconds
-    "pair_processing_time": 0.
+    "pair_nominal_processing_time": 0.,
+
+    # EXPECTED PROCESSING TIME
+    # The nominal time to finish an operation, equal to (operation_work_required / machine_nominal_work_power).
+    # Units: seconds
+    "pair_expected_processing_time": 0.
+    
 }
 
 GENERATION_SIMULATION_RANGES = {

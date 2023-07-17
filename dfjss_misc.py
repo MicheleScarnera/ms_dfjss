@@ -17,10 +17,7 @@ def dict_flatten_values(d):
 
 
 def timeformat(secs):
-    if type(secs) is not int:
-        secs = int(secs)
-
-    if np.abs(secs) < 10.:
+    if np.abs(secs) < 60.:
         return f"{secs:.2f}s"
     else:
         return timeformat_hhmmss(secs)

@@ -53,6 +53,12 @@ class JobOperationsConflictError(Exception):
         self.operation = operation
 
 
+class MachineBadScalingFunctionError(Exception):
+    def __init__(self, message, machine):
+        super().__init__(message)
+        self.machine = machine
+
+
 class WarehouseIncompatibleThingsError(Exception):
     def __init__(self, message, job, machine):
         super().__init__(message)
