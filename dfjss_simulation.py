@@ -19,7 +19,7 @@ print(pf_features)
 # "((job_remaining_number_of_operations/(job_relative_deadline>0))/(pair_number_of_compatible_machines*pair_number_of_compatible_operations))"
 
 branch = pf.representation_to_root_branch(
-    representation="((job_remaining_number_of_operations/(job_relative_deadline>0))/((pair_number_of_compatible_machines^warehouse_utilization_rate)*(pair_number_of_compatible_operations^(1-warehouse_utilization_rate))))",
+    representation="((job_remaining_number_of_operations/(job_relative_deadline>0))/((pair_number_of_alternative_machines^warehouse_utilization_rate)*(pair_number_of_alternative_operations^(1-warehouse_utilization_rate))))",
     features=pf_features)
 
 priorityfunc = pf.PriorityFunctionTree(
