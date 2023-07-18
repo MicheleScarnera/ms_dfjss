@@ -170,13 +170,13 @@ class BusyCouple:
     machine: Machine
     job: Job
     nominal_processing_time_needed: float
-    machine_start_time: float
+    machine_windup: float
 
-    def __init__(self, machine, job, nominal_processing_time_needed, machine_start_time):
+    def __init__(self, machine, job, nominal_processing_time_needed, machine_windup):
         self.machine = machine
         self.job = job
         self.nominal_processing_time_needed = nominal_processing_time_needed
-        self.machine_start_time = machine_start_time
+        self.machine_windup = machine_windup
 
     def expected_processing_time_needed(self, warehouse):
         pair_features = warehouse.all_features_of_compatible_pair(machine=self.machine, job=self.job)
@@ -221,27 +221,79 @@ class WarehouseSimulationOutput:
     simulation_time: float
     job_times: list[float]
     job_relative_deadlines: list[float]
+    workloads: list[float]
+    machine_lifespans: list[float]
 
-    def __init__(self, simulation_time=None, job_times=None, job_relative_deadlines=None):
+    costs: list[float]
+    energies_used: list[float]
+
+    def __init__(self, simulation_time=None,
+                 job_times=None,
+                 job_relative_deadlines=None,
+                 workloads=None,
+                 machine_lifespans=None,
+                 costs=None,
+                 energies_used=None):
         self.simulation_time = simulation_time
 
         self.job_times = job_times
         self.job_relative_deadlines = job_relative_deadlines
+        self.workloads = workloads
+
+        self.machine_lifespans = machine_lifespans
+
+        self.costs = costs
+        self.energies_used = energies_used
+
+    def get_objectives(self):
+        result = dict()
+        jt = np.array(self.job_times)
+        jrd = np.array(self.job_relative_deadlines)
+        wl = np.array(self.workloads)
+        ml = np.array(self.machine_lifespans)
+        c = np.array(self.costs)
+        e = np.array(self.energies_used)
+
+        result["max_completion_time"] = self.simulation_time
+
+        result["mean_net_earliness"] = np.mean(jrd)
+        result["mean_earliness"] = np.mean(jrd, where=jrd > 0.) if np.any(jrd > 0.) else 0.
+        result["mean_tardiness"] = -np.mean(jrd, where=jrd < 0.) if np.any(jrd < 0.) else 0.
+        result["max_tardiness"] = -np.min(jrd) if np.any(jrd < 0.) else 0.
+
+        result["total_running_time"] = np.sum(ml)
+
+        result["total_workload"] = np.sum(wl)
+        result["max_workload"] = np.max(wl)
+
+        result["total_idle_time"] = result["total_running_time"] - result["total_workload"]
+
+        result["total_flow_time"] = np.sum(jt)
+        result["mean_flow_time"] = np.mean(jt)
+
+        result["total_operating_cost"] = np.sum(c)
+        result["total_energy_consumption"] = np.sum(e)
+
+        return result
+
 
     def summary(self):
-        result = "SIMULATION OUTPUT"
+        result = "SIMULATION OUTPUT\n"
 
-        result += f"\nSimulation time: {self.simulation_time:.2f}s"
-        result += f"\nJob times (Mean: {np.mean(self.job_times):.2f}, Max: {np.max(self.job_times):.2f})"
+        objectives = self.get_objectives()
 
-        result += f"\nRelative deadlines (Mean Net: {np.mean(self.job_relative_deadlines):.2f}"
+        for key, value in objectives.items():
+            result += f"\'{key}\': "
 
-        early_mask = np.array(self.job_relative_deadlines) > 0
-        late_mask = np.array(self.job_relative_deadlines) < 0
+            if np.isnan(value):
+                result += "NaN"
+            else:
+                if "time" in key or "earliness" in key or "tardiness" in key or "workload" in key:
+                    result += f"{misc.timeformat(value)}"
+                else:
+                    result += f"{value:.2f}"
 
-        result += f", Mean Early: {'{:.2f}'.format(np.mean(self.job_relative_deadlines, where=early_mask)) if np.any(early_mask) else 'NaN'}"
-        result += f", Mean Late: {'{:.2f}'.format(np.mean(self.job_relative_deadlines, where=late_mask)) if np.any(late_mask) else 'NaN'}"
-        result += ")"
+            result += "\n"
 
         return result
 
@@ -394,13 +446,30 @@ class Warehouse:
         # generate numeric features first
         features = generate_features(self.rng, self.settings.generation_machine_ranges)
 
-        # add recipe
+        # machine specific features
         features["machine_recipe"] = recipe
+
+        features["machine_start_time"] = self.current_time
 
         new_machine = Machine(features=features)
         self.machines.append(new_machine)
 
         return new_machine
+
+    def remove_machine(self, machine, simulation_output=None):
+        """
+
+        :type machine: Machine
+        :type simulation_output: WarehouseSimulationOutput
+        """
+        if machine not in self.machines:
+            raise ValueError("Could not find machine to be removed in the warehouse's machines")
+
+        self.machines.remove(machine)
+
+        if simulation_output is not None:
+            # machine lifespan
+            simulation_output.machine_lifespans.append(self.current_time - machine.features["machine_start_time"])
 
     def create_operations(self, amount, job=None):
         result = []
@@ -446,7 +515,11 @@ class Warehouse:
 
         return result
 
-    def assign_job_to_machine(self, job, machine):
+    def assign_job_to_machine(self, job, machine, simulation_output=None):
+        """
+
+        :type simulation_output: WarehouseSimulationOutput
+        """
         compatible = self.machine_operation_compatible(machine=machine, operation=job.operations[0])
 
         if not compatible:
@@ -468,16 +541,27 @@ class Warehouse:
 
         operation = job.operations[0]
 
-        # Operation's start time
-        start_time = operation.features["operation_start_time"]
+        # Take note of operation's start time
+        # If already positive, then treat it as "already started some other time, but somehow failed to complete"
+        # TODO: Chance for machines to break?
+        if operation.features["operation_start_time"] < 0.:
+            operation.features["operation_start_time"] = self.current_time
+
+        # Operation's windup
+        windup = operation.features["operation_windup"]
 
         # Time needed to do operation
         processing_time = operation.features["operation_work_required"] / machine.features["machine_nominal_work_power"]
 
         new_couple = BusyCouple(machine=machine,
                                 job=job,
-                                machine_start_time=start_time,
+                                machine_windup=windup,
                                 nominal_processing_time_needed=processing_time)
+
+        if simulation_output is not None:
+            # monetary/energy costs
+            simulation_output.costs.append(machine.features["machine_processing_cost_fixed"])
+            simulation_output.energies_used.append(machine.features["machine_processing_energy_fixed"])
 
         self.busy_couples.append(new_couple)
         return new_couple
@@ -553,10 +637,14 @@ class Warehouse:
                     print(
                         f"\tA \'{operation_done.features['operation_family']}\' operation with \'{busy_couple.machine.features['machine_recipe']}\' machine has finished, job and machine are going into cooldown")
 
-                # operation end times and machine cooldowns
+                # output's workload
+                workload = self.current_time - operation_done.features["operation_start_time"]
+                simulation_output.workloads.append(workload)
+
+                # operation and machine cooldowns
                 job_of_operation_done = self.job_of_operation(operation_done)
                 if len(job_of_operation_done.operations) > 0:
-                    job_wait_time = operation_done.features["operation_end_time"]
+                    job_wait_time = operation_done.features["operation_cooldown"]
                     self.make_job_wait(job=job_of_operation_done, time_needed=job_wait_time)
                 else:
                     # job finished
@@ -575,6 +663,11 @@ class Warehouse:
 
                 machine_of_operation_done = busy_couple.machine
                 machine_wait_time = machine_of_operation_done.features["machine_cooldown"]
+
+                # monetary/energy costs
+                simulation_output.costs.append(workload * machine_of_operation_done.features["machine_processing_cost_per_second"])
+                simulation_output.energies_used.append(workload * machine_of_operation_done.features["machine_processing_energy_per_second"])
+
                 self.make_machine_wait(machine=machine_of_operation_done, time_needed=machine_wait_time)
 
         # jobs and machines that are waiting (operations' end times, machine cooldowns)
@@ -621,7 +714,7 @@ class Warehouse:
 
             decision_output = self.settings.decision_rule.make_decision(warehouse=self)
             if decision_output.success:
-                self.assign_job_to_machine(job=decision_output.job, machine=decision_output.machine)
+                self.assign_job_to_machine(job=decision_output.job, machine=decision_output.machine, simulation_output=simulation_output)
 
                 if verbose > 1:
                     print(
@@ -648,7 +741,7 @@ class Warehouse:
         # progress time: time elapsed is the soonest amount of time when "something happens"
         EPTs = [busy_couple.expected_processing_time_needed(warehouse=self) for busy_couple in self.busy_couples]
 
-        times = [busy_couple.machine_start_time if busy_couple.machine_start_time > 0. else ept.expected_time
+        times = [busy_couple.machine_windup if busy_couple.machine_windup > 0. else ept.expected_time
                  for busy_couple, ept in zip(self.busy_couples, EPTs)]
         times.extend([waiting_machine.time_needed for waiting_machine in self.waiting_machines])
         times.extend([waiting_job.time_needed for waiting_job in self.waiting_jobs])
@@ -658,8 +751,8 @@ class Warehouse:
         # ELAPSE TIME
 
         for busy_couple, ept in zip(self.busy_couples, EPTs):
-            if busy_couple.machine_start_time > 0.:
-                busy_couple.machine_start_time = min(busy_couple.machine_start_time - smallest_time, 0.)
+            if busy_couple.machine_windup > 0.:
+                busy_couple.machine_windup = min(busy_couple.machine_windup - smallest_time, 0.)
             else:
                 busy_couple.nominal_processing_time_needed -= smallest_time * ept.scaling_factor
 
@@ -679,7 +772,11 @@ class Warehouse:
         simulation_output = WarehouseSimulationOutput(
             simulation_time=0,
             job_times=[],
-            job_relative_deadlines=[]
+            job_relative_deadlines=[],
+            workloads=[],
+            machine_lifespans=[],
+            costs=[],
+            energies_used=[]
 
         )
 
@@ -745,6 +842,10 @@ class Warehouse:
         # SIMULATION ENDS
 
         simulation_output.simulation_time = self.current_time - starting_time
+
+        # machine lifespan
+        for machine in self.machines:
+            simulation_output.machine_lifespans.append(self.current_time - machine.features["machine_start_time"])
 
         if verbose > 1:
             print(f"Simulation ended in {misc.timeformat(simulation_output.simulation_time)} due to {end_reason}")

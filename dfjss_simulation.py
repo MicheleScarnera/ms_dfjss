@@ -2,7 +2,7 @@ import dfjss_objects as dfjss
 import dfjss_defaults as DEFAULTS
 import dfjss_priorityfunction as pf
 
-rng_seed = 450
+rng_seed = 256
 
 # random decision
 

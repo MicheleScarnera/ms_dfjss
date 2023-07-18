@@ -26,19 +26,24 @@ GENERATION_OPERATION_RANGES = {
     # Units: "work" units (for example joules, seconds, etc)
     "operation_work_required": (10, 500),
 
-    # START TIME
+    # WINDUP
     # When an operation is assigned to a machine, there is a
     # fixed amount of time before the operation starts.
     # The machine is *not free* during this process.
     # Units: seconds
-    "operation_start_time": (0, 120),
+    "operation_windup": (0, 120),
 
-    # END TIME
+    # COOLDOWN
     # When a machine ends an operation, there is a
     # fixed amount of time before the job can continue.
     # The machine is *free* during this process.
     # Units: seconds
-    "operation_end_time": (0, 120)
+    "operation_cooldown": (0, 120),
+
+    # START TIME
+    # Absolute time at which the operation started.
+    # Units: seconds
+    "operation_start_time": -1
 }
 
 GENERATION_JOB_RANGES = {
@@ -54,7 +59,7 @@ GENERATION_JOB_RANGES = {
     # absolute deadline and initialization time are set during job creation.
     # Units: seconds
     "job_absolute_deadline": -1,
-    "job_relative_deadline": (600, 3600),
+    "job_relative_deadline": (60, 360),
     "job_initialization_time": -1,
 
     # REMAINING NUMBER OF OPERATIONS
@@ -100,6 +105,23 @@ GENERATION_MACHINE_RANGES = {
     # fixed amount of time before this machine can be used again.
     # Units: seconds
     "machine_cooldown": (0, 60),
+
+    # FIXED/PER SECOND PROCESSING COST
+    # Monetary cost of having the machine process, (per operation started/per second).
+    # Units: money(/second)
+    "machine_processing_cost_fixed": (0.01, 0.02),
+    "machine_processing_cost_per_second": (0.005, 0.01),
+
+    # FIXED/PER SECOND PROCESSING ENERGY
+    # Energy used by having the machine process, (per operation started/per second).
+    # Units: energy(/second)
+    "machine_processing_energy_fixed": (1, 5),
+    "machine_processing_energy_per_second": (10, 50),
+
+    # START TIME
+    # Absolute time at which the machine was created.
+    # Units: seconds
+    "machine_start_time": -1
 }
 
 GENERATION_WAREHOUSE_RANGES = {
@@ -146,7 +168,7 @@ GENERATION_SIMULATION_RANGES = {
     # NUMBER OF STARTING JOBS
     # Number of jobs to generate at the start
     # Units: potatoes
-    "simulation_number_of_starting_jobs": (15, 50),
+    "simulation_number_of_starting_jobs": (15, 45),
 }
 
 # MANDATORY FEATURES
