@@ -414,21 +414,39 @@ class PriorityFunctionTreeDecisionRule(dfjss.BaseDecisionRule):
 
         self.priority_function_tree = priority_function_tree
 
-    def make_decision(self, warehouse):
+    def make_decision(self, warehouse, avoid_matrix=None):
         compatible_pairs = warehouse.compatible_pairs()
+
+        if avoid_matrix is None:
+            avoid_matrix = len(compatible_pairs) > 5000
 
         if len(compatible_pairs) <= 0:
             return dfjss.DecisionRuleOutput(success=False)
 
-        priority_values = np.array([self.priority_function_tree.run(
-            features=warehouse.all_features_of_compatible_pair(machine=machine, job=job))
-            for machine, job in compatible_pairs])
+        if avoid_matrix:
+            highest_priority = 0.
+            index_max = -1
+            for i, (machine, job) in enumerate(compatible_pairs):
+                priority = self.priority_function_tree.run(
+                    features=warehouse.all_features_of_compatible_pair(machine=machine, job=job))
 
-        index_max = np.argmax(priority_values)
+                if i == 0 or priority > highest_priority:
+                    highest_priority = priority
+                    index_max = i
 
-        return dfjss.DecisionRuleOutput(success=True,
-                                        machine=compatible_pairs[index_max][0],
-                                        job=compatible_pairs[index_max][1])
+            return dfjss.DecisionRuleOutput(success=True,
+                                            machine=compatible_pairs[index_max][0],
+                                            job=compatible_pairs[index_max][1])
+        else:
+            priority_values = np.array([self.priority_function_tree.run(
+                features=warehouse.all_features_of_compatible_pair(machine=machine, job=job))
+                for machine, job in compatible_pairs])
+
+            index_max = np.argmax(priority_values)
+
+            return dfjss.DecisionRuleOutput(success=True,
+                                            machine=compatible_pairs[index_max][0],
+                                            job=compatible_pairs[index_max][1])
 
 
 # UNIT TESTS

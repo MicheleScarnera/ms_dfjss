@@ -1,6 +1,7 @@
 from typing import List, Any, Dict
 import warnings
 from collections import Counter
+import time
 
 import numpy as np
 
@@ -359,10 +360,19 @@ class Warehouse:
         :param include_busy: If True, includes machines and jobs that are busy.
         :return: list[(Machine, Job)]
         """
-        result = []
-
         machines = self.machines if include_busy else self.available_machines()
         jobs = self.jobs if include_busy else self.available_jobs()
+        """
+        result = misc.flatten(
+            [
+                [(machine, job)
+                 for job in jobs if self.machine_operation_compatible(machine, job.operations[0])]
+                for machine in machines
+            ]
+        )
+        """
+
+        result = []
 
         for machine in machines:
             for job in jobs:
@@ -400,10 +410,10 @@ class Warehouse:
         return scaling_factor
 
     def concurrent_operations_processing_under_machine(self, machine):
-        return len([None for busy_couple in self.busy_couples if busy_couple.machine == machine])
+        return np.sum([busy_couple.machine == machine for busy_couple in self.busy_couples], dtype=int)
 
     def concurrent_cooldowns_of_machine(self, machine):
-        return len([None for waiting_machine in self.waiting_machines if waiting_machine.machine == machine])
+        return np.sum([waiting_machine.machine == machine for waiting_machine in self.waiting_machines], dtype=int)
 
     def slots_used_up_on_machine(self, machine):
         return self.concurrent_operations_processing_under_machine(machine) + self.concurrent_cooldowns_of_machine(machine)
@@ -426,10 +436,14 @@ class Warehouse:
         return [machine for machine in self.machines if not self.is_machine_busy(machine)]
 
     def available_jobs(self):
-        return [job for job in self.jobs if not self.is_job_busy(job)]
+        #return [job for job in self.jobs if not self.is_job_busy(job)]
+        unavailable_jobs = set([busy_couple.job for busy_couple in self.busy_couples])
+        unavailable_jobs.update([waiting_job.job for waiting_job in self.waiting_jobs])
+
+        return [job for job in self.jobs if job not in unavailable_jobs]
 
     def operations_from_available_jobs(self):
-        return [job.operations[0] for job in self.jobs if not self.is_job_busy(job)]
+        return [job.operations[0] for job in self.available_jobs()]
 
     def first_operations_from_all_jobs(self):
         return [job.operations[0] for job in self.jobs]
@@ -764,9 +778,11 @@ class Warehouse:
 
         return WarehouseRoutineOutput(time_passed=smallest_time, end_simulation=False)
 
-    def simulate(self, duration=86400, verbose=0):
+    def simulate(self, max_simulation_time=86400, max_routine_steps=-1, verbose=0):
         if verbose > 0:
             print("Simulating warehouse...")
+
+        realtime_start = time.time()
 
         # result
         simulation_output = WarehouseSimulationOutput(
@@ -833,8 +849,12 @@ class Warehouse:
                     print(f"Routine step {routine_step} ended - Time elapsed: {routine_result.time_passed:.2f}s",
                           end="\n\n")
 
-            if self.current_time > (starting_time + duration):
-                end_reason = "reaching the simulation duration"
+            if max_simulation_time > 0 and self.current_time > (starting_time + max_simulation_time):
+                end_reason = "reaching the maximum simulation time"
+                break
+
+            if 0 < max_routine_steps <= routine_step:
+                end_reason = "reaching the maximum routine steps"
                 break
 
             routine_step += 1
@@ -847,7 +867,7 @@ class Warehouse:
         for machine in self.machines:
             simulation_output.machine_lifespans.append(self.current_time - machine.features["machine_start_time"])
 
-        if verbose > 1:
-            print(f"Simulation ended in {misc.timeformat(simulation_output.simulation_time)} due to {end_reason}")
+        if verbose > 0:
+            print(f"Simulation ended in {misc.timeformat(simulation_output.simulation_time)} ({misc.timeformat(time.time() - realtime_start)} real time) due to {end_reason}")
 
         return simulation_output

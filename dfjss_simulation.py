@@ -3,18 +3,20 @@ import dfjss_defaults as DEFAULTS
 import dfjss_priorityfunction as pf
 
 rng_seed = 256
+max_steps = -1
+verbose = 1
 
 # random decision
 
 randomdecision_warehouse = dfjss.Warehouse(rng_seed=rng_seed)
 
-randomdecision_sim_out = randomdecision_warehouse.simulate(verbose=0)
+randomdecision_sim_out = randomdecision_warehouse.simulate(max_routine_steps=max_steps, verbose=verbose)
 
 # priority function decision
 
 pf_features = DEFAULTS.MANDATORY_FEATURES
 
-print(pf_features)
+#print(pf_features)
 
 # "((job_remaining_number_of_operations/(job_relative_deadline>0))/(pair_number_of_compatible_machines*pair_number_of_compatible_operations))"
 
@@ -35,7 +37,7 @@ prioritydecision_settings.decision_rule = pf.PriorityFunctionTreeDecisionRule(
 
 prioritydecision_warehouse = dfjss.Warehouse(settings=prioritydecision_settings, rng_seed=rng_seed)
 
-prioritydecision_sim_out = prioritydecision_warehouse.simulate(verbose=0)
+prioritydecision_sim_out = prioritydecision_warehouse.simulate(max_routine_steps=max_steps, verbose=verbose)
 
 print("RANDOM DECISION RULE")
 print(randomdecision_sim_out.summary())
