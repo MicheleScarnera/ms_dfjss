@@ -86,37 +86,40 @@ class Machine:
 # DECISION RULES
 
 class BaseDecisionRule:
-    def make_decision(self, warehouse):
+    def make_decisions(self, warehouse):
         raise NotImplementedError(
             "dfjss.BaseDecisionRule was used directly. Please make a class that inherits from BaseDecisionRule and overrides make_decision")
 
 
 class RandomDecisionRule(BaseDecisionRule):
-    def make_decision(self, warehouse):
+    def make_decisions(self, warehouse):
         compatible_pairs = warehouse.compatible_pairs(include_busy=False)
 
         if len(compatible_pairs) <= 0:
             return DecisionRuleOutput(success=False)
 
-        m, j = warehouse.rng.choice(a=compatible_pairs, size=1).reshape(2)
-        return DecisionRuleOutput(success=True, machine=m, job=j)
+        pairs = []
+        while len(compatible_pairs) > 0:
+            m, j = warehouse.rng.choice(a=compatible_pairs, size=1).reshape(2)
+            pairs.append((m, j))
+
+            compatible_pairs = [(machine, job) for machine, job in compatible_pairs if machine != m and job != j]
+
+        return DecisionRuleOutput(success=True, pairs=pairs)
 
 
 class DecisionRuleOutput:
     success: bool
-    machine: Machine
-    job: Job
+    pairs: list[(Machine, Job)]
 
-    def __init__(self, success, machine=None, job=None):
+    def __init__(self, success, pairs=None):
         self.success = success
 
-        if success and (machine is None or job is None):
+        if success and (pairs is None or len(pairs) <= 0):
             raise ValueError(
-                f"DecisionRuleOutput has success=True but machine ({machine}) or job ({job}) are None")
+                f"DecisionRuleOutput has success=True but no pairs have been given")
 
-        self.machine = machine
-        self.job = job
-
+        self.pairs = pairs
 
 # WAREHOUSE
 
@@ -726,13 +729,14 @@ class Warehouse:
         while first_time or decision_output.success:
             first_time = False
 
-            decision_output = self.settings.decision_rule.make_decision(warehouse=self)
+            decision_output = self.settings.decision_rule.make_decisions(warehouse=self)
             if decision_output.success:
-                self.assign_job_to_machine(job=decision_output.job, machine=decision_output.machine, simulation_output=simulation_output)
+                for machine, job in decision_output.pairs:
+                    self.assign_job_to_machine(job=job, machine=machine, simulation_output=simulation_output)
 
-                if verbose > 1:
-                    print(
-                        f"\tAssigned \'{decision_output.machine.features['machine_recipe']}\' machine ({self.slots_used_up_on_machine(decision_output.machine)}/{decision_output.machine.features['machine_capacity']} capacity, {'custom' if callable(decision_output.machine.features['machine_capacity_scaling']) else decision_output.machine.features['machine_capacity_scaling']} scaling) to a \'{decision_output.job.operations[0].features['operation_family']}\' operation")
+                    if verbose > 1:
+                        print(
+                            f"\tAssigned \'{machine.features['machine_recipe']}\' machine ({self.slots_used_up_on_machine(machine)}/{machine.features['machine_capacity']} capacity, {'custom' if callable(machine.features['machine_capacity_scaling']) else machine.features['machine_capacity_scaling']} scaling) to a \'{job.operations[0].features['operation_family']}\' operation")
 
         # CHECK END STATES
 
