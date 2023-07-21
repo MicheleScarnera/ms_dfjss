@@ -76,12 +76,12 @@ class PriorityFunctionBranch:
         if isinstance(self.left_feature, PriorityFunctionBranch):
             left = repr(self.left_feature)
         else:
-            left = self.left_feature
+            left = "{:.2f}".format(self.left_feature) if is_number(self.left_feature) else self.left_feature
 
         if isinstance(self.right_feature, PriorityFunctionBranch):
             right = repr(self.right_feature)
         else:
-            right = self.right_feature
+            right = "{:.2f}".format(self.right_feature) if is_number(self.right_feature) else self.right_feature
 
         return f"({left}{self.operation_character}{right})"
 
@@ -138,7 +138,6 @@ class PriorityFunctionBranch:
 
         return f"\\left({shell(left, right)}\\right)" if parentheses_condition else shell(left, right)
 
-
     def count(self):
         # Counts the number of sub-branches (including this one).
         tally = 1
@@ -164,6 +163,36 @@ class PriorityFunctionBranch:
             right_depth = 0
 
         return 1 + max(left_depth, right_depth)
+
+    def depth_of(self, inner_branch, current_depth=1):
+        """
+        Returns the depth at which the specified inner_branch is located.
+        If the inner_branch is not found, returns -1.
+        The root branch has depth of 1.
+
+        (From ChatGPT)
+
+        :param inner_branch: The target PriorityFunctionBranch to search for.
+        :param current_depth: Internal parameter, do not pass as an argument.
+        :return: int
+        """
+        if self is inner_branch:
+            return current_depth
+
+        left_depth = -1
+        right_depth = -1
+
+        if isinstance(self.left_feature, PriorityFunctionBranch):
+            left_depth = self.left_feature.depth_of(inner_branch, current_depth + 1)
+
+        if isinstance(self.right_feature, PriorityFunctionBranch):
+            right_depth = self.right_feature.depth_of(inner_branch, current_depth + 1)
+
+        # If the branch is found in either left or right subtree, return the maximum depth.
+        if left_depth != -1 or right_depth != -1:
+            return max(left_depth, right_depth)
+
+        return -1  # If the branch is not found in the entire tree, return -1.
 
     def run(self, operations, features_values):
         if isinstance(self.left_feature, PriorityFunctionBranch):
@@ -225,6 +254,9 @@ class PriorityFunctionTree:
 
     def depth(self):
         return self.root_branch.depth()
+
+    def depth_of(self, inner_branch):
+        return self.root_branch.depth_of(inner_branch=inner_branch)
 
     def run(self, features):
         return self.root_branch.run(self.operations, features)

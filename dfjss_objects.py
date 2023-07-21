@@ -532,9 +532,13 @@ class Warehouse:
 
         return result
 
-    def assign_job_to_machine(self, job, machine, simulation_output=None):
+    def assign_job_to_machine(self, job, machine,
+                              simulation_output=None,
+                              precomputed_available_jobs=None):
         """
 
+        :type precomputed_available_machines: list[Machine]
+        :type precomputed_available_jobs: list[Job]
         :type simulation_output: WarehouseSimulationOutput
         """
         compatible = self.machine_operation_compatible(machine=machine, operation=job.operations[0])
@@ -547,8 +551,13 @@ class Warehouse:
                 machine=machine
             )
 
-        job_already_busy = self.is_job_busy(job)
+        if precomputed_available_jobs is None:
+            job_already_busy = self.is_job_busy(job)
+        else:
+            job_already_busy = job not in precomputed_available_jobs
+
         machine_already_busy = self.is_machine_busy(machine)
+
         if job_already_busy or machine_already_busy:
             raise dfjss_exceptions.WarehouseAssigningBusyThingsError(
                 f"Trying to assign a job to a machine, but at least one is already busy (Job: {'Busy' if job_already_busy else 'Not Busy'}, Machine: {'Busy' if machine_already_busy else 'Not Busy'})",
@@ -579,6 +588,9 @@ class Warehouse:
             # monetary/energy costs
             simulation_output.costs.append(machine.features["machine_processing_cost_fixed"])
             simulation_output.energies_used.append(machine.features["machine_processing_energy_fixed"])
+
+        if precomputed_available_jobs is not None:
+            precomputed_available_jobs.remove(job)
 
         self.busy_couples.append(new_couple)
         return new_couple
@@ -641,6 +653,7 @@ class Warehouse:
         :type simulation_output: WarehouseSimulationOutput
         :type verbose: int
         """
+        # TODO: (real) time complexity of simulation is linear in the number of machines, but x^1.5 in the number of jobs. fix it or something
         # RELEASE THINGS THAT CAN BE RELEASED
 
         # operations that are finished
@@ -726,13 +739,19 @@ class Warehouse:
         # assign operations to available machines according to the decision rule
         first_time = True
         decision_output = None
+
+        precomputed_available_jobs = self.available_jobs()
+
         while first_time or decision_output.success:
             first_time = False
 
             decision_output = self.settings.decision_rule.make_decisions(warehouse=self)
             if decision_output.success:
                 for machine, job in decision_output.pairs:
-                    self.assign_job_to_machine(job=job, machine=machine, simulation_output=simulation_output)
+                    self.assign_job_to_machine(job=job,
+                                               machine=machine,
+                                               simulation_output=simulation_output,
+                                               precomputed_available_jobs=precomputed_available_jobs)
 
                     if verbose > 1:
                         print(

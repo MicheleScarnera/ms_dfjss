@@ -19,6 +19,11 @@ REQUIRES_INTEGERS = [
     "machine_capacity"
 ]
 
+NONNUMERIC_FEATURES = [
+    "operation_family",
+    "machine_recipe"
+]
+
 GENERATION_OPERATION_RANGES = {
     # WORK REQUIRED
     # Amount of "work" this operation requires.
@@ -163,7 +168,7 @@ GENERATION_SIMULATION_RANGES = {
     # NUMBER OF STARTING MACHINES OVER ESSENTIAL
     # Number of machines to generate at the start, beyond the "essential" ones (one for each family)
     # Units: potatoes
-    "simulation_number_of_starting_machines_over_essential": 15,
+    "simulation_number_of_starting_machines_over_essential": 50,
 
     # NUMBER OF STARTING JOBS
     # Number of jobs to generate at the start
@@ -191,3 +196,9 @@ MANDATORY_SIMULATION_FEATURES.extend(GENERATION_SIMULATION_RANGES.keys())
 MANDATORY_PAIR_FEATURES.extend(GENERATION_PAIR_RANGES.keys())
 
 MANDATORY_FEATURES = misc.flatten([MANDATORY_OPERATION_FEATURES, MANDATORY_JOB_FEATURES, MANDATORY_MACHINE_FEATURES, MANDATORY_WAREHOUSE_FEATURES, MANDATORY_PAIR_FEATURES])
+
+MANDATORY_NUMERIC_FEATURES = MANDATORY_FEATURES.copy()
+
+for f in NONNUMERIC_FEATURES:
+    if f in NONNUMERIC_FEATURES:
+        MANDATORY_NUMERIC_FEATURES.remove(f)
