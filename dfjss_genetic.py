@@ -27,6 +27,7 @@ class GeneticAlgorithmSettings:
         }
 
         self.priority_function_random_number_range = (-4, 4)
+        self.random_number_decimal_places = 2
 
 
 class GeneticAlgorithm:
@@ -75,8 +76,9 @@ class GeneticAlgorithm:
             elif outcome == "random_feature":
                 return self.rng.choice(a=self.settings.features)
             elif outcome == "random_number":
-                return self.rng.uniform(low=self.settings.priority_function_random_number_range[0],
-                                        high=self.settings.priority_function_random_number_range[1])
+                return np.round(self.rng.uniform(low=self.settings.priority_function_random_number_range[0],
+                                                 high=self.settings.priority_function_random_number_range[1]),
+                                decimals=self.settings.random_number_decimal_places)
             else:
                 raise ValueError(f"Unknown value in realize_outcome(outcome) (outcome == {outcome})")
 

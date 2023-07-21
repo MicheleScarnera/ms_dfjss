@@ -76,12 +76,12 @@ class PriorityFunctionBranch:
         if isinstance(self.left_feature, PriorityFunctionBranch):
             left = repr(self.left_feature)
         else:
-            left = "{:.2f}".format(self.left_feature) if is_number(self.left_feature) else self.left_feature
+            left = self.left_feature
 
         if isinstance(self.right_feature, PriorityFunctionBranch):
             right = repr(self.right_feature)
         else:
-            right = "{:.2f}".format(self.right_feature) if is_number(self.right_feature) else self.right_feature
+            right = self.right_feature
 
         return f"({left}{self.operation_character}{right})"
 
