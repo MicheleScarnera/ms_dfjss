@@ -10,13 +10,14 @@ import dfjss_defaults as DEFAULTS
 import dfjss_priorityfunction as pf
 import dfjss_misc as misc
 
+
 class GeneticAlgorithmSettings:
     def __init__(self):
         self.population_size = 200
 
         self.features = DEFAULTS.MANDATORY_NUMERIC_FEATURES
         self.operations = pf.DEFAULT_OPERATIONS.copy()
-        #del self.operations["^"]
+        del self.operations["^"]
 
         self.tree_max_depth = 5
 
@@ -26,12 +27,30 @@ class GeneticAlgorithmSettings:
             "random_number": 0.14
         }
 
-        self.priority_function_random_number_range = (-4, 4)
+        self.tree_mutation_weights = {
+            "add_branch": 0.1,
+            "remove_branch": 0.1,
+            "change_feature": 0.4,
+            "change_operation": 0.4
+        }
+
+        self.tree_mutation_changefeature_weights = {
+            "random_feature": 0.8,
+            "random_number": 0.2
+        }
+
+        self.tree_mutation_changeconstant_weights = {
+            "random_feature": 0.2,
+            "random_number": 0.8
+        }
+
+        self.priority_function_random_number_range = (-20, 20)
         self.random_number_decimal_places = 2
 
 
 class GeneticAlgorithm:
     settings: GeneticAlgorithmSettings
+    fitness_log: dict[str, float]
 
     def __init__(self, settings=None, rng_seed=None):
         if settings is None:
@@ -42,6 +61,13 @@ class GeneticAlgorithm:
         self.rng = np.random.default_rng(seed=rng_seed)
 
         self.population = []
+
+        self.fitness_log = dict()
+
+    def random_number(self):
+        return np.round(self.rng.uniform(low=self.settings.priority_function_random_number_range[0],
+                                         high=self.settings.priority_function_random_number_range[1]),
+                        decimals=self.settings.random_number_decimal_places)
 
     def get_random_branch(self, current_depth=1):
         outcomes = list(self.settings.tree_exnovo_generation_weights.keys())
@@ -76,9 +102,7 @@ class GeneticAlgorithm:
             elif outcome == "random_feature":
                 return self.rng.choice(a=self.settings.features)
             elif outcome == "random_number":
-                return np.round(self.rng.uniform(low=self.settings.priority_function_random_number_range[0],
-                                                 high=self.settings.priority_function_random_number_range[1]),
-                                decimals=self.settings.random_number_decimal_places)
+                return self.random_number()
             else:
                 raise ValueError(f"Unknown value in realize_outcome(outcome) (outcome == {outcome})")
 
@@ -93,5 +117,94 @@ class GeneticAlgorithm:
         return pf.PriorityFunctionTree(features=self.settings.features,
                                        root_branch=self.get_random_branch())
 
+    def mutate_individual(self, individual):
+        """
 
+        :type individual: PriorityFunctionTree
+        """
+        outcomes = list(self.settings.tree_mutation_weights.keys())
+        weights = np.array(list(self.settings.tree_mutation_weights.values()))
 
+        if individual.depth() <= 1:
+            weights[outcomes.index("remove_branch")] = 0.
+
+        weights = weights / np.sum(weights)
+
+        def is_feature(x):
+            return x in self.settings.features or misc.is_number(x)
+
+        outcome = self.rng.choice(a=outcomes, p=weights)
+        crumbs = pf.representation_to_crumbs(repr(individual.root_branch), features=self.settings.features,
+                                             operations=self.settings.operations)
+
+        if outcome == "add_branch":
+            features_indices = [i for i, crumb in enumerate(crumbs) if is_feature(crumb)]
+
+            add_at = self.rng.choice(a=features_indices)
+
+            crumbs.pop(add_at)
+
+            crumbs.insert(add_at, "(")
+            crumbs.insert(add_at + 1, self.rng.choice(a=self.settings.features))
+            crumbs.insert(add_at + 2, self.rng.choice(a=list(self.settings.operations.keys())))
+            crumbs.insert(add_at + 3, self.rng.choice(a=self.settings.features))
+            crumbs.insert(add_at + 4, ")")
+
+            individual.root_branch = pf.crumbs_to_root_branch(crumbs=crumbs)
+        elif outcome == "remove_branch":
+            # find a terminal branch and remove it
+            par_locs = pf.crumbs_parenthesis_locations(crumbs)
+
+            terminal_branches_indices = [par_loc
+                                         for i, (par_loc, par) in enumerate(par_locs)
+                                         if (i + 1 < len(par_locs)) and par == "(" and par_locs[i + 1][1] == ")"]
+
+            remove_from = self.rng.choice(a=terminal_branches_indices)
+
+            for _ in range(5):
+                crumbs.pop(remove_from)
+
+            random_feature = self.rng.choice(a=self.settings.features)
+            crumbs.insert(remove_from, random_feature)
+
+            individual.root_branch = pf.crumbs_to_root_branch(crumbs=crumbs)
+        elif outcome == "change_feature":
+            features_indices = [i for i, crumb in enumerate(crumbs) if is_feature(crumb)]
+
+            change_at = self.rng.choice(a=features_indices)
+            old_feature = crumbs[change_at]
+
+            feature_outcomes = list(self.settings.tree_mutation_changefeature_weights.keys())
+            if misc.is_number(old_feature):
+                feature_weights = np.array(list(self.settings.tree_mutation_changeconstant_weights.values()))
+            else:
+                feature_weights = np.array(list(self.settings.tree_mutation_changefeature_weights.values()))
+
+            feature_weights = feature_weights / np.sum(feature_weights)
+
+            feature_outcome = self.rng.choice(a=feature_outcomes, p=feature_weights)
+            new_feature = old_feature
+
+            if feature_outcome == "random_feature":
+                while new_feature == old_feature:
+                    new_feature = self.rng.choice(a=self.settings.features)
+            elif feature_outcome == "random_number":
+                new_feature = self.random_number()
+
+            crumbs[change_at] = new_feature
+
+            individual.root_branch = pf.crumbs_to_root_branch(crumbs=crumbs)
+        elif outcome == "change_operation":
+            features_indices = [i for i, crumb in enumerate(crumbs) if crumb in self.settings.operations]
+
+            change_at = self.rng.choice(a=features_indices)
+            old_operation = crumbs[change_at]
+            new_operation = old_operation
+            while new_operation == old_operation:
+                new_operation = self.rng.choice(a=list(self.settings.operations.keys()))
+
+            crumbs[change_at] = new_operation
+
+            individual.root_branch = pf.crumbs_to_root_branch(crumbs=crumbs)
+        else:
+            raise ValueError(f"Unknown outcome in mutate_individual ({outcome})")

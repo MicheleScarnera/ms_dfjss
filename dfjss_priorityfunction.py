@@ -1,6 +1,7 @@
 import numpy as np
 from string import ascii_lowercase as alphabet
 import numbers
+from collections import deque
 
 import dfjss_exceptions
 import dfjss_objects as dfjss
@@ -194,6 +195,59 @@ class PriorityFunctionBranch:
 
         return -1  # If the branch is not found in the entire tree, return -1.
 
+    def flatten(self):
+        """
+        Returns a list of all features and operations in the tree,
+        depth-first, from left to right.
+
+        :return: list[str]
+        """
+        result = []
+
+        if isinstance(self.left_feature, PriorityFunctionBranch):
+            result.extend(self.left_feature.flatten())
+        else:
+            result.append(self.left_feature)
+
+        result.append(self.operation_character)
+
+        if isinstance(self.right_feature, PriorityFunctionBranch):
+            result.extend(self.right_feature.flatten())
+        else:
+            result.append(self.right_feature)
+
+        return result
+
+    def set_from_flattened(self, flattened_list, old_flattened=None):
+        """
+        Sets features and operations based on the given flattened list.
+        If the flattened list does not match the branch's representation,
+        raises a ValueError exception.
+
+        :param flattened_list: The list representing a flattened PriorityFunctionBranch.
+        :param old_flattened: Internal parameter, do not pass as an argument.
+        :raises ValueError: If the flattened list does not match the branch's representation.
+        """
+        if old_flattened is None:
+            old_flattened = []
+
+        if isinstance(self.left_feature, PriorityFunctionBranch):
+            self.left_feature.set_from_flattened(flattened_list=flattened_list, old_flattened=old_flattened)
+        else:
+            old_flattened.append(self.left_feature)
+            self.left_feature = flattened_list[len(old_flattened) - 1]
+
+        old_flattened.append(self.operation_character)
+        self.operation_character = flattened_list[len(old_flattened) - 1]
+
+        if isinstance(self.right_feature, PriorityFunctionBranch):
+            self.right_feature.set_from_flattened(flattened_list=flattened_list, old_flattened=old_flattened)
+        else:
+            old_flattened.append(self.right_feature)
+            self.right_feature = flattened_list[len(old_flattened) - 1]
+
+        return old_flattened
+
     def run(self, operations, features_values):
         if isinstance(self.left_feature, PriorityFunctionBranch):
             left = self.left_feature.run(operations, features_values)
@@ -258,6 +312,12 @@ class PriorityFunctionTree:
     def depth_of(self, inner_branch):
         return self.root_branch.depth_of(inner_branch=inner_branch)
 
+    def flatten(self):
+        return self.root_branch.flatten()
+
+    def set_from_flattened(self, flattened_list):
+        return self.root_branch.set_from_flattened(flattened_list=flattened_list)
+
     def run(self, features):
         return self.root_branch.run(self.operations, features)
 
@@ -283,7 +343,7 @@ def representation_to_priority_function_tree(representation, features=None, oper
     )
 
 
-def representation_to_root_branch(representation, features=None, operations=None, max_iter=500, verbose=0):
+def representation_to_crumbs(representation, features=None, operations=None):
     if features is None:
         features = alphabet
 
@@ -341,29 +401,19 @@ def representation_to_root_branch(representation, features=None, operations=None
 
         # is c the first character of a feature?
         if not found_anything:
-            for f in features:
+            for f in sorted(features, key=lambda x: len(x), reverse=True):
                 if begins_with(representation[i:], f):
                     crumbs.append(f)
                     found_anything = True
                     i += len(f)
                     break
 
-        # is c the first character of an operation?
-        if not found_anything:
-            for op in operations:
-                if begins_with(representation[i:], op):
-                    crumbs.append(op)
-                    found_anything = True
-                    i += len(op)
-                    break
-
         # is c the first character of a number?
-
         if not found_anything:
             # if first character is a number, keep adding characters until it is no longer a number
             # note: since there will always be a closed parenthesis at the end of the number, any
             # well formed representation should have no problem
-            if is_number(representation[i]):
+            if is_number(representation[i]) or (i > 0 and (representation[i-1] in operations or representation[i-1] == "(") and representation[i] == '-' and is_number(representation[i:i+2])):
                 j = 0
                 while (i + j) < I:
                     if is_number(representation[i:i + j + 2]):
@@ -374,20 +424,40 @@ def representation_to_root_branch(representation, features=None, operations=None
                         i += j + 1
                         break
 
+        # is c the first character of an operation?
+        if not found_anything:
+            for op in operations:
+                if begins_with(representation[i:], op):
+                    crumbs.append(op)
+                    found_anything = True
+                    i += len(op)
+                    break
+
+
+
         if not found_anything:
             raise dfjss_exceptions.BadSyntaxRepresentationError(
                 f"Unknown character \'{c}\' present which is not a parenthesis, the beginning of the name of a feature/operation, nor a number")
 
+    return crumbs
+
+
+def crumbs_parenthesis_locations(crumbs):
+    # creates a list of 2-tuples containing the index of open and closed parentheses
+    # example: [(0, '('), (4, ')')]
+    result = []
+
+    for i, c in enumerate(crumbs):
+        if c in ['(', ')']:
+            result.append((i, c))
+
+    return result
+
+
+def crumbs_to_root_branch(crumbs, max_iter=500, verbose=0):
+
     def parentheses_locations():
-        # creates a list of 2-tuples containing the index of open and closed parentheses
-        # example: [(0, '('), (4, ')')]
-        result = []
-
-        for i, c in enumerate(crumbs):
-            if c in ['(', ')']:
-                result.append((i, c))
-
-        return result
+        return crumbs_parenthesis_locations(crumbs)
 
     # iterate through crumbs until only one crumb is left
     while len(crumbs) > 0 and max_iter > 0:
@@ -431,6 +501,21 @@ def representation_to_root_branch(representation, features=None, operations=None
         raise dfjss_exceptions.TooManyIterationsRepresentationError(f"Maximum number of iterations reached (final crumbs state: {crumbs})", crumbs=crumbs)
     else:
         raise dfjss_exceptions.UnexpectedLoopEndRepresentationError(f"Loop ended unexpectedly with no result (final crumbs state: {crumbs})", crumbs=crumbs)
+
+
+def representation_to_root_branch(representation, features=None, operations=None, max_iter=500, verbose=0):
+    if features is None:
+        features = alphabet
+
+    if operations is None:
+        operations = DEFAULT_OPERATIONS
+
+    crumbs = representation_to_crumbs(representation=representation,
+                                      features=features,
+                                      operations=operations)
+
+    return crumbs_to_root_branch(crumbs=crumbs, max_iter=max_iter, verbose=verbose)
+
 
 # DECISION RULE
 
