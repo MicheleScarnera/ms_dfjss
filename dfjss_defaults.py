@@ -21,7 +21,8 @@ REQUIRES_INTEGERS = [
 
 NONNUMERIC_FEATURES = [
     "operation_family",
-    "machine_recipe"
+    "machine_recipe",
+    "machine_capacity_scaling"
 ]
 
 GENERATION_OPERATION_RANGES = {
@@ -168,12 +169,12 @@ GENERATION_SIMULATION_RANGES = {
     # NUMBER OF STARTING MACHINES OVER ESSENTIAL
     # Number of machines to generate at the start, beyond the "essential" ones (one for each family)
     # Units: potatoes
-    "simulation_number_of_starting_machines_over_essential": 50,
+    "simulation_number_of_starting_machines_over_essential": 5,
 
     # NUMBER OF STARTING JOBS
     # Number of jobs to generate at the start
     # Units: potatoes
-    "simulation_number_of_starting_jobs": 50,
+    "simulation_number_of_starting_jobs": 100,
 }
 
 # MANDATORY FEATURES

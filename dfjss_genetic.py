@@ -1,6 +1,7 @@
 from typing import List, Any, Dict
 import warnings
 from collections import Counter
+import copy
 import time
 
 import numpy as np
@@ -12,14 +13,25 @@ import dfjss_misc as misc
 
 
 class GeneticAlgorithmSettings:
+    survival_rate: Any
+
     def __init__(self):
-        self.population_size = 200
+        self.population_size = 50
+        self.total_steps = 10
+        self.survival_rate = "knee-point"
+        self.fitness_func = lambda objectives: objectives["mean_tardiness"] + 0.5 * objectives["mean_earliness"]
+
+        self.number_of_simulations_per_individual = 3
+        self.simulations_seeds = np.linspace(0, 10000, num=self.number_of_simulations_per_individual, endpoint=True, dtype=int)
 
         self.features = DEFAULTS.MANDATORY_NUMERIC_FEATURES
         self.operations = pf.DEFAULT_OPERATIONS.copy()
         del self.operations["^"]
 
         self.tree_max_depth = 5
+
+        self.priority_function_random_number_range = (-20, 20)
+        self.random_number_decimal_places = 2
 
         self.tree_exnovo_generation_weights = {
             "another_branch": 0.43,
@@ -44,8 +56,16 @@ class GeneticAlgorithmSettings:
             "random_number": 0.8
         }
 
-        self.priority_function_random_number_range = (-20, 20)
-        self.random_number_decimal_places = 2
+        self.warehouse_settings = dfjss.WarehouseSettings()
+
+
+class GeneticAlgorithmRoutineOutput:
+    best_individual: pf.PriorityFunctionTree
+    best_fitness: float
+
+    def __init__(self, best_individual=None, best_fitness=None):
+        self.best_individual = best_individual
+        self.best_fitness = best_fitness
 
 
 class GeneticAlgorithm:
@@ -117,11 +137,15 @@ class GeneticAlgorithm:
         return pf.PriorityFunctionTree(features=self.settings.features,
                                        root_branch=self.get_random_branch())
 
-    def mutate_individual(self, individual):
+    def mutate_individual(self, individual, inplace=False):
         """
 
-        :type individual: PriorityFunctionTree
+        :type inplace: bool
+        :type individual: pf.PriorityFunctionTree
         """
+        if not inplace:
+            individual = individual.get_copy()
+
         outcomes = list(self.settings.tree_mutation_weights.keys())
         weights = np.array(list(self.settings.tree_mutation_weights.values()))
 
@@ -208,3 +232,135 @@ class GeneticAlgorithm:
             individual.root_branch = pf.crumbs_to_root_branch(crumbs=crumbs)
         else:
             raise ValueError(f"Unknown outcome in mutate_individual ({outcome})")
+
+        if not inplace:
+            return individual
+
+    def do_genetic_routine_once(self, verbose=0):
+        result = GeneticAlgorithmRoutineOutput()
+
+        if len(self.settings.simulations_seeds) != self.settings.number_of_simulations_per_individual:
+            raise ValueError(f"Number of seeds provided in settings.simulations_seeds ({len(self.settings.simulations_seeds)}) is not the same as settings.number_of_simulations_per_individual ({self.settings.number_of_simulations_per_individual})")
+
+        if len(self.population) == 0:
+            self.population = [self.get_random_individual() for _ in range(self.settings.population_size)]
+
+        fitness_values = np.zeros(shape=(len(self.population), self.settings.number_of_simulations_per_individual))
+        start = time.time()
+        for i, individual in enumerate(self.population):
+            for j in range(self.settings.number_of_simulations_per_individual):
+                if verbose > 1:
+                    done = i * self.settings.number_of_simulations_per_individual + j
+                    to_do = len(self.population) * self.settings.number_of_simulations_per_individual - 1
+
+                    endch = ""
+                    if done == to_do:
+                        endch = "\n"
+
+                    to_print = f"\rRunning simulations..."
+                    if done > 0:
+                        to_print += f" {done/to_do:.1%}, ETA {misc.timeformat_hhmmss(misc.timeleft(start, time.time(), done, to_do))}"
+
+                    print(to_print, end=endch)
+
+                representation = repr(individual)
+                if representation in self.fitness_log:
+                    fitness_values[i, j] = self.fitness_log[representation]
+                else:
+                    porco_dio = False
+                    if porco_dio:
+                        fitness = self.rng.uniform(high=1000)
+                    else:
+                        seed = self.settings.simulations_seeds[j]
+                        warehouse = dfjss.Warehouse(rng_seed=seed)
+                        warehouse.settings = self.settings.warehouse_settings
+                        warehouse.settings.decision_rule = pf.PriorityFunctionTreeDecisionRule(
+                            priority_function_tree=individual
+                        )
+
+                        simulation_output = warehouse.simulate()
+                        fitness = self.settings.fitness_func(simulation_output.get_objectives())
+
+                    fitness_values[i, j] = fitness
+
+        if verbose > 1:
+            print(f"\tTook {misc.timeformat(time.time() - start)}")
+
+        fitness_values = np.mean(fitness_values, axis=1)
+
+        # annote fitness to precompute map
+        for i in range(len(self.population)):
+            representation = repr(self.population[i])
+
+            if representation not in self.fitness_log:
+                self.fitness_log[representation] = fitness_values[i]
+
+        # sort by fitness
+        fitness_order = np.argsort(a=fitness_values)
+
+        population_amount_before = len(self.population)
+        result.best_individual = self.population[fitness_order[0]]
+        result.best_fitness = fitness_values[fitness_order[0]]
+
+        if verbose > 1:
+            print(f"\tBest individual: {result.best_individual}")
+            print(f"\tBest fitness: {result.best_fitness:.2f}")
+
+        cutoff_index_sorted = -1
+
+        if self.settings.survival_rate == "knee-point":
+            F = fitness_values[fitness_order[-1]]
+            f = fitness_values[fitness_order[0]]
+            I = len(self.population)
+
+            a = - (F - f) / (I - 1)
+            b = 1
+            c = - f
+
+            distances_from_funny_line = np.array([np.abs(a*i + b*fitness + c) / np.sqrt(a**2 + b**2) for i, fitness in enumerate(fitness_values[fitness_order])])
+            distances_from_funny_line_order = np.argsort(distances_from_funny_line)
+            cutoff_index_sorted = distances_from_funny_line_order[-1]
+
+        elif misc.is_number(self.settings.survival_rate) and 0. < self.settings.survival_rate < 1.:
+            cutoff_index_sorted = np.round(len(self.population) * self.settings.survival_rate)
+        else:
+            raise ValueError(f"self.settings.survival_rate has unexpected value {self.settings.survival_rate}")
+
+        # remove unfit individuals
+        self.population = [self.population[fitness_order[i]] for i in range(cutoff_index_sorted+1)]
+
+        if verbose > 1:
+            print(f"\t{(population_amount_before - len(self.population)) / population_amount_before:.1%} of the population was removed and repopulated")
+
+        # repopulate
+        repopulations_done = 0
+
+        while len(self.population) < self.settings.population_size:
+            new_individual = self.mutate_individual(
+                individual=self.population[repopulations_done % population_amount_before],
+                inplace=False)
+
+            self.population.append(new_individual)
+
+            repopulations_done += 1
+
+        return result
+
+    def run_genetic_algorithm(self, verbose=0):
+        if verbose > 0:
+            print("Running genetic algorithm...")
+
+        routine_output = None
+        for step in range(1, self.settings.total_steps+1):
+            if verbose > 1:
+                print(f"Step {step}")
+
+            routine_output = self.do_genetic_routine_once(verbose=verbose)
+
+        if verbose > 0:
+            print("Done. Here is the best performing individual:")
+            print(routine_output.best_individual)
+
+        if verbose > 1:
+            print("Fitness log:")
+            print(misc.dictformat(self.fitness_log))

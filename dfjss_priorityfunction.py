@@ -263,7 +263,10 @@ class PriorityFunctionBranch:
         else:
             right = features_values[self.right_feature]
 
-        return operations[self.operation_character](left, right)
+        try:
+            return operations[self.operation_character](left, right)
+        except TypeError as error:
+            raise TypeError(f"Could not do operation \'{self.operation_character}\' between {type(left)} ({self.left_feature} == {left}) and {type(right)} ({self.right_feature} == {right})")
 
 
 class PriorityFunctionTree:
@@ -292,11 +295,13 @@ class PriorityFunctionTree:
     def __repr__(self):
         result = repr(self.root_branch)
 
+        """
         if self.features is not DEFAULT_FEATURES:
             result += f" (Custom Features: {self.features})"
 
         if self.operations is not DEFAULT_OPERATIONS:
             result += f" (Custom Operations: {self.operations})"
+        """
 
         return result
     
@@ -320,6 +325,12 @@ class PriorityFunctionTree:
 
     def run(self, features):
         return self.root_branch.run(self.operations, features)
+
+    def get_copy(self):
+        return representation_to_priority_function_tree(
+                representation=repr(self.root_branch),
+                features=self.features,
+                operations=self.operations)
 
 
 def assert_features_and_operations_validity(features, operations):
@@ -433,11 +444,9 @@ def representation_to_crumbs(representation, features=None, operations=None):
                     i += len(op)
                     break
 
-
-
         if not found_anything:
             raise dfjss_exceptions.BadSyntaxRepresentationError(
-                f"Unknown character \'{c}\' present which is not a parenthesis, the beginning of the name of a feature/operation, nor a number")
+                f"Unknown character \'{c}\' present which is not a parenthesis, the beginning of the name of a feature/operation, nor a number. Representation: {representation}")
 
     return crumbs
 
@@ -539,7 +548,8 @@ class PriorityFunctionTreeDecisionRule(dfjss.BaseDecisionRule):
 
         priority_values = np.array([self.priority_function_tree.run(
             features=warehouse.all_features_of_compatible_pair(machine=machine, job=job))
-            for machine, job in compatible_pairs])
+            for machine, job in compatible_pairs],
+            dtype=np.float64)
 
         remaining = np.full(shape=len(compatible_pairs), fill_value=True, dtype=bool)
 
