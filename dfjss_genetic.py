@@ -17,12 +17,12 @@ class GeneticAlgorithmSettings:
 
     def __init__(self):
         self.population_size = 50
-        self.total_steps = 10
+        self.total_steps = 100
         self.survival_rate = "knee-point"
         self.fitness_func = lambda objectives: objectives["mean_tardiness"] + 0.5 * objectives["mean_earliness"]
 
         self.number_of_simulations_per_individual = 3
-        self.simulations_seeds = np.linspace(0, 10000, num=self.number_of_simulations_per_individual, endpoint=True, dtype=int)
+        self.simulations_seeds = None
 
         self.features = DEFAULTS.MANDATORY_NUMERIC_FEATURES
         self.operations = pf.DEFAULT_OPERATIONS.copy()
@@ -30,7 +30,7 @@ class GeneticAlgorithmSettings:
 
         self.tree_max_depth = 5
 
-        self.priority_function_random_number_range = (-20, 20)
+        self.priority_function_random_number_range = (-10, 10)
         self.random_number_decimal_places = 2
 
         self.tree_exnovo_generation_weights = {
@@ -63,9 +63,13 @@ class GeneticAlgorithmRoutineOutput:
     best_individual: pf.PriorityFunctionTree
     best_fitness: float
 
+    individuals_evaluated: int
+
     def __init__(self, best_individual=None, best_fitness=None):
         self.best_individual = best_individual
         self.best_fitness = best_fitness
+
+        self.individuals_evaluated = 0
 
 
 class GeneticAlgorithm:
@@ -75,6 +79,9 @@ class GeneticAlgorithm:
     def __init__(self, settings=None, rng_seed=None):
         if settings is None:
             settings = GeneticAlgorithmSettings()
+
+        if settings.simulations_seeds is None:
+            settings.simulations_seeds = np.linspace(0, 10000, num=settings.number_of_simulations_per_individual, endpoint=True, dtype=int)
 
         self.settings = settings
 
@@ -248,6 +255,13 @@ class GeneticAlgorithm:
         fitness_values = np.zeros(shape=(len(self.population), self.settings.number_of_simulations_per_individual))
         start = time.time()
         for i, individual in enumerate(self.population):
+            representation = repr(individual)
+            if representation in self.fitness_log:
+                fitness_values[i, :] = self.fitness_log[representation]
+                continue
+            else:
+                result.individuals_evaluated += 1
+
             for j in range(self.settings.number_of_simulations_per_individual):
                 if verbose > 1:
                     done = i * self.settings.number_of_simulations_per_individual + j
@@ -263,7 +277,6 @@ class GeneticAlgorithm:
 
                     print(to_print, end=endch)
 
-                representation = repr(individual)
                 if representation in self.fitness_log:
                     fitness_values[i, j] = self.fitness_log[representation]
                 else:
@@ -346,21 +359,30 @@ class GeneticAlgorithm:
 
         return result
 
-    def run_genetic_algorithm(self, verbose=0):
+    def run_genetic_algorithm(self, max_individuals_to_evaluate=-1, verbose=0):
         if verbose > 0:
             print("Running genetic algorithm...")
 
+        individuals_evaluated_total = 0
+
         routine_output = None
         for step in range(1, self.settings.total_steps+1):
+            if 0 < max_individuals_to_evaluate < individuals_evaluated_total:
+                if verbose > 1:
+                    print("Genetic algorithm evaluated maximum allowed number of individuals")
+                break
+
             if verbose > 1:
                 print(f"Step {step}")
 
             routine_output = self.do_genetic_routine_once(verbose=verbose)
 
+            individuals_evaluated_total += routine_output.individuals_evaluated
+
         if verbose > 0:
             print("Done. Here is the best performing individual:")
             print(routine_output.best_individual)
 
-        if verbose > 1:
+        if verbose > 2:
             print("Fitness log:")
             print(misc.dictformat(self.fitness_log))

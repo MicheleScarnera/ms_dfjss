@@ -112,6 +112,18 @@ GENERATION_MACHINE_RANGES = {
     # Units: seconds
     "machine_cooldown": (0, 60),
 
+    # MAX/CURRENT BREAKDOWN RATE
+    # While a machine is operating, there is a chance it will break down.
+    # Upon breaking down, the machine is removed,
+    # and all operations under it are interrupted and need to be started again from scratch.
+    # Each machine has a max breakdown rate, and it randomly fluctuates at every routine step.
+    # Machine breakdown is determined before the breakdown rate changes.
+    # When a machine breaks down, it's replaced with another one with the same recipe, and starts on cooldown.
+    # Units: breakdowns/second (breakdowns happen under a "Poisson/Exponential" regimen)
+    "machine_max_breakdown_rate": (0.01, 0.05),
+    "machine_current_breakdown_rate": 0,
+    "machine_replacement_cooldown": (60, 120),
+
     # FIXED/PER SECOND PROCESSING COST
     # Monetary cost of having the machine process, (per operation started/per second).
     # Units: money(/second)
@@ -166,6 +178,11 @@ GENERATION_PAIR_RANGES = {
 }
 
 GENERATION_SIMULATION_RANGES = {
+    # MAX SIMULATION TIME
+    # Maximum amount of time the simulation is allowed to run.
+    # Units: seconds
+    "simulation_max_simulation_time": 43200,
+
     # NUMBER OF STARTING MACHINES OVER ESSENTIAL
     # Number of machines to generate at the start, beyond the "essential" ones (one for each family)
     # Units: potatoes
@@ -174,7 +191,24 @@ GENERATION_SIMULATION_RANGES = {
     # NUMBER OF STARTING JOBS
     # Number of jobs to generate at the start
     # Units: potatoes
-    "simulation_number_of_starting_jobs": 100,
+    "simulation_number_of_starting_jobs": 15,
+
+    # RANDOM JOB ARRIVAL RATE
+    # Rate at which jobs randomly arrive.
+    # Units: jobs/second (job arrivals happen under a "Poisson/Exponential" regimen)
+    "simulation_random_job_arrival_rate": 0.0085,
+
+    # RANDOM JOB ARRIVAL END STATE PREVENTION BATCH SIZE / AVERAGE WAITING TIME
+    # If the simulation runs out of jobs,
+    # this specifies how many jobs to put into waiting to prevent the simulation from ending.
+    # These jobs also have randomized a waiting time.
+    # If this is 0 while the job arrival rate isn't, the simulation may end sooner than expected.
+    # Units: potatoes
+    "simulation_random_job_arrival_end_state_prevention_batch_size": 15,
+
+    # Units: seconds (waiting times will follow an exponential distribution)
+    "simulation_random_job_arrival_end_state_prevention_average_waiting_time": 10,
+
 }
 
 # MANDATORY FEATURES

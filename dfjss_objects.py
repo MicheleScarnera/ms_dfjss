@@ -223,6 +223,7 @@ class WarehouseRoutineOutput:
 class WarehouseSimulationOutput:
     success: bool
     simulation_time: float
+    times_passed: list[float]
     job_times: list[float]
     job_relative_deadlines: list[float]
     workloads: list[float]
@@ -232,6 +233,7 @@ class WarehouseSimulationOutput:
     energies_used: list[float]
 
     def __init__(self, simulation_time=None,
+                 times_passed=None,
                  job_times=None,
                  job_relative_deadlines=None,
                  workloads=None,
@@ -239,6 +241,8 @@ class WarehouseSimulationOutput:
                  costs=None,
                  energies_used=None):
         self.simulation_time = simulation_time
+
+        self.times_passed = times_passed
 
         self.job_times = job_times
         self.job_relative_deadlines = job_relative_deadlines
@@ -482,11 +486,28 @@ class Warehouse:
         if machine not in self.machines:
             raise ValueError("Could not find machine to be removed in the warehouse's machines")
 
+        displaced_jobs = []
+
+        # liberate any busy couple containing it
+        for busy_couple in self.busy_couples.copy():
+            if busy_couple.machine != machine:
+                continue
+
+            operation_done = busy_couple.job.operations[0]
+            job_wait_time = operation_done.features["operation_cooldown"]
+            self.make_job_wait(job=busy_couple.job, time_needed=job_wait_time)
+
+            self.busy_couples.remove(busy_couple)
+
+            displaced_jobs.append(busy_couple.job)
+
         self.machines.remove(machine)
 
         if simulation_output is not None:
             # machine lifespan
             simulation_output.machine_lifespans.append(self.current_time - machine.features["machine_start_time"])
+
+        return displaced_jobs
 
     def create_operations(self, amount, job=None):
         result = []
@@ -656,6 +677,25 @@ class Warehouse:
         # TODO: (real) time complexity of simulation is linear in the number of machines, but x^1.5 in the number of jobs. fix it or something
         # RELEASE THINGS THAT CAN BE RELEASED
 
+        # machine breakdown
+        last_time_passed = 0 if simulation_output.times_passed is None or len(simulation_output.times_passed) <= 0 else simulation_output.times_passed[-1]
+        for machine in self.machines:
+            breakdown_rate = machine.features["machine_current_breakdown_rate"] * last_time_passed
+            if breakdown_rate > 0. and self.rng.uniform() < (1. - np.exp(-breakdown_rate)):
+                # break down machine
+                displaced_jobs = self.remove_machine(machine=machine, simulation_output=simulation_output)
+
+                recipe = machine.features["machine_recipe"]
+
+                new_machine = self.add_machine(recipe=recipe)
+
+                self.make_machine_wait(machine=new_machine, time_needed=new_machine.features["machine_replacement_cooldown"])
+
+                if verbose > 1:
+                    print(
+                        f"\tA \'{machine.features['machine_recipe']}\' machine has broken down and has displaced {len(displaced_jobs)} job(s). The machine worked for {misc.timeformat(simulation_output.machine_lifespans[-1])}, its replacement will be operational in {misc.timeformat(new_machine.features['machine_replacement_cooldown'])}"
+                    )
+
         # operations that are finished
         for busy_couple in self.busy_couples.copy():
             if busy_couple.nominal_processing_time_needed <= 0:
@@ -672,7 +712,7 @@ class Warehouse:
                 simulation_output.workloads.append(workload)
 
                 # operation and machine cooldowns
-                job_of_operation_done = self.job_of_operation(operation_done)
+                job_of_operation_done = busy_couple.job
                 if len(job_of_operation_done.operations) > 0:
                     job_wait_time = operation_done.features["operation_cooldown"]
                     self.make_job_wait(job=job_of_operation_done, time_needed=job_wait_time)
@@ -716,6 +756,37 @@ class Warehouse:
                     print(
                         f"\tAvailable: Job with \'{waiting_job.job.operations[0].features['operation_family']}\' operation")
 
+        # random job arrivals
+        if len(self.jobs) > 0:
+            jobarrival_rate = last_time_passed * self.simulation_features["simulation_random_job_arrival_rate"]
+            if jobarrival_rate > 0.:
+                new_jobs = self.rng.poisson(lam=jobarrival_rate, size=None)
+
+                if new_jobs > 0:
+                    for _ in range(new_jobs):
+                        new_job = self.add_job()
+
+                    if verbose > 1:
+                        print(
+                            f"\tJob arrivals: {new_jobs} jobs have been added"
+                        )
+
+        elif self.simulation_features["simulation_random_job_arrival_end_state_prevention_batch_size"] > 0 and self.simulation_features["simulation_random_job_arrival_rate"] > 0:
+            to_spawn = self.simulation_features["simulation_random_job_arrival_end_state_prevention_batch_size"]
+
+            for _ in range(to_spawn):
+                new_job = self.add_job()
+                self.make_job_wait(job=new_job,
+                                   time_needed=self.rng.exponential(
+                                       scale=self.simulation_features["simulation_random_job_arrival_end_state_prevention_average_waiting_time"],
+                                       size=None))
+
+            if verbose > 1:
+                print(
+                    f"\t{to_spawn} jobs have been added at once to prevent the simulation from ending abruptly"
+                )
+
+
         # REAL-TIME FEATURES
 
         # utilization rate
@@ -730,6 +801,10 @@ class Warehouse:
             )
 
             job.features["job_relative_deadline"] = job.features["job_absolute_deadline"] - self.current_time
+
+        # machines' real time features
+        for machine in self.machines:
+            machine.features["machine_current_breakdown_rate"] = self.rng.uniform() * machine.features["machine_max_breakdown_rate"]
 
         # TODO: custom real-time features
 
@@ -801,7 +876,7 @@ class Warehouse:
 
         return WarehouseRoutineOutput(time_passed=smallest_time, end_simulation=False)
 
-    def simulate(self, max_simulation_time=86400, max_routine_steps=-1, verbose=0):
+    def simulate(self, max_routine_steps=-1, verbose=0):
         if verbose > 0:
             print("Simulating warehouse...")
 
@@ -810,6 +885,7 @@ class Warehouse:
         # result
         simulation_output = WarehouseSimulationOutput(
             simulation_time=0,
+            times_passed=[],
             job_times=[],
             job_relative_deadlines=[],
             workloads=[],
@@ -826,6 +902,9 @@ class Warehouse:
 
         # store starting time
         starting_time = self.current_time
+
+        # max simulation time
+        max_simulation_time = self.simulation_features["simulation_max_simulation_time"]
 
         # add 1 machine for each family, each machine has a random recipe from within the family
         # TODO: define creation settings for machines
@@ -858,7 +937,7 @@ class Warehouse:
         # run routine...
         while True:
             if verbose > 1:
-                print(f"Routine step {routine_step} - Time: {misc.timeformat(self.current_time)}")
+                print(f"Routine step {routine_step} - Time: {misc.timeformat(self.current_time)} - Jobs to do: {len(self.jobs)}")
 
             routine_result = self.do_routine_once(simulation_output=simulation_output, verbose=verbose)
 
@@ -867,6 +946,8 @@ class Warehouse:
                 break
             else:
                 self.current_time += routine_result.time_passed
+
+                simulation_output.times_passed.append(routine_result.time_passed)
 
                 if verbose > 1:
                     print(f"Routine step {routine_step} ended - Time elapsed: {routine_result.time_passed:.2f}s",
