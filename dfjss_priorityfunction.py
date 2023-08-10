@@ -355,11 +355,15 @@ def representation_to_priority_function_tree(representation, features=None, oper
 
 
 def representation_to_crumbs(representation, features=None, operations=None):
+    no_features_given = False
     if features is None:
         features = alphabet
+        no_features_given = True
 
+    no_operations_given = False
     if operations is None:
         operations = DEFAULT_OPERATIONS
+        no_operations_given = True
 
     # bad syntax checks
     par_stack = []
@@ -446,7 +450,10 @@ def representation_to_crumbs(representation, features=None, operations=None):
 
         if not found_anything:
             raise dfjss_exceptions.BadSyntaxRepresentationError(
-                f"Unknown character \'{c}\' present which is not a parenthesis, the beginning of the name of a feature/operation, nor a number. Representation: {representation}")
+                f"""Unknown character \'{c}\' present which is not a parenthesis, the beginning of the name of a feature/operation, nor a number.
+                **Could it be that custom features/operations were not given?**
+                (Features: {'Not custom (defaulting to alphabet)' if no_features_given else 'Custom'}, Operations: {'Not custom (defaulting to +-*/^)' if no_operations_given else 'Custom'})
+                Representation: {representation}""")
 
     return crumbs
 

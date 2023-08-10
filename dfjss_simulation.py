@@ -4,7 +4,7 @@ import dfjss_priorityfunction as pf
 
 rng_seed = 256
 max_steps = -1
-verbose = 2
+verbose = 1
 
 # random decision
 

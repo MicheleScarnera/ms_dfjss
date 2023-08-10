@@ -17,9 +17,12 @@ class GeneticAlgorithmSettings:
 
     def __init__(self):
         self.population_size = 50
+        self.tournament_percent_size = 0.5
         self.total_steps = 100
         self.survival_rate = "knee-point"
         self.fitness_func = lambda objectives: objectives["mean_tardiness"] + 0.5 * objectives["mean_earliness"]
+
+        self.fitness_is_random = False
 
         self.number_of_simulations_per_individual = 3
         self.simulations_seeds = None
@@ -143,6 +146,58 @@ class GeneticAlgorithm:
     def get_random_individual(self):
         return pf.PriorityFunctionTree(features=self.settings.features,
                                        root_branch=self.get_random_branch())
+
+    def combine_individuals(self, individual_1, individual_2):
+        repr_1 = repr(individual_1)
+        repr_2 = repr(individual_2)
+
+        crumbs_1 = pf.representation_to_crumbs(repr_1, features=self.settings.features)
+        crumbs_2 = pf.representation_to_crumbs(repr_2, features=self.settings.features)
+
+        is_valid_node = lambda x: x == "(" or x in self.settings.features
+
+        # choose a random node on each individual (using open parentheses or features)
+        crumb_i_chosen_1 = self.rng.choice(a=[i for i, crumb in enumerate(crumbs_1) if is_valid_node(crumb) and i > 0])
+        crumb_i_chosen_2 = self.rng.choice(a=[i for i, crumb in enumerate(crumbs_2) if is_valid_node(crumb)])
+
+        crumb_chosen_1_is_feature = crumbs_1[crumb_i_chosen_1] in self.settings.features
+        crumb_chosen_2_is_feature = crumbs_2[crumb_i_chosen_2] in self.settings.features
+
+        # get "appendage" (thing to add to individual 1, taken from individual 2)
+        appendage = []
+        appendage_no_open = 0
+        appendage_no_closed = 0
+
+        for j in range(crumb_i_chosen_2, len(crumbs_2)):
+            crumb = crumbs_2[j]
+
+            if crumb == "(":
+                appendage_no_open += 1
+            elif crumb == ")":
+                appendage_no_closed += 1
+
+            appendage.append(crumb)
+
+            if (not crumb_chosen_2_is_feature and 0 < appendage_no_open == appendage_no_closed) or crumb_chosen_2_is_feature:
+                break
+
+        # replace part of individual 1 with the appendage
+        for j in range(crumb_i_chosen_1, len(crumbs_1)):
+            crumb = crumbs_1.pop(crumb_i_chosen_1)
+
+            if crumb == "(":
+                appendage_no_open += 1
+            elif crumb == ")":
+                appendage_no_closed += 1
+
+            if (not crumb_chosen_1_is_feature and 0 < appendage_no_open == appendage_no_closed) or crumb_chosen_1_is_feature:
+                break
+
+        crumbs_1[crumb_i_chosen_1:crumb_i_chosen_1] = appendage
+
+        return pf.PriorityFunctionTree(root_branch=pf.crumbs_to_root_branch(crumbs_1),
+                                       features=self.settings.features,
+                                       operations=self.settings.operations)
 
     def mutate_individual(self, individual, inplace=False):
         """
@@ -280,8 +335,7 @@ class GeneticAlgorithm:
                 if representation in self.fitness_log:
                     fitness_values[i, j] = self.fitness_log[representation]
                 else:
-                    porco_dio = False
-                    if porco_dio:
+                    if self.settings.fitness_is_random:
                         fitness = self.rng.uniform(high=1000)
                     else:
                         seed = self.settings.simulations_seeds[j]
@@ -339,19 +393,41 @@ class GeneticAlgorithm:
         else:
             raise ValueError(f"self.settings.survival_rate has unexpected value {self.settings.survival_rate}")
 
-        # remove unfit individuals
-        self.population = [self.population[fitness_order[i]] for i in range(cutoff_index_sorted+1)]
+        # wipe current population
+        old_population = self.population
+        fit_population = [self.population[fitness_order[i]] for i in range(cutoff_index_sorted+1)]
+        self.population = []
 
         if verbose > 1:
-            print(f"\t{(population_amount_before - len(self.population)) / population_amount_before:.1%} of the population was removed and repopulated")
+            print(f"\t{(population_amount_before - len(fit_population)) / population_amount_before:.1%} of the population was left from the 'just mutate' cutoff")
 
-        # repopulate
+        # bring fit population to next generation, but mutate each individual
+        for fit_individual in fit_population:
+            new_individual = self.mutate_individual(
+                individual=fit_individual,
+                inplace=False)
+
+            self.population.append(new_individual)
+
+        # repopulate the rest with tournament-selected crossover
         repopulations_done = 0
+        tournament_size = int(self.settings.population_size * self.settings.tournament_percent_size)
+
+        # make tournament size even (and not bigger)
+        tournament_size -= tournament_size % 2
 
         while len(self.population) < self.settings.population_size:
-            new_individual = self.mutate_individual(
-                individual=self.population[repopulations_done % population_amount_before],
-                inplace=False)
+            participants = self.rng.choice(a=old_population, size=tournament_size, replace=False)
+            participants_1 = participants[0:tournament_size // 2]
+            participants_2 = participants[tournament_size // 2:tournament_size]
+
+            assert len(participants_1) == len(participants_2)
+
+            best_participant_i_1 = np.argmax([self.fitness_log[repr(participant)] for participant in participants_1])
+            best_participant_i_2 = np.argmax([self.fitness_log[repr(participant)] for participant in participants_2])
+
+            new_individual = self.combine_individuals(participants_1[best_participant_i_1],
+                                                      participants_2[best_participant_i_2])
 
             self.population.append(new_individual)
 
