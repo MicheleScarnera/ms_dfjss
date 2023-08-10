@@ -25,6 +25,7 @@ class GeneticAlgorithmSettings:
         self.fitness_is_random = False
 
         self.number_of_simulations_per_individual = 3
+        self.simulations_reduce = np.median
         self.simulations_seeds = None
 
         self.features = DEFAULTS.MANDATORY_NUMERIC_FEATURES
@@ -34,7 +35,7 @@ class GeneticAlgorithmSettings:
         self.tree_max_depth = 5
 
         self.priority_function_random_number_range = (-10, 10)
-        self.random_number_decimal_places = 2
+        self.random_number_granularity = 0.25
 
         self.tree_exnovo_generation_weights = {
             "another_branch": 0.43,
@@ -46,7 +47,8 @@ class GeneticAlgorithmSettings:
             "add_branch": 0.1,
             "remove_branch": 0.1,
             "change_feature": 0.4,
-            "change_operation": 0.4
+            "change_operation": 0.4,
+            "do_nothing": 1.0
         }
 
         self.tree_mutation_changefeature_weights = {
@@ -96,8 +98,8 @@ class GeneticAlgorithm:
 
     def random_number(self):
         return np.round(self.rng.uniform(low=self.settings.priority_function_random_number_range[0],
-                                         high=self.settings.priority_function_random_number_range[1]),
-                        decimals=self.settings.random_number_decimal_places)
+                                         high=self.settings.priority_function_random_number_range[1])
+                        / self.settings.random_number_granularity) * self.settings.random_number_granularity
 
     def get_random_branch(self, current_depth=1):
         outcomes = list(self.settings.tree_exnovo_generation_weights.keys())
@@ -147,21 +149,25 @@ class GeneticAlgorithm:
         return pf.PriorityFunctionTree(features=self.settings.features,
                                        root_branch=self.get_random_branch())
 
-    def combine_individuals(self, individual_1, individual_2):
+    def combine_individuals(self, individual_1, individual_2, verbose=0):
         repr_1 = repr(individual_1)
         repr_2 = repr(individual_2)
+
+        if verbose > 2:
+            print(f"Individual 1: {repr_1}")
+            print(f"Individual 2: {repr_2}")
 
         crumbs_1 = pf.representation_to_crumbs(repr_1, features=self.settings.features)
         crumbs_2 = pf.representation_to_crumbs(repr_2, features=self.settings.features)
 
-        is_valid_node = lambda x: x == "(" or x in self.settings.features
+        is_valid_node = lambda x: x == "(" or x in self.settings.features or misc.is_number(x)
 
         # choose a random node on each individual (using open parentheses or features)
         crumb_i_chosen_1 = self.rng.choice(a=[i for i, crumb in enumerate(crumbs_1) if is_valid_node(crumb) and i > 0])
         crumb_i_chosen_2 = self.rng.choice(a=[i for i, crumb in enumerate(crumbs_2) if is_valid_node(crumb)])
 
-        crumb_chosen_1_is_feature = crumbs_1[crumb_i_chosen_1] in self.settings.features
-        crumb_chosen_2_is_feature = crumbs_2[crumb_i_chosen_2] in self.settings.features
+        crumb_chosen_1_is_feature = is_valid_node(crumbs_1[crumb_i_chosen_1]) and crumbs_1[crumb_i_chosen_1] != "("
+        crumb_chosen_2_is_feature = is_valid_node(crumbs_2[crumb_i_chosen_2]) and crumbs_2[crumb_i_chosen_2] != "("
 
         # get "appendage" (thing to add to individual 1, taken from individual 2)
         appendage = []
@@ -195,9 +201,14 @@ class GeneticAlgorithm:
 
         crumbs_1[crumb_i_chosen_1:crumb_i_chosen_1] = appendage
 
-        return pf.PriorityFunctionTree(root_branch=pf.crumbs_to_root_branch(crumbs_1),
-                                       features=self.settings.features,
-                                       operations=self.settings.operations)
+        result = pf.PriorityFunctionTree(root_branch=pf.crumbs_to_root_branch(crumbs_1),
+                                         features=self.settings.features,
+                                         operations=self.settings.operations)
+
+        if verbose > 2:
+            print(f"Crossover: {result}")
+
+        return result
 
     def mutate_individual(self, individual, inplace=False):
         """
@@ -292,8 +303,10 @@ class GeneticAlgorithm:
             crumbs[change_at] = new_operation
 
             individual.root_branch = pf.crumbs_to_root_branch(crumbs=crumbs)
+        elif outcome == "do_nothing":
+            pass
         else:
-            raise ValueError(f"Unknown outcome in mutate_individual ({outcome})")
+            raise ValueError(f"Unknown outcome in mutate_individual \"{outcome}\"")
 
         if not inplace:
             return individual
@@ -336,7 +349,7 @@ class GeneticAlgorithm:
                     fitness_values[i, j] = self.fitness_log[representation]
                 else:
                     if self.settings.fitness_is_random:
-                        fitness = self.rng.uniform(high=1000)
+                        fitness = np.mean(self.rng.uniform(high=1000, size=3))
                     else:
                         seed = self.settings.simulations_seeds[j]
                         warehouse = dfjss.Warehouse(rng_seed=seed)
@@ -353,7 +366,7 @@ class GeneticAlgorithm:
         if verbose > 1:
             print(f"\tTook {misc.timeformat(time.time() - start)}")
 
-        fitness_values = np.mean(fitness_values, axis=1)
+        fitness_values = self.settings.simulations_reduce(fitness_values, axis=1)
 
         # annote fitness to precompute map
         for i in range(len(self.population)):
@@ -372,6 +385,8 @@ class GeneticAlgorithm:
         if verbose > 1:
             print(f"\tBest individual: {result.best_individual}")
             print(f"\tBest fitness: {result.best_fitness:.2f}")
+
+            print(f"\tMean fitness: {np.mean(fitness_values):.2f} (Interquartile range: [{np.quantile(fitness_values, q=0.25):.2f}, {np.quantile(fitness_values, q=0.75):.2f}])")
 
         cutoff_index_sorted = -1
 
@@ -423,11 +438,12 @@ class GeneticAlgorithm:
 
             assert len(participants_1) == len(participants_2)
 
-            best_participant_i_1 = np.argmax([self.fitness_log[repr(participant)] for participant in participants_1])
-            best_participant_i_2 = np.argmax([self.fitness_log[repr(participant)] for participant in participants_2])
+            best_participant_i_1 = np.argmin([self.fitness_log[repr(participant)] for participant in participants_1])
+            best_participant_i_2 = np.argmin([self.fitness_log[repr(participant)] for participant in participants_2])
 
-            new_individual = self.combine_individuals(participants_1[best_participant_i_1],
-                                                      participants_2[best_participant_i_2])
+            new_individual = self.combine_individuals(individual_1=participants_1[best_participant_i_1],
+                                                      individual_2=participants_2[best_participant_i_2],
+                                                      verbose=verbose)
 
             self.population.append(new_individual)
 
@@ -442,22 +458,29 @@ class GeneticAlgorithm:
         individuals_evaluated_total = 0
 
         routine_output = None
-        for step in range(1, self.settings.total_steps+1):
-            if 0 < max_individuals_to_evaluate < individuals_evaluated_total:
+        try:
+            for step in range(1, self.settings.total_steps+1):
+                if 0 < max_individuals_to_evaluate < individuals_evaluated_total:
+                    if verbose > 1:
+                        print("Genetic algorithm evaluated maximum allowed number of individuals")
+                    break
+
                 if verbose > 1:
-                    print("Genetic algorithm evaluated maximum allowed number of individuals")
-                break
+                    print(f"Step {step}")
 
-            if verbose > 1:
-                print(f"Step {step}")
+                routine_output = self.do_genetic_routine_once(verbose=verbose)
 
-            routine_output = self.do_genetic_routine_once(verbose=verbose)
-
-            individuals_evaluated_total += routine_output.individuals_evaluated
+                individuals_evaluated_total += routine_output.individuals_evaluated
+        except KeyboardInterrupt as kb_interrupt:
+            print("\nGenetic algorithm was manually interrupted")
+            pass
 
         if verbose > 0:
-            print("Done. Here is the best performing individual:")
-            print(routine_output.best_individual)
+            if routine_output is not None:
+                print("Done. Here is the best performing individual:")
+                print(routine_output.best_individual)
+            else:
+                print("There was no simulation output")
 
         if verbose > 2:
             print("Fitness log:")
