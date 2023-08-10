@@ -17,7 +17,7 @@ class GeneticAlgorithmSettings:
 
     def __init__(self):
         self.population_size = 50
-        self.tournament_percent_size = 0.5
+        self.tournament_percent_size = 0.25
         self.total_steps = 100
         self.survival_rate = "knee-point"
         self.fitness_func = lambda objectives: objectives["mean_tardiness"] + 0.5 * objectives["mean_earliness"]
@@ -452,6 +452,8 @@ class GeneticAlgorithm:
         return result
 
     def run_genetic_algorithm(self, max_individuals_to_evaluate=-1, verbose=0):
+        start = time.time()
+
         if verbose > 0:
             print("Running genetic algorithm...")
 
@@ -477,10 +479,12 @@ class GeneticAlgorithm:
 
         if verbose > 0:
             if routine_output is not None:
-                print("Done. Here is the best performing individual:")
+                print(f"Done. Here is the best performing individual of the last step (with fitness {self.fitness_log[repr(routine_output.best_individual)]:.2f}):")
                 print(routine_output.best_individual)
             else:
                 print("There was no simulation output")
+
+            print(f"Genetic simulation took {misc.timeformat(time.time() - start)}")
 
         if verbose > 2:
             print("Fitness log:")
