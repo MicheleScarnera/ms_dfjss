@@ -171,7 +171,7 @@ GENERATION_PAIR_RANGES = {
     "pair_nominal_processing_time": 0.,
 
     # EXPECTED PROCESSING TIME
-    # The nominal time to finish an operation, equal to (operation_work_required / machine_nominal_work_power).
+    # The expected time to finish an operation, equal to (operation_work_required / machine_nominal_work_power).
     # Units: seconds
     "pair_expected_processing_time": 0.
     

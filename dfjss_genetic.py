@@ -3,8 +3,11 @@ import warnings
 from collections import Counter
 import copy
 import time
+import datetime
+from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
 import dfjss_objects as dfjss
 import dfjss_defaults as DEFAULTS
@@ -63,16 +66,22 @@ class GeneticAlgorithmSettings:
 
         self.warehouse_settings = dfjss.WarehouseSettings()
 
+        self.save_logs = True
+
 
 class GeneticAlgorithmRoutineOutput:
     best_individual: pf.PriorityFunctionTree
     best_fitness: float
 
+    population_data: dict[str, float]
+
     individuals_evaluated: int
 
-    def __init__(self, best_individual=None, best_fitness=None):
+    def __init__(self, best_individual=None, best_fitness=None, population_data=None):
         self.best_individual = best_individual
         self.best_fitness = best_fitness
+
+        self.population_data = population_data if population_data is not None else dict()
 
         self.individuals_evaluated = 0
 
@@ -368,6 +377,11 @@ class GeneticAlgorithm:
 
         fitness_values = self.settings.simulations_reduce(fitness_values, axis=1)
 
+        result.population_data = pd.DataFrame(
+            {"Individual": [repr(individual) for individual in self.population],
+             "Fitness": fitness_values}
+        )
+
         # annote fitness to precompute map
         for i in range(len(self.population)):
             representation = repr(self.population[i])
@@ -459,6 +473,10 @@ class GeneticAlgorithm:
 
         individuals_evaluated_total = 0
 
+        genalgo_log = None
+        if self.settings.save_logs:
+            genalgo_log = pd.DataFrame(columns=["Step", "Individual", "Fitness"])
+
         routine_output = None
         try:
             for step in range(1, self.settings.total_steps+1):
@@ -472,19 +490,62 @@ class GeneticAlgorithm:
 
                 routine_output = self.do_genetic_routine_once(verbose=verbose)
 
+                if self.settings.save_logs:
+                    genalgo_log = pd.concat(objs=[genalgo_log,
+                                            pd.DataFrame({
+                                               "Step": step,
+                                               "Individual": routine_output.population_data["Individual"],
+                                               "Fitness": routine_output.population_data["Fitness"]
+                                            })
+                                            ],
+                                            ignore_index=True)
+
                 individuals_evaluated_total += routine_output.individuals_evaluated
         except KeyboardInterrupt as kb_interrupt:
             print("\nGenetic algorithm was manually interrupted")
             pass
 
+        did_at_least_one = routine_output is not None
+
         if verbose > 0:
-            if routine_output is not None:
+            if did_at_least_one:
                 print(f"Done. Here is the best performing individual of the last step (with fitness {self.fitness_log[repr(routine_output.best_individual)]:.2f}):")
                 print(routine_output.best_individual)
             else:
                 print("There was no simulation output")
 
             print(f"Genetic simulation took {misc.timeformat(time.time() - start)}")
+
+        if did_at_least_one and self.settings.save_logs:
+            fitness_log_dataframe = pd.DataFrame(data={"Individual": list(self.fitness_log.keys()),
+                                                       "Fitness": list(self.fitness_log.values())})
+
+            fitness_log_dataframe.sort_values(by="Fitness", inplace=True)
+
+            foldername = datetime.datetime.now().strftime('%d %b %Y %H_%M_%S')
+            filepath_fitnesslog_str = f"{foldername}/fitness_log.csv"
+            filepath_fitnesslog = Path(filepath_fitnesslog_str)
+            filepath_fitnesslog.parent.mkdir(parents=True, exist_ok=True)
+
+            try:
+                fitness_log_dataframe.to_csv(path_or_buf=filepath_fitnesslog, index=False)
+
+                if verbose > 0:
+                    print("Fitness log saved successfully")
+            except Exception as error:
+                if verbose > 0:
+                    print(f"Could not save fitness log ({error})")
+
+            try:
+                genalgo_log_path = f"{foldername}/genalgo_log.csv"
+
+                genalgo_log.to_csv(path_or_buf=genalgo_log_path, index=False)
+
+                if verbose > 0:
+                    print("Genetic algorithm log saved successfully")
+            except Exception as error:
+                if verbose > 0:
+                    print(f"Could not save genetic algorithm log ({error})")
 
         if verbose > 2:
             print("Fitness log:")
