@@ -16,13 +16,17 @@ import dfjss_misc as misc
 
 
 class GeneticAlgorithmSettings:
-    survival_rate: Any
+    reproduction_rate: Any
 
     def __init__(self):
         self.population_size = 50
         self.tournament_percent_size = 0.25
         self.total_steps = 100
-        self.survival_rate = "knee-point"
+
+        self.crossover_rate = 0.9
+        self.reproduction_rate = "knee-point"
+        self.mutation_rate = 0.02
+
         self.fitness_func = lambda objectives: objectives["mean_tardiness"] + 0.5 * objectives["mean_earliness"]
 
         self.fitness_is_random = False
@@ -35,7 +39,7 @@ class GeneticAlgorithmSettings:
         self.operations = pf.DEFAULT_OPERATIONS.copy()
         del self.operations["^"]
 
-        self.tree_max_depth = 5
+        self.tree_max_depth = 3
 
         self.priority_function_random_number_range = (-10, 10)
         self.random_number_granularity = 0.25
@@ -51,7 +55,7 @@ class GeneticAlgorithmSettings:
             "remove_branch": 0.1,
             "change_feature": 0.4,
             "change_operation": 0.4,
-            "do_nothing": 1.0
+            "do_nothing": 0
         }
 
         self.tree_mutation_changefeature_weights = {
@@ -326,8 +330,19 @@ class GeneticAlgorithm:
         if len(self.settings.simulations_seeds) != self.settings.number_of_simulations_per_individual:
             raise ValueError(f"Number of seeds provided in settings.simulations_seeds ({len(self.settings.simulations_seeds)}) is not the same as settings.number_of_simulations_per_individual ({self.settings.number_of_simulations_per_individual})")
 
-        if len(self.population) == 0:
-            self.population = [self.get_random_individual() for _ in range(self.settings.population_size)]
+        # if population is empty (or below desired amount) fill with random individuals
+        while len(self.population) < self.settings.population_size:
+            # new individuals must be never seen before
+            while True:
+                random_individual = self.get_random_individual()
+                repr_individual = repr(random_individual)
+
+                if repr_individual in self.fitness_log or repr_individual in [repr(individual) for individual in self.population]:
+                    continue
+                else:
+                    break
+
+            self.population.append(random_individual)
 
         fitness_values = np.zeros(shape=(len(self.population), self.settings.number_of_simulations_per_individual))
         start = time.time()
@@ -404,7 +419,7 @@ class GeneticAlgorithm:
 
         cutoff_index_sorted = -1
 
-        if self.settings.survival_rate == "knee-point":
+        if self.settings.reproduction_rate == "knee-point":
             F = fitness_values[fitness_order[-1]]
             f = fitness_values[fitness_order[0]]
             I = len(self.population)
@@ -417,35 +432,34 @@ class GeneticAlgorithm:
             distances_from_funny_line_order = np.argsort(distances_from_funny_line)
             cutoff_index_sorted = distances_from_funny_line_order[-1]
 
-        elif misc.is_number(self.settings.survival_rate) and 0. < self.settings.survival_rate < 1.:
-            cutoff_index_sorted = np.round(len(self.population) * self.settings.survival_rate)
+        elif misc.is_number(self.settings.reproduction_rate) and 0. < self.settings.reproduction_rate < 1.:
+            cutoff_index_sorted = int(np.round(len(self.population) * self.settings.reproduction_rate))
         else:
-            raise ValueError(f"self.settings.survival_rate has unexpected value {self.settings.survival_rate}")
+            raise ValueError(f"self.settings.reproduction_rate has unexpected value {self.settings.reproduction_rate}")
 
         # wipe current population
         old_population = self.population
-        fit_population = [self.population[fitness_order[i]] for i in range(cutoff_index_sorted+1)]
+        reproducing_population = [self.population[fitness_order[i]] for i in range(cutoff_index_sorted+1)]
         self.population = []
 
-        if verbose > 1:
-            print(f"\t{(population_amount_before - len(fit_population)) / population_amount_before:.1%} of the population was left from the 'just mutate' cutoff")
+        # reproduction, crossover, mutation
+        current_reproduction_rate = (cutoff_index_sorted + 1) / population_amount_before
+        other_rates_norm = (self.settings.crossover_rate + self.settings.mutation_rate) / (1. - current_reproduction_rate)
 
-        # bring fit population to next generation, but mutate each individual
-        for fit_individual in fit_population:
-            new_individual = self.mutate_individual(
-                individual=fit_individual,
-                inplace=False)
+        current_crossover_rate, current_mutation_rate = self.settings.crossover_rate / other_rates_norm,\
+                                                        self.settings.mutation_rate / other_rates_norm
 
-            self.population.append(new_individual)
+        # reproduction
+        self.population.extend(reproducing_population)
 
-        # repopulate the rest with tournament-selected crossover
-        repopulations_done = 0
+        # crossover
+        crossovers_to_do = int(len(old_population) * current_crossover_rate)
         tournament_size = int(self.settings.population_size * self.settings.tournament_percent_size)
 
         # make tournament size even (and not bigger)
         tournament_size -= tournament_size % 2
 
-        while len(self.population) < self.settings.population_size:
+        for _ in range(crossovers_to_do):
             participants = self.rng.choice(a=old_population, size=tournament_size, replace=False)
             participants_1 = participants[0:tournament_size // 2]
             participants_2 = participants[tournament_size // 2:tournament_size]
@@ -461,7 +475,24 @@ class GeneticAlgorithm:
 
             self.population.append(new_individual)
 
-            repopulations_done += 1
+        # mutation
+        mutated_individuals_added = 0
+        while len(self.population) < population_amount_before:
+            weights = np.array([1. / (fitness_order[i] + 1) for i in range(population_amount_before)])
+            weights = weights / np.sum(weights)
+
+            individual_to_mutate = self.rng.choice(a=old_population, p=weights)
+
+            new_individual = self.mutate_individual(
+                individual=individual_to_mutate,
+                inplace=False)
+
+            self.population.append(new_individual)
+
+            mutated_individuals_added += 1
+
+        if verbose > 1:
+            print(f"\t{current_reproduction_rate:.1%} ({len(reproducing_population)}) reproduction, {current_crossover_rate:.1%} ({crossovers_to_do}) crossover, {current_mutation_rate:.1%} ({mutated_individuals_added}) mutation")
 
         return result
 
@@ -478,6 +509,7 @@ class GeneticAlgorithm:
             genalgo_log = pd.DataFrame(columns=["Step", "Individual", "Fitness"])
 
         routine_output = None
+        error_to_raise_later = None
         try:
             for step in range(1, self.settings.total_steps+1):
                 if 0 < max_individuals_to_evaluate < individuals_evaluated_total:
@@ -506,6 +538,7 @@ class GeneticAlgorithm:
             pass
         except Exception as error:
             print(f"\nGenetic algorithm stopped due to error \'{error}\'")
+            error_to_raise_later = error
             pass
 
         did_at_least_one = routine_output is not None
@@ -553,3 +586,6 @@ class GeneticAlgorithm:
         if verbose > 2:
             print("Fitness log:")
             print(misc.dictformat(self.fitness_log))
+
+        if error_to_raise_later is not None:
+            raise error_to_raise_later
