@@ -504,6 +504,9 @@ class GeneticAlgorithm:
         except KeyboardInterrupt as kb_interrupt:
             print("\nGenetic algorithm was manually interrupted")
             pass
+        except Exception as error:
+            print(f"\nGenetic algorithm stopped due to error \'{error}\'")
+            pass
 
         did_at_least_one = routine_output is not None
 
