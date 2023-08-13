@@ -81,12 +81,14 @@ class PhenotypeMapper:
         try:
             # if we already have the fitness for this phenotype, add this individual right away and return true
             known_fitness = self.phenotype_to_fitness[phenotype]
-            self.add_individual(individual_represenation=item, fitness=known_fitness)
-
-            return True
         except KeyError as key_error:
             # if we don't, return false
             return False
+
+        self[item] = known_fitness
+
+        return True
+
 
     def __getitem__(self, item):
         if type(item) != str:
