@@ -24,7 +24,7 @@ class GeneticAlgorithmSettings:
         self.total_steps = 100
 
         self.crossover_rate = 0.9
-        self.reproduction_rate = "knee-point"
+        self.reproduction_rate = 0.08
         self.mutation_rate = 0.02
 
         self.fitness_func = lambda objectives: objectives["mean_tardiness"] + 0.5 * objectives["mean_earliness"]
@@ -439,57 +439,64 @@ class GeneticAlgorithm:
 
         # wipe current population
         old_population = self.population
-        reproducing_population = [self.population[fitness_order[i]] for i in range(cutoff_index_sorted+1)]
+        reproducing_population = [self.population[fitness_order[i]] for i in range(cutoff_index_sorted)]
         self.population = []
 
         # reproduction, crossover, mutation
-        current_reproduction_rate = (cutoff_index_sorted + 1) / population_amount_before
-        other_rates_norm = (self.settings.crossover_rate + self.settings.mutation_rate) / (1. - current_reproduction_rate)
-
-        current_crossover_rate, current_mutation_rate = self.settings.crossover_rate / other_rates_norm,\
-                                                        self.settings.mutation_rate / other_rates_norm
+        current_reproduction_rate = len(reproducing_population) / population_amount_before
 
         # reproduction
         self.population.extend(reproducing_population)
 
-        # crossover
-        crossovers_to_do = int(len(old_population) * current_crossover_rate)
-        tournament_size = int(self.settings.population_size * self.settings.tournament_percent_size)
+        if current_reproduction_rate < 1.:
+            other_rates_norm = (self.settings.crossover_rate + self.settings.mutation_rate) / (
+                    1. - current_reproduction_rate)
 
-        # make tournament size even (and not bigger)
-        tournament_size -= tournament_size % 2
+            current_crossover_rate, current_mutation_rate = self.settings.crossover_rate / other_rates_norm, \
+                                                            self.settings.mutation_rate / other_rates_norm
 
-        for _ in range(crossovers_to_do):
-            participants = self.rng.choice(a=old_population, size=tournament_size, replace=False)
-            participants_1 = participants[0:tournament_size // 2]
-            participants_2 = participants[tournament_size // 2:tournament_size]
+            # crossover
+            crossovers_to_do = int(len(old_population) * current_crossover_rate)
+            tournament_size = int(self.settings.population_size * self.settings.tournament_percent_size)
 
-            assert len(participants_1) == len(participants_2)
+            # make tournament size even (and not bigger)
+            tournament_size -= tournament_size % 2
 
-            best_participant_i_1 = np.argmin([self.fitness_log[repr(participant)] for participant in participants_1])
-            best_participant_i_2 = np.argmin([self.fitness_log[repr(participant)] for participant in participants_2])
+            for _ in range(crossovers_to_do):
+                participants = self.rng.choice(a=old_population, size=tournament_size, replace=False)
+                participants_1 = participants[0:tournament_size // 2]
+                participants_2 = participants[tournament_size // 2:tournament_size]
 
-            new_individual = self.combine_individuals(individual_1=participants_1[best_participant_i_1],
-                                                      individual_2=participants_2[best_participant_i_2],
-                                                      verbose=verbose)
+                assert len(participants_1) == len(participants_2)
 
-            self.population.append(new_individual)
+                best_participant_i_1 = np.argmin(
+                    [self.fitness_log[repr(participant)] for participant in participants_1])
+                best_participant_i_2 = np.argmin(
+                    [self.fitness_log[repr(participant)] for participant in participants_2])
 
-        # mutation
-        mutated_individuals_added = 0
-        while len(self.population) < population_amount_before:
-            weights = np.array([1. / (fitness_order[i] + 1) for i in range(population_amount_before)])
-            weights = weights / np.sum(weights)
+                new_individual = self.combine_individuals(individual_1=participants_1[best_participant_i_1],
+                                                          individual_2=participants_2[best_participant_i_2],
+                                                          verbose=verbose)
 
-            individual_to_mutate = self.rng.choice(a=old_population, p=weights)
+                self.population.append(new_individual)
 
-            new_individual = self.mutate_individual(
-                individual=individual_to_mutate,
-                inplace=False)
+            # mutation
+            mutated_individuals_added = 0
+            while len(self.population) < population_amount_before:
+                weights = np.array([1. / (fitness_order[i] + 1) for i in range(population_amount_before)])
+                weights = weights / np.sum(weights)
 
-            self.population.append(new_individual)
+                individual_to_mutate = self.rng.choice(a=old_population, p=weights)
 
-            mutated_individuals_added += 1
+                new_individual = self.mutate_individual(
+                    individual=individual_to_mutate,
+                    inplace=False)
+
+                self.population.append(new_individual)
+
+                mutated_individuals_added += 1
+        else:
+            current_crossover_rate, crossovers_to_do, current_mutation_rate, mutated_individuals_added = 0., 0, 0., 0
 
         if verbose > 1:
             print(f"\t{current_reproduction_rate:.1%} ({len(reproducing_population)}) reproduction, {current_crossover_rate:.1%} ({crossovers_to_do}) crossover, {current_mutation_rate:.1%} ({mutated_individuals_added}) mutation")
