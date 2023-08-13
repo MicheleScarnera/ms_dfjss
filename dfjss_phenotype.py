@@ -4,7 +4,9 @@ import dfjss_objects as dfjss
 import dfjss_priorityfunction as pf
 
 class PhenotypeMapper:
-    def __init__(self, reference_rule=None, reference_scenarios_amount=16, scenarios_seed=None):
+    def __init__(self, reference_rule=None, reference_scenarios_amount=16, scenarios_seed=None, getitem_tries_harder=False):
+        self.getitem_tries_harder = getitem_tries_harder
+
         self.reference_scenarios_amount = reference_scenarios_amount
 
         # go the extra mile to generate credible scenarios: generate them straight from a warehouse
@@ -72,32 +74,35 @@ class PhenotypeMapper:
         self.individual_to_phenotype[individual_represenation] = phenotype
         self.phenotype_to_fitness[phenotype] = fitness
 
-    def __contains__(self, item):
-        if type(item) != str:
+    def __contains__(self, individual_representation):
+        if type(individual_representation) != str:
             raise ValueError("PhenotypeMapper only allows individuals in string form for the \'contains\' operation")
 
-        phenotype = self.get_phenotype_of_individual(item)
+        phenotype = self.get_phenotype_of_individual(individual_representation)
 
-        try:
+        if phenotype in self.phenotype_to_fitness:
             # if we already have the fitness for this phenotype, add this individual right away and return true
-            known_fitness = self.phenotype_to_fitness[phenotype]
-        except KeyError as key_error:
-            # if we don't, return false
-            return False
+            self.individual_to_phenotype[individual_representation] = phenotype
+            return True
 
-        self[item] = known_fitness
+        # if we don't, return false
+        return False
 
-        return True
-
-
-    def __getitem__(self, item):
-        if type(item) != str:
+    def __getitem__(self, individual_representation):
+        if type(individual_representation) != str:
             raise ValueError("PhenotypeMapper only allows individuals in string form for the \'get_item\' operation")
 
-        try:
-            return self.phenotype_to_fitness[self.get_phenotype_of_individual(item)]
-        except KeyError as key_error:
-            raise KeyError(f"The individual is not in the PhenotypeMapper")
+        phenotype = self.get_phenotype_of_individual(individual_representation)
 
-    def __setitem__(self, key, value):
-        self.add_individual(individual_represenation=key, fitness=value)
+        if phenotype in self.phenotype_to_fitness:
+            # if we already have the fitness for this phenotype, add this individual right away
+            self.individual_to_phenotype[individual_representation] = phenotype
+            return self.phenotype_to_fitness[phenotype]
+
+        raise KeyError(f"The individual is not in the PhenotypeMapper")
+
+    def __setitem__(self, individual_representation, fitness):
+        self.add_individual(individual_represenation=individual_representation, fitness=fitness)
+
+    def __iter__(self):
+        return iter([(individual_repr, self.phenotype_to_fitness[self.individual_to_phenotype[individual_repr]]) for individual_repr in self.individual_to_phenotype.keys()])
