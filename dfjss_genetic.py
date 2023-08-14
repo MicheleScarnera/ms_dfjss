@@ -40,7 +40,8 @@ class GeneticAlgorithmSettings:
         self.operations = pf.DEFAULT_OPERATIONS.copy()
         del self.operations["^"]
 
-        self.tree_max_depth = 3
+        self.tree_max_depth = 5
+        self.tree_generation_mode = "half_and_half"
 
         self.priority_function_random_number_range = (-10, 10)
         self.random_number_granularity = 0.25
@@ -74,6 +75,7 @@ class GeneticAlgorithmSettings:
         self.save_logs = True
         self.fitness_log_is_phenotype_mapper = True
         self.phenotype_mapper_scenarios_amount = 16
+        self.phenotype_exploration_attempts_during_crossover = 3
 
 
 class GeneticAlgorithmRoutineOutput:
@@ -121,15 +123,15 @@ class GeneticAlgorithm:
                                          high=self.settings.priority_function_random_number_range[1])
                         / self.settings.random_number_granularity) * self.settings.random_number_granularity
 
-    def get_random_branch(self, current_depth=1):
+    def get_random_branch(self, generation_mode="long", current_depth=1):
         outcomes = list(self.settings.tree_exnovo_generation_weights.keys())
         weights = np.array(list(self.settings.tree_exnovo_generation_weights.values()))
 
         if current_depth == self.settings.tree_max_depth:
-            for i, outcome in enumerate(outcomes):
-                if outcome == "another_branch":
-                    weights[i] = 0.
-                    break
+            weights[outcomes.index("another_branch")] = 0.
+        elif generation_mode == "wide":
+            weights[outcomes.index("random_number")] = 0.
+            weights[outcomes.index("random_feature")] = 0.
 
         left_weights = weights.copy()
         right_weights = weights.copy()
@@ -166,8 +168,13 @@ class GeneticAlgorithm:
                                          right_feature=right_feature)
 
     def get_random_individual(self):
+        if self.settings.tree_generation_mode == "half_and_half":
+            gen = self.rng.choice(a=["long", "wide"])
+        else:
+            gen = self.settings.tree_generation_mode
+
         return pf.PriorityFunctionTree(features=self.settings.features,
-                                       root_branch=self.get_random_branch())
+                                       root_branch=self.get_random_branch(generation_mode=gen))
 
     def combine_individuals(self, individual_1, individual_2, verbose=0):
         repr_1 = repr(individual_1)
@@ -447,14 +454,32 @@ class GeneticAlgorithm:
 
         # wipe current population
         old_population = self.population
-        reproducing_population = [self.population[fitness_order[i]] for i in range(cutoff_index_sorted)]
+        old_population_sorted = [self.population[fitness_order[i]] for i in range(len(fitness_order))]
         self.population = []
 
+        # fitness weights (to be used in "lower fitness is better" random draws
+        fitness_weights = np.array([1. / (i + 1) for i in range(population_amount_before)])
+        fitness_weights = fitness_weights / np.sum(fitness_weights)
+
         # reproduction, crossover, mutation
-        current_reproduction_rate = len(reproducing_population) / population_amount_before
+        reproducing_individuals_amount = cutoff_index_sorted
+        current_reproduction_rate = reproducing_individuals_amount / population_amount_before
 
         # reproduction
-        self.population.extend(reproducing_population)
+        # the best individual is always reproduced, the rest are drawn randomly
+        if verbose > 1:
+            print(f"\r\tDoing reproduction...", end="")
+
+        if reproducing_individuals_amount > 0:
+            self.population.append(old_population_sorted[0])
+
+            if reproducing_individuals_amount > 1:
+                self.population.extend(
+                    self.rng.choice(a=old_population_sorted[1:],
+                                    size=reproducing_individuals_amount-1,
+                                    p=fitness_weights[1:] / np.sum(fitness_weights[1:]),
+                                    replace=False)
+                )
 
         if current_reproduction_rate < 1.:
             other_rates_norm = (self.settings.crossover_rate + self.settings.mutation_rate) / (
@@ -470,31 +495,41 @@ class GeneticAlgorithm:
             # make tournament size even (and not bigger)
             tournament_size -= tournament_size % 2
 
+            if verbose > 1:
+                print(f"\r                                           ", end="")
+                print(f"\r\tDoing crossover...", end="")
+
             for _ in range(crossovers_to_do):
-                participants = self.rng.choice(a=old_population, size=tournament_size, replace=False)
-                participants_1 = participants[0:tournament_size // 2]
-                participants_2 = participants[tournament_size // 2:tournament_size]
+                ph_e_attempts = self.settings.phenotype_exploration_attempts_during_crossover if self.settings.fitness_log_is_phenotype_mapper else 1
+                for _ in range(ph_e_attempts):
+                    participants = self.rng.choice(a=old_population, size=tournament_size, replace=False)
+                    participants_1 = participants[0:tournament_size // 2]
+                    participants_2 = participants[tournament_size // 2:tournament_size]
 
-                assert len(participants_1) == len(participants_2)
+                    assert len(participants_1) == len(participants_2)
 
-                best_participant_i_1 = np.argmin(
-                    [self.fitness_log[repr(participant)] for participant in participants_1])
-                best_participant_i_2 = np.argmin(
-                    [self.fitness_log[repr(participant)] for participant in participants_2])
+                    best_participant_i_1 = np.argmin(
+                        [self.fitness_log[repr(participant)] for participant in participants_1])
+                    best_participant_i_2 = np.argmin(
+                        [self.fitness_log[repr(participant)] for participant in participants_2])
 
-                new_individual = self.combine_individuals(individual_1=participants_1[best_participant_i_1],
-                                                          individual_2=participants_2[best_participant_i_2],
-                                                          verbose=verbose)
+                    new_individual = self.combine_individuals(individual_1=participants_1[best_participant_i_1],
+                                                              individual_2=participants_2[best_participant_i_2],
+                                                              verbose=verbose)
+
+                    if self.settings.fitness_log_is_phenotype_mapper and repr(new_individual) not in self.fitness_log:
+                        break
 
                 self.population.append(new_individual)
 
             # mutation
+            if verbose > 1:
+                print(f"\r                                           ", end="")
+                print(f"\r\tDoing mutation...", end="\r")
+
             mutated_individuals_added = 0
             while len(self.population) < population_amount_before:
-                weights = np.array([1. / (fitness_order[i] + 1) for i in range(population_amount_before)])
-                weights = weights / np.sum(weights)
-
-                individual_to_mutate = self.rng.choice(a=old_population, p=weights)
+                individual_to_mutate = self.rng.choice(a=old_population_sorted, p=fitness_weights)
 
                 new_individual = self.mutate_individual(
                     individual=individual_to_mutate,
@@ -507,7 +542,7 @@ class GeneticAlgorithm:
             current_crossover_rate, crossovers_to_do, current_mutation_rate, mutated_individuals_added = 0., 0, 0., 0
 
         if verbose > 1:
-            print(f"\t{current_reproduction_rate:.1%} ({len(reproducing_population)}) reproduction, {current_crossover_rate:.1%} ({crossovers_to_do}) crossover, {current_mutation_rate:.1%} ({mutated_individuals_added}) mutation")
+            print(f"\t{current_reproduction_rate:.1%} ({reproducing_individuals_amount}) reproduction, {current_crossover_rate:.1%} ({crossovers_to_do}) crossover, {current_mutation_rate:.1%} ({mutated_individuals_added}) mutation")
 
         return result
 
@@ -579,6 +614,10 @@ class GeneticAlgorithm:
             fitness_log_dataframe.sort_values(by="Fitness", inplace=True)
 
             foldername = datetime.datetime.now().strftime('%d %b %Y %H_%M_%S')
+
+            if self.settings.fitness_is_random:
+                foldername = f"{foldername} random fitness"
+
             filepath_fitnesslog_str = f"{foldername}/fitness_log.csv"
             filepath_fitnesslog = Path(filepath_fitnesslog_str)
             filepath_fitnesslog.parent.mkdir(parents=True, exist_ok=True)
