@@ -4,9 +4,7 @@ import dfjss_objects as dfjss
 import dfjss_priorityfunction as pf
 
 class PhenotypeMapper:
-    def __init__(self, reference_rule=None, reference_scenarios_amount=16, scenarios_seed=None, getitem_tries_harder=False):
-        self.getitem_tries_harder = getitem_tries_harder
-
+    def __init__(self, reference_rule=None, reference_scenarios_amount=16, scenarios_seed=None):
         self.reference_scenarios_amount = reference_scenarios_amount
 
         # go the extra mile to generate credible scenarios: generate them straight from a warehouse
@@ -106,3 +104,9 @@ class PhenotypeMapper:
 
     def __iter__(self):
         return iter([(individual_repr, self.phenotype_to_fitness[self.individual_to_phenotype[individual_repr]]) for individual_repr in self.individual_to_phenotype.keys()])
+
+    def keys(self):
+        return self.individual_to_phenotype.keys()
+
+    def values(self):
+        return [self.phenotype_to_fitness[self.individual_to_phenotype[individual_repr]] for individual_repr in self.keys()]

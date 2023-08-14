@@ -12,6 +12,7 @@ import pandas as pd
 import dfjss_objects as dfjss
 import dfjss_defaults as DEFAULTS
 import dfjss_priorityfunction as pf
+import dfjss_phenotype as pht
 import dfjss_misc as misc
 
 
@@ -71,6 +72,8 @@ class GeneticAlgorithmSettings:
         self.warehouse_settings = dfjss.WarehouseSettings()
 
         self.save_logs = True
+        self.fitness_log_is_phenotype_mapper = True
+        self.phenotype_mapper_scenarios_amount = 16
 
 
 class GeneticAlgorithmRoutineOutput:
@@ -92,7 +95,7 @@ class GeneticAlgorithmRoutineOutput:
 
 class GeneticAlgorithm:
     settings: GeneticAlgorithmSettings
-    fitness_log: dict[str, float]
+    #fitness_log: dict[str, float]
 
     def __init__(self, settings=None, rng_seed=None):
         if settings is None:
@@ -107,7 +110,11 @@ class GeneticAlgorithm:
 
         self.population = []
 
-        self.fitness_log = dict()
+        if self.settings.fitness_log_is_phenotype_mapper:
+            self.fitness_log = pht.PhenotypeMapper(scenarios_seed=rng_seed,
+                                                   reference_scenarios_amount=self.settings.phenotype_mapper_scenarios_amount)
+        else:
+            self.fitness_log = dict()
 
     def random_number(self):
         return np.round(self.rng.uniform(low=self.settings.priority_function_random_number_range[0],
@@ -344,6 +351,7 @@ class GeneticAlgorithm:
 
             self.population.append(random_individual)
 
+        # compute fitness values
         fitness_values = np.zeros(shape=(len(self.population), self.settings.number_of_simulations_per_individual))
         start = time.time()
         for i, individual in enumerate(self.population):
@@ -560,8 +568,13 @@ class GeneticAlgorithm:
             print(f"Genetic simulation took {misc.timeformat(time.time() - start)}")
 
         if did_at_least_one and self.settings.save_logs:
-            fitness_log_dataframe = pd.DataFrame(data={"Individual": list(self.fitness_log.keys()),
-                                                       "Fitness": list(self.fitness_log.values())})
+            fitness_log_data = {"Individual": list(self.fitness_log.keys()),
+                                "Fitness": list(self.fitness_log.values())}
+
+            if type(self.fitness_log) == pht.PhenotypeMapper:
+                fitness_log_data["Phenotype"] = [self.fitness_log.individual_to_phenotype[ind] for ind in fitness_log_data["Individual"]]
+
+            fitness_log_dataframe = pd.DataFrame(data=fitness_log_data)
 
             fitness_log_dataframe.sort_values(by="Fitness", inplace=True)
 

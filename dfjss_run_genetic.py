@@ -23,6 +23,10 @@ gen_algo_settings.features = ["operation_work_required",
                               "pair_expected_work_power",
                               "pair_expected_processing_time"]
 
+gen_algo_settings.warehouse_settings.generation_simulation_ranges["simulation_number_of_starting_jobs"] = 50
+gen_algo_settings.warehouse_settings.generation_simulation_ranges["simulation_random_job_arrival_rate"] = 0
+gen_algo_settings.warehouse_settings.generation_simulation_ranges["simulation_random_job_arrival_end_state_prevention_batch_size"] = 0
+
 gen_algo_settings.population_size = 500
 gen_algo_settings.number_of_simulations_per_individual = 3
 gen_algo_settings.total_steps = 40
