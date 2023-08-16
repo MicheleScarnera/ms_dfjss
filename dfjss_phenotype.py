@@ -3,9 +3,11 @@ import numpy as np
 import dfjss_objects as dfjss
 import dfjss_priorityfunction as pf
 
+
 class PhenotypeMapper:
     def __init__(self, reference_rule=None, reference_scenarios_amount=16, scenarios_seed=None):
         self.reference_scenarios_amount = reference_scenarios_amount
+        self.dud_individual_std_threshold = 0.1
 
         # go the extra mile to generate credible scenarios: generate them straight from a warehouse
         # it shouldn't be too slow since only one routine is ran
@@ -64,7 +66,10 @@ class PhenotypeMapper:
 
         priority_values = [individual.run(features=scenario) for scenario in self.scenarios]
 
-        return tuple(np.argsort(priority_values))
+        if np.std(priority_values) > self.dud_individual_std_threshold:
+            return tuple(np.argsort(priority_values))
+        else:
+            return tuple([0] * self.reference_scenarios_amount)
 
     def add_individual(self, individual_represenation, fitness):
         phenotype = self.get_phenotype_of_individual(individual_represenation)

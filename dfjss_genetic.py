@@ -27,6 +27,7 @@ class GeneticAlgorithmSettings:
         self.crossover_rate = 0.9
         self.reproduction_rate = 0.08
         self.mutation_rate = 0.02
+        self.mutation_rate_increment = 0.01
 
         self.fitness_func = lambda objectives: objectives["mean_tardiness"] + 0.5 * objectives["mean_earliness"]
 
@@ -40,8 +41,10 @@ class GeneticAlgorithmSettings:
         self.operations = pf.DEFAULT_OPERATIONS.copy()
         del self.operations["^"]
 
-        self.tree_max_depth = 5
+        self.tree_generation_max_depth = 5
         self.tree_generation_mode = "half_and_half"
+
+        self.tree_transformation_max_depth = 8
 
         self.priority_function_random_number_range = (-10, 10)
         self.random_number_granularity = 0.25
@@ -76,6 +79,7 @@ class GeneticAlgorithmSettings:
         self.fitness_log_is_phenotype_mapper = True
         self.phenotype_mapper_scenarios_amount = 16
         self.phenotype_exploration_attempts_during_crossover = 3
+        self.depth_attempts_during_crossover = 3
 
 
 class GeneticAlgorithmRoutineOutput:
@@ -123,11 +127,13 @@ class GeneticAlgorithm:
                                          high=self.settings.priority_function_random_number_range[1])
                         / self.settings.random_number_granularity) * self.settings.random_number_granularity
 
-    def get_random_branch(self, generation_mode="long", current_depth=1):
+    def get_random_branch(self, generation_mode="short", current_depth=1, is_generation=True):
         outcomes = list(self.settings.tree_exnovo_generation_weights.keys())
         weights = np.array(list(self.settings.tree_exnovo_generation_weights.values()))
 
-        if current_depth == self.settings.tree_max_depth:
+        max_depth = self.settings.tree_generation_max_depth if is_generation else self.settings.tree_transformation_max_depth
+
+        if current_depth == max_depth:
             weights[outcomes.index("another_branch")] = 0.
         elif generation_mode == "wide":
             weights[outcomes.index("random_number")] = 0.
@@ -135,6 +141,15 @@ class GeneticAlgorithm:
 
         left_weights = weights.copy()
         right_weights = weights.copy()
+
+        if generation_mode == "long":
+            if current_depth < max_depth:
+                if self.rng.uniform() < 0.5:
+                    left_weights[outcomes.index("random_number")] = 0.
+                    left_weights[outcomes.index("random_feature")] = 0.
+                else:
+                    right_weights[outcomes.index("random_number")] = 0.
+                    right_weights[outcomes.index("random_feature")] = 0.
 
         operation = self.rng.choice(a=list(self.settings.operations.keys()))
 
@@ -152,7 +167,7 @@ class GeneticAlgorithm:
 
         def realize_outcome(outcome):
             if outcome == "another_branch":
-                return self.get_random_branch(current_depth=current_depth + 1)
+                return self.get_random_branch(current_depth=current_depth + 1, is_generation=False)
             elif outcome == "random_feature":
                 return self.rng.choice(a=self.settings.features)
             elif outcome == "random_number":
@@ -338,7 +353,7 @@ class GeneticAlgorithm:
         if not inplace:
             return individual
 
-    def do_genetic_routine_once(self, verbose=0):
+    def do_genetic_routine_once(self, current_step, max_steps, verbose=0):
         result = GeneticAlgorithmRoutineOutput()
 
         if len(self.settings.simulations_seeds) != self.settings.number_of_simulations_per_individual:
@@ -463,7 +478,15 @@ class GeneticAlgorithm:
 
         # reproduction, crossover, mutation
         reproducing_individuals_amount = cutoff_index_sorted
+
         current_reproduction_rate = reproducing_individuals_amount / population_amount_before
+        current_crossover_rate = self.settings.crossover_rate
+        current_mutation_rate = max(0.,
+                                    self.settings.mutation_rate + self.settings.mutation_rate_increment * (current_step - 1))
+
+        rates_norm = current_reproduction_rate + current_crossover_rate + current_mutation_rate
+
+        current_reproduction_rate, current_crossover_rate, current_mutation_rate = current_reproduction_rate / rates_norm, current_crossover_rate / rates_norm, current_mutation_rate / rates_norm
 
         # reproduction
         # the best individual is always reproduced, the rest are drawn randomly
@@ -482,12 +505,6 @@ class GeneticAlgorithm:
                 )
 
         if current_reproduction_rate < 1.:
-            other_rates_norm = (self.settings.crossover_rate + self.settings.mutation_rate) / (
-                    1. - current_reproduction_rate)
-
-            current_crossover_rate, current_mutation_rate = self.settings.crossover_rate / other_rates_norm, \
-                                                            self.settings.mutation_rate / other_rates_norm
-
             # crossover
             crossovers_to_do = int(len(old_population) * current_crossover_rate)
             tournament_size = int(self.settings.population_size * self.settings.tournament_percent_size)
@@ -495,32 +512,45 @@ class GeneticAlgorithm:
             # make tournament size even (and not bigger)
             tournament_size -= tournament_size % 2
 
+            crossover_start = time.time()
+
             if verbose > 1:
                 print(f"\r                                           ", end="")
                 print(f"\r\tDoing crossover...", end="")
 
-            for _ in range(crossovers_to_do):
-                ph_e_attempts = self.settings.phenotype_exploration_attempts_during_crossover if self.settings.fitness_log_is_phenotype_mapper else 1
-                for _ in range(ph_e_attempts):
-                    participants = self.rng.choice(a=old_population, size=tournament_size, replace=False)
-                    participants_1 = participants[0:tournament_size // 2]
-                    participants_2 = participants[tournament_size // 2:tournament_size]
+            for i in range(crossovers_to_do):
+                ph_e_attempts = max(self.settings.phenotype_exploration_attempts_during_crossover, 1) if self.settings.fitness_log_is_phenotype_mapper else 1
+                depth_attempts = max(self.settings.depth_attempts_during_crossover, 1)
 
-                    assert len(participants_1) == len(participants_2)
+                new_individual = None
 
-                    best_participant_i_1 = np.argmin(
-                        [self.fitness_log[repr(participant)] for participant in participants_1])
-                    best_participant_i_2 = np.argmin(
-                        [self.fitness_log[repr(participant)] for participant in participants_2])
+                for _ in range(depth_attempts):
+                    for _ in range(ph_e_attempts):
+                        participants = self.rng.choice(a=old_population, size=tournament_size, replace=False)
+                        participants_1 = participants[0:tournament_size // 2]
+                        participants_2 = participants[tournament_size // 2:tournament_size]
 
-                    new_individual = self.combine_individuals(individual_1=participants_1[best_participant_i_1],
-                                                              individual_2=participants_2[best_participant_i_2],
-                                                              verbose=verbose)
+                        assert len(participants_1) == len(participants_2)
 
-                    if self.settings.fitness_log_is_phenotype_mapper and repr(new_individual) not in self.fitness_log:
+                        best_participant_i_1 = np.argmin(
+                            [self.fitness_log[repr(participant)] for participant in participants_1])
+                        best_participant_i_2 = np.argmin(
+                            [self.fitness_log[repr(participant)] for participant in participants_2])
+
+                        new_individual = self.combine_individuals(individual_1=participants_1[best_participant_i_1],
+                                                                  individual_2=participants_2[best_participant_i_2],
+                                                                  verbose=verbose)
+
+                        if self.settings.fitness_log_is_phenotype_mapper and repr(new_individual) not in self.fitness_log:
+                            break
+
+                    if new_individual.depth() <= self.settings.tree_transformation_max_depth:
                         break
 
                 self.population.append(new_individual)
+
+                if verbose > 1:
+                    print(f"\r\tDoing crossover... ETA {misc.timeformat_hhmmss(misc.timeleft(crossover_start, time.time(), i + 1, crossovers_to_do))}", end="")
 
             # mutation
             if verbose > 1:
@@ -570,7 +600,7 @@ class GeneticAlgorithm:
                 if verbose > 1:
                     print(f"Step {step}")
 
-                routine_output = self.do_genetic_routine_once(verbose=verbose)
+                routine_output = self.do_genetic_routine_once(current_step=step, max_steps=self.settings.total_steps, verbose=verbose)
 
                 if self.settings.save_logs:
                     genalgo_log = pd.concat(objs=[genalgo_log,
@@ -611,7 +641,11 @@ class GeneticAlgorithm:
 
             fitness_log_dataframe = pd.DataFrame(data=fitness_log_data)
 
-            fitness_log_dataframe.sort_values(by="Fitness", inplace=True)
+            fitness_log_dataframe["string_length"] = fitness_log_dataframe.apply(lambda row: len(row["Individual"]), axis=1)
+
+            fitness_log_dataframe.sort_values(by=["Fitness", "string_length"], inplace=True)
+
+            fitness_log_dataframe.drop(columns="string_length", inplace=True)
 
             foldername = datetime.datetime.now().strftime('%d %b %Y %H_%M_%S')
 
