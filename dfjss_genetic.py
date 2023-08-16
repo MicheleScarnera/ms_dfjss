@@ -25,9 +25,13 @@ class GeneticAlgorithmSettings:
         self.total_steps = 100
 
         self.crossover_rate = 0.9
+        self.crossover_rate_increment = 0.
+
         self.reproduction_rate = 0.08
+        self.reproduction_rate_increment = 0.
+
         self.mutation_rate = 0.02
-        self.mutation_rate_increment = 0.01
+        self.mutation_rate_increment = 0.
 
         self.fitness_func = lambda objectives: objectives["mean_tardiness"] + 0.5 * objectives["mean_earliness"]
 
@@ -479,14 +483,18 @@ class GeneticAlgorithm:
         # reproduction, crossover, mutation
         reproducing_individuals_amount = cutoff_index_sorted
 
-        current_reproduction_rate = reproducing_individuals_amount / population_amount_before
-        current_crossover_rate = self.settings.crossover_rate
-        current_mutation_rate = max(0.,
+        current_reproduction_rate = max(0.01,
+                                        reproducing_individuals_amount / population_amount_before + self.settings.reproduction_rate_increment * (current_step - 1))
+        current_crossover_rate = max(0.01,
+                                     self.settings.crossover_rate + self.settings.crossover_rate_increment * (current_step - 1))
+        current_mutation_rate = max(0.01,
                                     self.settings.mutation_rate + self.settings.mutation_rate_increment * (current_step - 1))
 
         rates_norm = current_reproduction_rate + current_crossover_rate + current_mutation_rate
 
         current_reproduction_rate, current_crossover_rate, current_mutation_rate = current_reproduction_rate / rates_norm, current_crossover_rate / rates_norm, current_mutation_rate / rates_norm
+
+        reproducing_individuals_amount = int(np.round(current_reproduction_rate * population_amount_before))
 
         # reproduction
         # the best individual is always reproduced, the rest are drawn randomly
