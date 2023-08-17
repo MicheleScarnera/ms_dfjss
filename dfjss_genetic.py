@@ -62,8 +62,9 @@ class GeneticAlgorithmSettings:
         self.tree_mutation_weights = {
             "add_branch": 0.1,
             "remove_branch": 0.1,
-            "change_feature": 0.4,
-            "change_operation": 0.4,
+            "hoist_branch": 0.1,
+            "change_feature": 0.35,
+            "change_operation": 0.35,
             "do_nothing": 0
         }
 
@@ -105,14 +106,16 @@ class GeneticAlgorithmRoutineOutput:
 
 class GeneticAlgorithm:
     settings: GeneticAlgorithmSettings
-    #fitness_log: dict[str, float]
+
+    # fitness_log: dict[str, float]
 
     def __init__(self, settings=None, rng_seed=None):
         if settings is None:
             settings = GeneticAlgorithmSettings()
 
         if settings.simulations_seeds is None:
-            settings.simulations_seeds = np.linspace(0, 10000, num=settings.number_of_simulations_per_individual, endpoint=True, dtype=int)
+            settings.simulations_seeds = np.linspace(0, 10000, num=settings.number_of_simulations_per_individual,
+                                                     endpoint=True, dtype=int)
 
         self.settings = settings
 
@@ -230,7 +233,8 @@ class GeneticAlgorithm:
 
             appendage.append(crumb)
 
-            if (not crumb_chosen_2_is_feature and 0 < appendage_no_open == appendage_no_closed) or crumb_chosen_2_is_feature:
+            if (
+                    not crumb_chosen_2_is_feature and 0 < appendage_no_open == appendage_no_closed) or crumb_chosen_2_is_feature:
                 break
 
         # replace part of individual 1 with the appendage
@@ -242,7 +246,8 @@ class GeneticAlgorithm:
             elif crumb == ")":
                 appendage_no_closed += 1
 
-            if (not crumb_chosen_1_is_feature and 0 < appendage_no_open == appendage_no_closed) or crumb_chosen_1_is_feature:
+            if (
+                    not crumb_chosen_1_is_feature and 0 < appendage_no_open == appendage_no_closed) or crumb_chosen_1_is_feature:
                 break
 
         crumbs_1[crumb_i_chosen_1:crumb_i_chosen_1] = appendage
@@ -295,22 +300,62 @@ class GeneticAlgorithm:
 
             individual.root_branch = pf.crumbs_to_root_branch(crumbs=crumbs)
         elif outcome == "remove_branch":
-            # find a terminal branch and remove it
+            # find an inner branch, remove it and replace it with a random feature
             par_locs = pf.crumbs_parenthesis_locations(crumbs)
 
-            terminal_branches_indices = [par_loc
-                                         for i, (par_loc, par) in enumerate(par_locs)
-                                         if (i + 1 < len(par_locs)) and par == "(" and par_locs[i + 1][1] == ")"]
+            branches_indices = [par_loc
+                                for i, (par_loc, par) in enumerate(par_locs)
+                                if i > 0 and par == "("] # if (i + 1 < len(par_locs)) and par == "(" and par_locs[i + 1][1] == ")"
 
-            remove_from = self.rng.choice(a=terminal_branches_indices)
+            remove_from = self.rng.choice(a=branches_indices)
 
-            for _ in range(5):
-                crumbs.pop(remove_from)
+            open_removed = 0
+            closed_removed = 0
+
+            while True:
+                removed_crumb = crumbs.pop(remove_from)
+
+                if removed_crumb == "(":
+                    open_removed += 1
+                elif removed_crumb == ")":
+                    closed_removed += 1
+
+                if open_removed > 0 and open_removed == closed_removed:
+                    break
 
             random_feature = self.rng.choice(a=self.settings.features)
             crumbs.insert(remove_from, random_feature)
 
             individual.root_branch = pf.crumbs_to_root_branch(crumbs=crumbs)
+        elif outcome == "hoist_branch":
+            # find an inner branch and make it the whole individual
+            par_locs = pf.crumbs_parenthesis_locations(crumbs)
+
+            branches_indices = [par_loc
+                                for i, (par_loc, par) in enumerate(par_locs)
+                                if
+                                i > 0 and par == "("]  # if (i + 1 < len(par_locs)) and par == "(" and par_locs[i + 1][1] == ")"
+
+            remove_from = self.rng.choice(a=branches_indices)
+
+            open_removed = 0
+            closed_removed = 0
+            new_crumbs = []
+
+            while True:
+                removed_crumb = crumbs.pop(remove_from)
+
+                new_crumbs.append(removed_crumb)
+
+                if removed_crumb == "(":
+                    open_removed += 1
+                elif removed_crumb == ")":
+                    closed_removed += 1
+
+                if open_removed > 0 and open_removed == closed_removed:
+                    break
+
+            individual.root_branch = pf.crumbs_to_root_branch(crumbs=new_crumbs)
         elif outcome == "change_feature":
             features_indices = [i for i, crumb in enumerate(crumbs) if is_feature(crumb)]
 
@@ -361,7 +406,8 @@ class GeneticAlgorithm:
         result = GeneticAlgorithmRoutineOutput()
 
         if len(self.settings.simulations_seeds) != self.settings.number_of_simulations_per_individual:
-            raise ValueError(f"Number of seeds provided in settings.simulations_seeds ({len(self.settings.simulations_seeds)}) is not the same as settings.number_of_simulations_per_individual ({self.settings.number_of_simulations_per_individual})")
+            raise ValueError(
+                f"Number of seeds provided in settings.simulations_seeds ({len(self.settings.simulations_seeds)}) is not the same as settings.number_of_simulations_per_individual ({self.settings.number_of_simulations_per_individual})")
 
         # if population is empty (or below desired amount) fill with random individuals
         while len(self.population) < self.settings.population_size:
@@ -370,7 +416,8 @@ class GeneticAlgorithm:
                 random_individual = self.get_random_individual()
                 repr_individual = repr(random_individual)
 
-                if repr_individual in self.fitness_log or repr_individual in [repr(individual) for individual in self.population]:
+                if repr_individual in self.fitness_log or repr_individual in [repr(individual) for individual in
+                                                                              self.population]:
                     continue
                 else:
                     break
@@ -399,7 +446,7 @@ class GeneticAlgorithm:
 
                     to_print = f"\rRunning simulations..."
                     if done > 0:
-                        to_print += f" {done/to_do:.1%}, ETA {misc.timeformat_hhmmss(misc.timeleft(start, time.time(), done, to_do))}"
+                        to_print += f" {done / to_do:.1%}, ETA {misc.timeformat_hhmmss(misc.timeleft(start, time.time(), done, to_do))}"
 
                     print(to_print, end=endch)
 
@@ -449,7 +496,8 @@ class GeneticAlgorithm:
             print(f"\tBest individual: {result.best_individual}")
             print(f"\tBest fitness: {result.best_fitness:.2f}")
 
-            print(f"\tMean fitness: {np.mean(fitness_values):.2f} (Interquartile range: [{np.quantile(fitness_values, q=0.25):.2f}, {np.quantile(fitness_values, q=0.75):.2f}])")
+            print(
+                f"\tMean fitness: {np.mean(fitness_values):.2f} (Interquartile range: [{np.quantile(fitness_values, q=0.25):.2f}, {np.quantile(fitness_values, q=0.75):.2f}])")
 
         cutoff_index_sorted = -1
 
@@ -462,7 +510,9 @@ class GeneticAlgorithm:
             b = 1
             c = - f
 
-            distances_from_funny_line = np.array([np.abs(a*i + b*fitness + c) / np.sqrt(a**2 + b**2) for i, fitness in enumerate(fitness_values[fitness_order])])
+            distances_from_funny_line = np.array(
+                [np.abs(a * i + b * fitness + c) / np.sqrt(a ** 2 + b ** 2) for i, fitness in
+                 enumerate(fitness_values[fitness_order])])
             distances_from_funny_line_order = np.argsort(distances_from_funny_line)
             cutoff_index_sorted = distances_from_funny_line_order[-1]
 
@@ -484,11 +534,14 @@ class GeneticAlgorithm:
         reproducing_individuals_amount = cutoff_index_sorted
 
         current_reproduction_rate = max(0.01,
-                                        reproducing_individuals_amount / population_amount_before + self.settings.reproduction_rate_increment * (current_step - 1))
+                                        reproducing_individuals_amount / population_amount_before + self.settings.reproduction_rate_increment * (
+                                                    current_step - 1))
         current_crossover_rate = max(0.01,
-                                     self.settings.crossover_rate + self.settings.crossover_rate_increment * (current_step - 1))
+                                     self.settings.crossover_rate + self.settings.crossover_rate_increment * (
+                                                 current_step - 1))
         current_mutation_rate = max(0.01,
-                                    self.settings.mutation_rate + self.settings.mutation_rate_increment * (current_step - 1))
+                                    self.settings.mutation_rate + self.settings.mutation_rate_increment * (
+                                                current_step - 1))
 
         rates_norm = current_reproduction_rate + current_crossover_rate + current_mutation_rate
 
@@ -507,7 +560,7 @@ class GeneticAlgorithm:
             if reproducing_individuals_amount > 1:
                 self.population.extend(
                     self.rng.choice(a=old_population_sorted[1:],
-                                    size=reproducing_individuals_amount-1,
+                                    size=reproducing_individuals_amount - 1,
                                     p=fitness_weights[1:] / np.sum(fitness_weights[1:]),
                                     replace=False)
                 )
@@ -527,7 +580,8 @@ class GeneticAlgorithm:
                 print(f"\r\tDoing crossover...", end="")
 
             for i in range(crossovers_to_do):
-                ph_e_attempts = max(self.settings.phenotype_exploration_attempts_during_crossover, 1) if self.settings.fitness_log_is_phenotype_mapper else 1
+                ph_e_attempts = max(self.settings.phenotype_exploration_attempts_during_crossover,
+                                    1) if self.settings.fitness_log_is_phenotype_mapper else 1
                 depth_attempts = max(self.settings.depth_attempts_during_crossover, 1)
 
                 new_individual = None
@@ -549,7 +603,8 @@ class GeneticAlgorithm:
                                                                   individual_2=participants_2[best_participant_i_2],
                                                                   verbose=verbose)
 
-                        if self.settings.fitness_log_is_phenotype_mapper and repr(new_individual) not in self.fitness_log:
+                        if self.settings.fitness_log_is_phenotype_mapper and repr(
+                                new_individual) not in self.fitness_log:
                             break
 
                     if new_individual.depth() <= self.settings.tree_transformation_max_depth:
@@ -558,7 +613,9 @@ class GeneticAlgorithm:
                 self.population.append(new_individual)
 
                 if verbose > 1:
-                    print(f"\r\tDoing crossover... ETA {misc.timeformat_hhmmss(misc.timeleft(crossover_start, time.time(), i + 1, crossovers_to_do))}", end="")
+                    print(
+                        f"\r\tDoing crossover... ETA {misc.timeformat_hhmmss(misc.timeleft(crossover_start, time.time(), i + 1, crossovers_to_do))}",
+                        end="")
 
             # mutation
             if verbose > 1:
@@ -580,7 +637,8 @@ class GeneticAlgorithm:
             current_crossover_rate, crossovers_to_do, current_mutation_rate, mutated_individuals_added = 0., 0, 0., 0
 
         if verbose > 1:
-            print(f"\t{current_reproduction_rate:.1%} ({reproducing_individuals_amount}) reproduction, {current_crossover_rate:.1%} ({crossovers_to_do}) crossover, {current_mutation_rate:.1%} ({mutated_individuals_added}) mutation")
+            print(
+                f"\t{current_reproduction_rate:.1%} ({reproducing_individuals_amount}) reproduction, {current_crossover_rate:.1%} ({crossovers_to_do}) crossover, {current_mutation_rate:.1%} ({mutated_individuals_added}) mutation")
 
         return result
 
@@ -599,7 +657,7 @@ class GeneticAlgorithm:
         routine_output = None
         error_to_raise_later = None
         try:
-            for step in range(1, self.settings.total_steps+1):
+            for step in range(1, self.settings.total_steps + 1):
                 if 0 < max_individuals_to_evaluate < individuals_evaluated_total:
                     if verbose > 1:
                         print("Genetic algorithm evaluated maximum allowed number of individuals")
@@ -608,16 +666,17 @@ class GeneticAlgorithm:
                 if verbose > 1:
                     print(f"Step {step}")
 
-                routine_output = self.do_genetic_routine_once(current_step=step, max_steps=self.settings.total_steps, verbose=verbose)
+                routine_output = self.do_genetic_routine_once(current_step=step, max_steps=self.settings.total_steps,
+                                                              verbose=verbose)
 
                 if self.settings.save_logs:
                     genalgo_log = pd.concat(objs=[genalgo_log,
-                                            pd.DataFrame({
-                                               "Step": step,
-                                               "Individual": routine_output.population_data["Individual"],
-                                               "Fitness": routine_output.population_data["Fitness"]
-                                            })
-                                            ],
+                                                  pd.DataFrame({
+                                                      "Step": step,
+                                                      "Individual": routine_output.population_data["Individual"],
+                                                      "Fitness": routine_output.population_data["Fitness"]
+                                                  })
+                                                  ],
                                             ignore_index=True)
 
                 individuals_evaluated_total += routine_output.individuals_evaluated
@@ -633,7 +692,8 @@ class GeneticAlgorithm:
 
         if verbose > 0:
             if did_at_least_one:
-                print(f"Done. Here is the best performing individual of the last step (with fitness {self.fitness_log[repr(routine_output.best_individual)]:.2f}):")
+                print(
+                    f"Done. Here is the best performing individual of the last step (with fitness {self.fitness_log[repr(routine_output.best_individual)]:.2f}):")
                 print(routine_output.best_individual)
             else:
                 print("There was no simulation output")
@@ -645,11 +705,13 @@ class GeneticAlgorithm:
                                 "Fitness": list(self.fitness_log.values())}
 
             if type(self.fitness_log) == pht.PhenotypeMapper:
-                fitness_log_data["Phenotype"] = [self.fitness_log.individual_to_phenotype[ind] for ind in fitness_log_data["Individual"]]
+                fitness_log_data["Phenotype"] = [self.fitness_log.individual_to_phenotype[ind] for ind in
+                                                 fitness_log_data["Individual"]]
 
             fitness_log_dataframe = pd.DataFrame(data=fitness_log_data)
 
-            fitness_log_dataframe["string_length"] = fitness_log_dataframe.apply(lambda row: len(row["Individual"]), axis=1)
+            fitness_log_dataframe["string_length"] = fitness_log_dataframe.apply(lambda row: len(row["Individual"]),
+                                                                                 axis=1)
 
             fitness_log_dataframe.sort_values(by=["Fitness", "string_length"], inplace=True)
 

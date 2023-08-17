@@ -59,13 +59,13 @@ gen_algo_settings.phenotype_exploration_attempts_during_crossover = 3
 gen_algo_settings.depth_attempts_during_crossover = 3
 
 gen_algo_settings.reproduction_rate = 0.08
-gen_algo_settings.reproduction_rate_increment = 0.
+gen_algo_settings.reproduction_rate_increment = 0.0032
 
 gen_algo_settings.crossover_rate = 0.9
-gen_algo_settings.crossover_rate_increment = 0.
+gen_algo_settings.crossover_rate_increment = 0.0184
 
 gen_algo_settings.mutation_rate = 0.02
-gen_algo_settings.mutation_rate_increment = 0.01
+gen_algo_settings.mutation_rate_increment = 0.0184
 
 gen_algo_settings.tournament_percent_size = 0.25
 
