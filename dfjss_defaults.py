@@ -81,6 +81,11 @@ GENERATION_JOB_RANGES = {
     "job_remaining_work_to_complete": -1,
 }
 
+
+def custom_scaling_example(pair_features, current_amount):
+    return (1. / current_amount) ** 0.5
+
+
 GENERATION_MACHINE_RANGES = {
     # NOMINAL WORK POWER
     # The rate at which this machine executes "work".
@@ -99,12 +104,12 @@ GENERATION_MACHINE_RANGES = {
     # Accepted values:
     # -"constant": the machine will apply 100% of its nominal power to each operation
     # -"inverse": the machine will apply 100% / (no. of current operations) of its nominal power to each operation
-    # -functions with two arguments, one containing the pair (machine and operation)'s features, and the other
+    # -(non-lambda) functions with two arguments, one containing the pair (machine and operation)'s features, and the other
     # being the number of operations currently ongoing
     # Units: percentage
     "machine_capacity_scaling": ["constant",
                                  "inverse",
-                                 lambda pair_features, current_amount: (1. / current_amount) ** 0.5],
+                                 custom_scaling_example],
 
     # COOLDOWN
     # When a machine ends an operation, there is a

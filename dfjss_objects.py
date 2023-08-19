@@ -668,7 +668,7 @@ class Warehouse:
 
         return result
 
-    def do_routine_once(self, simulation_output, verbose=0):
+    def do_routine_once(self, simulation_output, decision_rule_override=None, verbose=0):
         """
 
         :type simulation_output: WarehouseSimulationOutput
@@ -820,7 +820,9 @@ class Warehouse:
         while first_time or decision_output.success:
             first_time = False
 
-            decision_output = self.settings.decision_rule.make_decisions(warehouse=self)
+            decision_rule = self.settings.decision_rule if decision_rule_override is None else decision_rule_override
+
+            decision_output = decision_rule.make_decisions(warehouse=self)
             if decision_output.success:
                 for machine, job in decision_output.pairs:
                     self.assign_job_to_machine(job=job,
@@ -876,7 +878,7 @@ class Warehouse:
 
         return WarehouseRoutineOutput(time_passed=smallest_time, end_simulation=False)
 
-    def simulate(self, max_routine_steps=-1, verbose=0):
+    def simulate(self, max_routine_steps=-1, decision_rule_override=None, verbose=0):
         if verbose > 0:
             print("Simulating warehouse...")
 
@@ -939,7 +941,7 @@ class Warehouse:
             if verbose > 1:
                 print(f"Routine step {routine_step} - Time: {misc.timeformat(self.current_time)} - Jobs to do: {len(self.jobs)}")
 
-            routine_result = self.do_routine_once(simulation_output=simulation_output, verbose=verbose)
+            routine_result = self.do_routine_once(simulation_output=simulation_output, decision_rule_override=decision_rule_override, verbose=verbose)
 
             if routine_result.end_simulation:
                 end_reason = "the routine ending it"

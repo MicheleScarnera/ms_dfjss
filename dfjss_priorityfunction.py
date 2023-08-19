@@ -17,14 +17,35 @@ def is_number(s):
 
 DEFAULT_FEATURES = alphabet
 
+def pf_add(x,y):
+    return x + y
+
+def pf_subtract(x, y):
+    return x - y
+
+def pf_multiply(x, y):
+    return x * y
+
+def pf_safediv(x, y):
+    return x / y if y != 0 else x
+
+def pf_power(x, y):
+    return x ** y
+
+def pf_min(x, y):
+    return min(x, y)
+
+def pf_max(x, y):
+    return max(x, y)
+
 DEFAULT_OPERATIONS = {
-    "+": lambda x, y: x + y,
-    "-": lambda x, y: x - y,
-    "*": lambda x, y: x * y,
-    "/": lambda x, y: x / y if y != 0 else x,
-    "^": lambda x, y: x ** y,
-    "<": lambda x, y: min(x, y),
-    ">": lambda x, y: max(x, y),
+    "+": pf_add,
+    "-": pf_subtract,
+    "*": pf_multiply,
+    "/": pf_safediv,
+    "^": pf_power,
+    "<": pf_min,
+    ">": pf_max,
 }
 
 FORBIDDEN_CHARACTERS = ['(', ')']

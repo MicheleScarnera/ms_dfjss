@@ -5,6 +5,8 @@ import copy
 import time
 import datetime
 from pathlib import Path
+import multiprocessing as mp
+from multiprocessing.pool import ThreadPool
 
 import numpy as np
 import pandas as pd
@@ -14,6 +16,13 @@ import dfjss_defaults as DEFAULTS
 import dfjss_priorityfunction as pf
 import dfjss_phenotype as pht
 import dfjss_misc as misc
+
+
+def init_pool_processes(the_lock):
+    '''Initialize each process with a global variable lock.
+    '''
+    global lock
+    lock = the_lock
 
 
 class GeneticAlgorithmSettings:
@@ -32,8 +41,6 @@ class GeneticAlgorithmSettings:
 
         self.mutation_rate = 0.02
         self.mutation_rate_increment = 0.
-
-        self.fitness_func = lambda objectives: objectives["mean_tardiness"] + 0.5 * objectives["mean_earliness"]
 
         self.fitness_is_random = False
 
@@ -86,6 +93,11 @@ class GeneticAlgorithmSettings:
         self.phenotype_exploration_attempts_during_crossover = 3
         self.depth_attempts_during_crossover = 3
 
+        self.multiprocessing_processes = 4
+
+    def fitness_func(self, objectives):
+        return objectives["mean_tardiness"] + 0.5 * objectives["mean_earliness"]
+
 
 class GeneticAlgorithmRoutineOutput:
     best_individual: pf.PriorityFunctionTree
@@ -128,6 +140,10 @@ class GeneticAlgorithm:
                                                    reference_scenarios_amount=self.settings.phenotype_mapper_scenarios_amount)
         else:
             self.fitness_log = dict()
+
+        # multiprocessing
+
+        self.__worker_tasks = []
 
     def random_number(self):
         return np.round(self.rng.uniform(low=self.settings.priority_function_random_number_range[0],
@@ -402,6 +418,35 @@ class GeneticAlgorithm:
         if not inplace:
             return individual
 
+    def do_worker_task(self, task_tuple, is_multiprocessing=True):
+        individual_index, seed_index, individual, seed, warehouse_settings = task_tuple
+
+        if not is_multiprocessing:
+            representation = repr(individual)
+
+            if representation in self.fitness_log:
+                return self.fitness_log[representation]
+
+        if self.settings.fitness_is_random:
+            #fitness = np.mean(self.rng.uniform(high=1000, size=3))
+            fitness, _ = np.modf(time.time())
+            fitness *= 1000.
+        else:
+            warehouse = dfjss.Warehouse(rng_seed=seed)
+
+            decision_rule = pf.PriorityFunctionTreeDecisionRule(
+                priority_function_tree=individual
+            )
+
+            warehouse_settings.decision_rule = decision_rule
+            warehouse.settings = warehouse_settings
+
+            simulation_output = warehouse.simulate()
+
+            fitness = self.settings.fitness_func(simulation_output.get_objectives())
+
+        return fitness
+
     def do_genetic_routine_once(self, current_step, max_steps, verbose=0):
         result = GeneticAlgorithmRoutineOutput()
 
@@ -426,47 +471,74 @@ class GeneticAlgorithm:
 
         # compute fitness values
         fitness_values = np.zeros(shape=(len(self.population), self.settings.number_of_simulations_per_individual))
-        start = time.time()
-        for i, individual in enumerate(self.population):
-            representation = repr(individual)
-            if representation in self.fitness_log:
-                fitness_values[i, :] = self.fitness_log[representation]
-                continue
-            else:
-                result.individuals_evaluated += 1
 
-            for j in range(self.settings.number_of_simulations_per_individual):
+        for individual_index in range(len(self.population)):
+            for seed_index in range(self.settings.number_of_simulations_per_individual):
+                self.__worker_tasks.append((individual_index, seed_index, self.population[individual_index], self.settings.simulations_seeds[seed_index], copy.copy(self.settings.warehouse_settings)))
+
+        start = time.time()
+
+        if self.settings.multiprocessing_processes > 1:
+            lock = mp.Lock()
+            with mp.get_context("spawn").Pool(initializer=init_pool_processes, initargs=(lock,), processes=self.settings.multiprocessing_processes) as pool:
+            #with ThreadPool(initializer=init_pool_processes, initargs=(lock,), processes=self.settings.multiprocessing_processes) as pool:
+                results = []
+                for task in self.__worker_tasks:
+                    results.append(pool.apply_async(func=self.do_worker_task, args=(task, True)))
+
+                pool.close()
+
                 if verbose > 1:
-                    done = i * self.settings.number_of_simulations_per_individual + j
-                    to_do = len(self.population) * self.settings.number_of_simulations_per_individual - 1
+                    initial_tasks = len(self.__worker_tasks)
+                    previous_tasks_done = 0
+                    while True:
+                        time.sleep(1)
+
+                        tasks_done = np.sum([result.ready() for result in results])
+
+                        completed = tasks_done >= initial_tasks
+
+                        if tasks_done > previous_tasks_done:
+                            endch = ""
+                            if completed:
+                                endch = "\n"
+
+                            to_print = f"\rRunning simulations..."
+                            if tasks_done > 0:
+                                to_print += f" {tasks_done} / {initial_tasks} ({tasks_done / initial_tasks:.1%}), ETA {misc.timeformat_hhmmss(misc.timeleft(start, time.time(), tasks_done, initial_tasks))}"
+
+                            print(to_print, end=endch)
+
+                            previous_tasks_done = tasks_done
+
+                            if completed:
+                                break
+
+                pool.join()
+
+                for (ind, seed, *_), result in zip(self.__worker_tasks, results):
+                    fitness_values[ind, seed] = result.get()
+        else:
+            initial_tasks = len(self.__worker_tasks)
+            for i, task in enumerate(self.__worker_tasks):
+                individual_index, seed_index, *_ = task
+
+                fitness_values[individual_index, seed_index] = self.do_worker_task(task_tuple=task, is_multiprocessing=False)
+
+                if verbose > 1:
+                    tasks_done = i
+
+                    completed = tasks_done >= initial_tasks
 
                     endch = ""
-                    if done == to_do:
+                    if completed:
                         endch = "\n"
 
                     to_print = f"\rRunning simulations..."
-                    if done > 0:
-                        to_print += f" {done / to_do:.1%}, ETA {misc.timeformat_hhmmss(misc.timeleft(start, time.time(), done, to_do))}"
+                    if tasks_done > 0:
+                        to_print += f" {tasks_done} / {initial_tasks} ({tasks_done / initial_tasks:.1%}), ETA {misc.timeformat_hhmmss(misc.timeleft(start, time.time(), tasks_done, initial_tasks))}"
 
                     print(to_print, end=endch)
-
-                if representation in self.fitness_log:
-                    fitness_values[i, j] = self.fitness_log[representation]
-                else:
-                    if self.settings.fitness_is_random:
-                        fitness = np.mean(self.rng.uniform(high=1000, size=3))
-                    else:
-                        seed = self.settings.simulations_seeds[j]
-                        warehouse = dfjss.Warehouse(rng_seed=seed)
-                        warehouse.settings = self.settings.warehouse_settings
-                        warehouse.settings.decision_rule = pf.PriorityFunctionTreeDecisionRule(
-                            priority_function_tree=individual
-                        )
-
-                        simulation_output = warehouse.simulate()
-                        fitness = self.settings.fitness_func(simulation_output.get_objectives())
-
-                    fitness_values[i, j] = fitness
 
         if verbose > 1:
             print(f"\tTook {misc.timeformat(time.time() - start)}")
@@ -603,8 +675,7 @@ class GeneticAlgorithm:
                                                                   individual_2=participants_2[best_participant_i_2],
                                                                   verbose=verbose)
 
-                        if self.settings.fitness_log_is_phenotype_mapper and repr(
-                                new_individual) not in self.fitness_log:
+                        if repr(new_individual) not in self.fitness_log:
                             break
 
                     if new_individual.depth() <= self.settings.tree_transformation_max_depth:
