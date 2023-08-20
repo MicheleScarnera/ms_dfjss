@@ -421,25 +421,25 @@ class GeneticAlgorithm:
     def do_worker_task(self, task_tuple, is_multiprocessing=True):
         individual_index, seed_index, individual, seed, warehouse_settings = task_tuple
 
-        if not is_multiprocessing:
-            representation = repr(individual)
+        representation = repr(individual)
 
-            if representation in self.fitness_log:
-                return self.fitness_log[representation]
+        if representation in self.fitness_log:
+            return self.fitness_log[representation]
 
         if self.settings.fitness_is_random:
             #fitness = np.mean(self.rng.uniform(high=1000, size=3))
             fitness, _ = np.modf(time.time())
             fitness *= 1000.
         else:
-            warehouse = dfjss.Warehouse(rng_seed=seed)
+            warehouse = dfjss.Warehouse(rng_seed=seed, settings=warehouse_settings)
 
             decision_rule = pf.PriorityFunctionTreeDecisionRule(
                 priority_function_tree=individual
             )
 
             warehouse_settings.decision_rule = decision_rule
-            warehouse.settings = warehouse_settings
+
+            #print(warehouse.settings.generation_simulation_ranges["simulation_random_job_arrival_rate"])
 
             simulation_output = warehouse.simulate()
 
@@ -472,6 +472,7 @@ class GeneticAlgorithm:
         # compute fitness values
         fitness_values = np.zeros(shape=(len(self.population), self.settings.number_of_simulations_per_individual))
 
+        self.__worker_tasks = []
         for individual_index in range(len(self.population)):
             for seed_index in range(self.settings.number_of_simulations_per_individual):
                 self.__worker_tasks.append((individual_index, seed_index, self.population[individual_index], self.settings.simulations_seeds[seed_index], copy.copy(self.settings.warehouse_settings)))
@@ -482,9 +483,9 @@ class GeneticAlgorithm:
             lock = mp.Lock()
             with mp.get_context("spawn").Pool(initializer=init_pool_processes, initargs=(lock,), processes=self.settings.multiprocessing_processes) as pool:
             #with ThreadPool(initializer=init_pool_processes, initargs=(lock,), processes=self.settings.multiprocessing_processes) as pool:
-                results = []
+                apply_results = []
                 for task in self.__worker_tasks:
-                    results.append(pool.apply_async(func=self.do_worker_task, args=(task, True)))
+                    apply_results.append(pool.apply_async(func=self.do_worker_task, args=(task, True)))
 
                 pool.close()
 
@@ -494,7 +495,7 @@ class GeneticAlgorithm:
                     while True:
                         time.sleep(1)
 
-                        tasks_done = np.sum([result.ready() for result in results])
+                        tasks_done = np.sum([apply_result.ready() for apply_result in apply_results])
 
                         completed = tasks_done >= initial_tasks
 
@@ -516,8 +517,8 @@ class GeneticAlgorithm:
 
                 pool.join()
 
-                for (ind, seed, *_), result in zip(self.__worker_tasks, results):
-                    fitness_values[ind, seed] = result.get()
+                for (ind, seed, *_), apply_result in zip(self.__worker_tasks, apply_results):
+                    fitness_values[ind, seed] = apply_result.get()
         else:
             initial_tasks = len(self.__worker_tasks)
             for i, task in enumerate(self.__worker_tasks):
@@ -644,6 +645,7 @@ class GeneticAlgorithm:
 
             # make tournament size even (and not bigger)
             tournament_size -= tournament_size % 2
+            tournament_size = max(2, tournament_size)
 
             crossover_start = time.time()
 
@@ -660,19 +662,19 @@ class GeneticAlgorithm:
 
                 for _ in range(depth_attempts):
                     for _ in range(ph_e_attempts):
-                        participants = self.rng.choice(a=old_population, size=tournament_size, replace=False)
+                        participants = self.rng.choice(a=len(old_population), size=tournament_size, replace=False)
                         participants_1 = participants[0:tournament_size // 2]
                         participants_2 = participants[tournament_size // 2:tournament_size]
 
                         assert len(participants_1) == len(participants_2)
 
                         best_participant_i_1 = np.argmin(
-                            [self.fitness_log[repr(participant)] for participant in participants_1])
+                            [fitness_values[participant] for participant in participants_1])
                         best_participant_i_2 = np.argmin(
-                            [self.fitness_log[repr(participant)] for participant in participants_2])
+                            [fitness_values[participant] for participant in participants_2])
 
-                        new_individual = self.combine_individuals(individual_1=participants_1[best_participant_i_1],
-                                                                  individual_2=participants_2[best_participant_i_2],
+                        new_individual = self.combine_individuals(individual_1=old_population[best_participant_i_1],
+                                                                  individual_2=old_population[best_participant_i_2],
                                                                   verbose=verbose)
 
                         if repr(new_individual) not in self.fitness_log:

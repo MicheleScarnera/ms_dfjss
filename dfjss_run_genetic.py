@@ -50,7 +50,7 @@ if __name__ == "__main__":
     gen_algo_settings.fitness_func = custom_fitness_func
     gen_algo_settings.fitness_is_random = False
 
-    gen_algo_settings.multiprocessing_processes = 1
+    gen_algo_settings.multiprocessing_processes = 6
 
     gen_algo_settings.population_size = 500
     gen_algo_settings.number_of_simulations_per_individual = 3
@@ -60,7 +60,7 @@ if __name__ == "__main__":
     gen_algo_settings.tree_generation_mode = "half_and_half"
     gen_algo_settings.tree_transformation_max_depth = 5
 
-    gen_algo_settings.fitness_log_is_phenotype_mapper = False
+    gen_algo_settings.fitness_log_is_phenotype_mapper = True
     gen_algo_settings.phenotype_mapper_scenarios_amount = 50
     gen_algo_settings.phenotype_exploration_attempts_during_crossover = 3
 
