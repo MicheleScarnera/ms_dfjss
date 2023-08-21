@@ -32,6 +32,7 @@ if __name__ == "__main__":
 
     gen_algo_settings.features = ["operation_windup",
                                   "operation_cooldown",
+                                  "job_relative_deadline",
                                   "job_remaining_number_of_operations",
                                   "job_remaining_work_to_complete",
                                   "machine_capacity",
@@ -43,16 +44,16 @@ if __name__ == "__main__":
                                   "pair_number_of_alternative_operations",
                                   "pair_expected_processing_time"]
 
-    gen_algo_settings.warehouse_settings.generation_simulation_ranges["simulation_number_of_starting_jobs"] = 50
-    gen_algo_settings.warehouse_settings.generation_simulation_ranges["simulation_random_job_arrival_rate"] = 0
-    gen_algo_settings.warehouse_settings.generation_simulation_ranges["simulation_random_job_arrival_end_state_prevention_batch_size"] = 0
+    #gen_algo_settings.warehouse_settings.generation_simulation_ranges["simulation_number_of_starting_jobs"] = 50
+    #gen_algo_settings.warehouse_settings.generation_simulation_ranges["simulation_random_job_arrival_rate"] = 0
+    #gen_algo_settings.warehouse_settings.generation_simulation_ranges["simulation_random_job_arrival_end_state_prevention_batch_size"] = 0
 
-    gen_algo_settings.fitness_func = custom_fitness_func
+    #gen_algo_settings.fitness_func = custom_fitness_func
     gen_algo_settings.fitness_is_random = False
 
     gen_algo_settings.multiprocessing_processes = 6
 
-    gen_algo_settings.population_size = 500
+    gen_algo_settings.population_size = 1000
     gen_algo_settings.number_of_simulations_per_individual = 3
     gen_algo_settings.total_steps = 40
 
@@ -61,7 +62,7 @@ if __name__ == "__main__":
     gen_algo_settings.tree_transformation_max_depth = 5
 
     gen_algo_settings.fitness_log_is_phenotype_mapper = True
-    gen_algo_settings.phenotype_mapper_scenarios_amount = 50
+    gen_algo_settings.phenotype_mapper_scenarios_amount = 100
     gen_algo_settings.phenotype_exploration_attempts_during_crossover = 3
 
     gen_algo_settings.depth_attempts_during_crossover = 3

@@ -477,6 +477,9 @@ class GeneticAlgorithm:
             for seed_index in range(self.settings.number_of_simulations_per_individual):
                 self.__worker_tasks.append((individual_index, seed_index, self.population[individual_index], self.settings.simulations_seeds[seed_index], copy.copy(self.settings.warehouse_settings)))
 
+        # shuffle the task order to make the ETA estimation less biased
+        self.rng.shuffle(x=self.__worker_tasks)
+
         start = time.time()
 
         if self.settings.multiprocessing_processes > 1:
@@ -492,28 +495,35 @@ class GeneticAlgorithm:
                 if verbose > 1:
                     initial_tasks = len(self.__worker_tasks)
                     previous_tasks_done = 0
+                    current_eta = -1
+                    time_increment = 1
                     while True:
-                        time.sleep(1)
+                        time.sleep(time_increment)
 
                         tasks_done = np.sum([apply_result.ready() for apply_result in apply_results])
 
                         completed = tasks_done >= initial_tasks
 
                         if tasks_done > previous_tasks_done:
-                            endch = ""
-                            if completed:
-                                endch = "\n"
+                            current_eta = misc.timeleft(start, time.time(), tasks_done, initial_tasks)
+                        else:
+                            current_eta = max(current_eta - time_increment, 0)
 
-                            to_print = f"\rRunning simulations..."
-                            if tasks_done > 0:
-                                to_print += f" {tasks_done} / {initial_tasks} ({tasks_done / initial_tasks:.1%}), ETA {misc.timeformat_hhmmss(misc.timeleft(start, time.time(), tasks_done, initial_tasks))}"
+                        endch = ""
+                        if completed:
+                            endch = "\n"
 
-                            print(to_print, end=endch)
+                        to_print = f"\rRunning simulations..."
+                        if tasks_done > 0:
+                            absolute_eta = datetime.datetime.now() + datetime.timedelta(seconds=current_eta)
+                            to_print += f" {tasks_done} / {initial_tasks} ({tasks_done / initial_tasks:.1%}), ETA {misc.timeformat_hhmmss(current_eta)} ({absolute_eta.strftime('%a %d %b %Y, %H:%M:%S')})"
 
-                            previous_tasks_done = tasks_done
+                        previous_tasks_done = tasks_done
 
-                            if completed:
-                                break
+                        if completed:
+                            break
+
+                        print(to_print, end=endch, flush=True)
 
                 pool.join()
 

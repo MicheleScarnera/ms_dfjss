@@ -65,7 +65,7 @@ GENERATION_JOB_RANGES = {
     # absolute deadline and initialization time are set during job creation.
     # Units: seconds
     "job_absolute_deadline": -1,
-    "job_relative_deadline": (60, 360),
+    "job_relative_deadline": (120, 720),
     "job_initialization_time": -1,
 
     # REMAINING NUMBER OF OPERATIONS
