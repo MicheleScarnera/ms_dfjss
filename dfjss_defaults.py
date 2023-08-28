@@ -37,14 +37,14 @@ GENERATION_OPERATION_RANGES = {
     # fixed amount of time before the operation starts.
     # The machine is *not free* during this process.
     # Units: seconds
-    "operation_windup": (0, 120),
+    "operation_windup": (0, 60),
 
     # COOLDOWN
     # When a machine ends an operation, there is a
     # fixed amount of time before the job can continue.
     # The machine is *free* during this process.
     # Units: seconds
-    "operation_cooldown": (0, 120),
+    "operation_cooldown": (0, 60),
 
     # START TIME
     # Absolute time at which the operation started.
@@ -65,7 +65,7 @@ GENERATION_JOB_RANGES = {
     # absolute deadline and initialization time are set during job creation.
     # Units: seconds
     "job_absolute_deadline": -1,
-    "job_relative_deadline": (120, 720),
+    "job_relative_deadline": (720, 3600),
     "job_initialization_time": -1,
 
     # REMAINING NUMBER OF OPERATIONS
@@ -91,7 +91,7 @@ GENERATION_MACHINE_RANGES = {
     # The rate at which this machine executes "work".
     # The time to finish an operation is (operation_work_required / machine_nominal_work_power).
     # Units: "work" units per second (for example watts, seconds/second, etc)
-    "machine_nominal_work_power": (10, 500),
+    "machine_nominal_work_power": (5, 200),
 
     # CAPACITY
     # How many operations can the machine do at once.
@@ -125,7 +125,7 @@ GENERATION_MACHINE_RANGES = {
     # Machine breakdown is determined before the breakdown rate changes.
     # When a machine breaks down, it's replaced with another one with the same recipe, and starts on cooldown.
     # Units: breakdowns/second (breakdowns happen under a "Poisson/Exponential" regimen)
-    "machine_max_breakdown_rate": (0.01, 0.05),
+    "machine_max_breakdown_rate": (0.0001, 0.0005),
     "machine_current_breakdown_rate": 0,
     "machine_replacement_cooldown": (60, 120),
 
@@ -150,6 +150,7 @@ GENERATION_MACHINE_RANGES = {
 GENERATION_WAREHOUSE_RANGES = {
     # UTILIZATION RATE
     # How many machines, in percentage, are currently being used.
+    # Machine with capacity N>1 are counted as if the machine is split into N copies with capacity 1.
     # Units: percent
     "warehouse_utilization_rate": 0.,
 }
@@ -191,7 +192,7 @@ GENERATION_SIMULATION_RANGES = {
     # NUMBER OF STARTING MACHINES OVER ESSENTIAL
     # Number of machines to generate at the start, beyond the "essential" ones (one for each family)
     # Units: potatoes
-    "simulation_number_of_starting_machines_over_essential": 5,
+    "simulation_number_of_starting_machines_over_essential": 10,
 
     # NUMBER OF STARTING JOBS
     # Number of jobs to generate at the start
@@ -201,7 +202,7 @@ GENERATION_SIMULATION_RANGES = {
     # RANDOM JOB ARRIVAL RATE
     # Rate at which jobs randomly arrive.
     # Units: jobs/second (job arrivals happen under a "Poisson/Exponential" regimen)
-    "simulation_random_job_arrival_rate": 0.0085,
+    "simulation_random_job_arrival_rate": 0.0025,
 
     # RANDOM JOB ARRIVAL END STATE PREVENTION BATCH SIZE / AVERAGE WAITING TIME
     # If the simulation runs out of jobs,
