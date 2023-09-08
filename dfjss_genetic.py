@@ -4,6 +4,7 @@ from collections import Counter
 import copy
 import time
 import datetime
+import json
 from pathlib import Path
 import multiprocessing as mp
 from multiprocessing.pool import ThreadPool
@@ -17,6 +18,9 @@ import dfjss_priorityfunction as pf
 import dfjss_phenotype as pht
 import dfjss_misc as misc
 
+FITNESSLOG_CSV_NAME = "fitness_log"
+GENALGOLOG_CSV_NAME = "genalgo_log"
+LASTSTATE_JSON_NAME = "last_state"
 
 def init_pool_processes(the_lock):
     '''Initialize each process with a global variable lock.
@@ -45,7 +49,7 @@ class GeneticAlgorithmSettings:
         self.fitness_is_random = False
 
         self.number_of_simulations_per_individual = 3
-        self.simulations_reduce = np.median
+        self.simulations_reduce = np.mean
         self.simulations_seeds = None
 
         self.features = DEFAULTS.MANDATORY_NUMERIC_FEATURES
@@ -132,7 +136,7 @@ class GeneticAlgorithm:
 
         self.settings = settings
 
-        self.rng = np.random.default_rng(seed=rng_seed)
+        self.rng = np.random.Generator(np.random.PCG64(seed=rng_seed))
 
         self.population = []
 
@@ -292,6 +296,7 @@ class GeneticAlgorithm:
 
         if individual.depth() <= 1:
             weights[outcomes.index("remove_branch")] = 0.
+            weights[outcomes.index("hoist_branch")] = 0.
 
         weights = weights / np.sum(weights)
 
@@ -418,6 +423,18 @@ class GeneticAlgorithm:
 
         if not inplace:
             return individual
+
+    def import_state(self, folder_name):
+        json_filepath = f"{folder_name}/{LASTSTATE_JSON_NAME}.json"
+        with open(json_filepath) as file:
+            data = json.load(file)
+
+            self.rng.bit_generator.state = data["rng_state"]
+
+            self.population = [pf.representation_to_priority_function_tree(representation=individual_repr,
+                                                                           features=self.settings.features,
+                                                                           operations=self.settings.operations)
+                               for individual_repr in data["population"]]
 
     def do_worker_task(self, task_tuple, is_multiprocessing=True):
         individual_index, seed_index, individual, seed, warehouse_settings = task_tuple
@@ -806,7 +823,7 @@ class GeneticAlgorithm:
             if self.settings.fitness_is_random:
                 foldername = f"{foldername} random fitness"
 
-            filepath_fitnesslog_str = f"{foldername}/fitness_log.csv"
+            filepath_fitnesslog_str = f"{foldername}/{FITNESSLOG_CSV_NAME}.csv"
             filepath_fitnesslog = Path(filepath_fitnesslog_str)
             filepath_fitnesslog.parent.mkdir(parents=True, exist_ok=True)
 
@@ -820,7 +837,7 @@ class GeneticAlgorithm:
                     print(f"Could not save fitness log ({error})")
 
             try:
-                genalgo_log_path = f"{foldername}/genalgo_log.csv"
+                genalgo_log_path = f"{foldername}/{GENALGOLOG_CSV_NAME}.csv"
 
                 genalgo_log.to_csv(path_or_buf=genalgo_log_path, index=False)
 
@@ -829,6 +846,23 @@ class GeneticAlgorithm:
             except Exception as error:
                 if verbose > 0:
                     print(f"Could not save genetic algorithm log ({error})")
+
+            try:
+                laststate_json_path = f"{foldername}/{LASTSTATE_JSON_NAME}.json"
+
+                laststate_dict = dict()
+
+                laststate_dict["rng_state"] = self.rng.bit_generator.state
+                laststate_dict["population"] = [repr(individual) for individual in self.population]
+
+                with open(laststate_json_path, 'w') as file:
+                    json.dump(laststate_dict, file)
+
+                if verbose > 0:
+                    print("Last state saved successfully")
+            except Exception as error:
+                if verbose > 0:
+                    print(f"Could not save last state ({error})")
 
         if verbose > 2:
             print("Fitness log:")

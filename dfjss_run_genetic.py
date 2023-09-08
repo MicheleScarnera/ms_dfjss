@@ -51,10 +51,10 @@ if __name__ == "__main__":
     #gen_algo_settings.fitness_func = custom_fitness_func
     gen_algo_settings.fitness_is_random = False
 
-    gen_algo_settings.multiprocessing_processes = 6
+    gen_algo_settings.multiprocessing_processes = 5
 
-    gen_algo_settings.population_size = 1000
-    gen_algo_settings.number_of_simulations_per_individual = 3
+    gen_algo_settings.population_size = 100
+    gen_algo_settings.number_of_simulations_per_individual = 12
     gen_algo_settings.total_steps = 40
 
     gen_algo_settings.tree_generation_max_depth = 2
@@ -79,6 +79,8 @@ if __name__ == "__main__":
     gen_algo_settings.tournament_percent_size = 0.25
 
     gen_algo = genetic.GeneticAlgorithm(settings=gen_algo_settings, rng_seed=123)
+
+    #gen_algo.import_state("29 Aug 2023 17_59_26 random fitness")
 
     gen_algo.run_genetic_algorithm(max_individuals_to_evaluate=-1,
                                    verbose=2)

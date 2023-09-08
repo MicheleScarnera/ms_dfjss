@@ -689,8 +689,10 @@ class Warehouse:
                 recipe = machine.features["machine_recipe"]
 
                 new_machine = self.add_machine(recipe=recipe)
-
-                self.make_machine_wait(machine=new_machine, time_needed=new_machine.features["machine_replacement_cooldown"])
+                
+                # machine replacement cooldown must be determined by the broken down machine
+                # otherwise, its value is kind of useless for priority functions
+                self.make_machine_wait(machine=new_machine, time_needed=machine.features["machine_replacement_cooldown"])
 
                 if verbose > 1:
                     print(
