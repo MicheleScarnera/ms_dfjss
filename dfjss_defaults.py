@@ -118,12 +118,13 @@ GENERATION_MACHINE_RANGES = {
     "machine_cooldown": (0, 60),
 
     # MAX/CURRENT BREAKDOWN RATE
-    # While a machine is operating, there is a chance it will break down.
+    # While a machine is in the simulation, there is a chance it will break down.
     # Upon breaking down, the machine is removed,
     # and all operations under it are interrupted and need to be started again from scratch.
     # Each machine has a max breakdown rate, and it randomly fluctuates at every routine step.
     # Machine breakdown is determined before the breakdown rate changes.
     # When a machine breaks down, it's replaced with another one with the same recipe, and starts on cooldown.
+    # The cooldown is determined by the broken down machine.
     # Units: breakdowns/second (breakdowns happen under a "Poisson/Exponential" regimen)
     "machine_max_breakdown_rate": (0.0001, 0.0005),
     "machine_current_breakdown_rate": 0,
