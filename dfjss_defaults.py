@@ -58,7 +58,7 @@ GENERATION_JOB_RANGES = {
     # Units: potatoes
     "job_starting_number_of_operations": (2, 12),
 
-    # ABSOLUTE/RELATIVE DEADLINE, INITIALIZATION TIME
+    # ABSOLUTE/RELATIVE DEADLINE, INITIALIZATION TIME, TIME ALIVE
     # Amount of time to complete the job. Related to i.e. net tardiness objective functions.
     # A late job does not affect the simulation.
     # Relative deadline changes in real time, while
@@ -67,6 +67,7 @@ GENERATION_JOB_RANGES = {
     "job_absolute_deadline": -1,
     "job_relative_deadline": (720, 3600),
     "job_initialization_time": -1,
+    "job_time_alive": -1,
 
     # REMAINING NUMBER OF OPERATIONS
     # Number of operations the job has left.

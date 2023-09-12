@@ -528,14 +528,16 @@ class Warehouse:
 
         return result
 
-    def add_job(self):
+    def add_job(self, initialization_time_shift=0.):
         # features
         # generate numeric features first
         features = generate_features(self.rng, self.settings.generation_job_ranges)
 
+        current_time = self.current_time + initialization_time_shift
+
         # job-specific adjustments to features
-        features["job_absolute_deadline"] = self.current_time + features["job_relative_deadline"]
-        features["job_initialization_time"] = self.current_time
+        features["job_absolute_deadline"] = current_time + features["job_relative_deadline"]
+        features["job_initialization_time"] = current_time
 
         new_job = Job(operations=self.create_operations(amount=features["job_starting_number_of_operations"]),
                       features=features)
@@ -778,11 +780,13 @@ class Warehouse:
             to_spawn = self.simulation_features["simulation_random_job_arrival_end_state_prevention_batch_size"]
 
             for _ in range(to_spawn):
-                new_job = self.add_job()
+                wait_time = self.rng.exponential(
+                                scale=self.simulation_features["simulation_random_job_arrival_end_state_prevention_average_waiting_time"],
+                                size=None)
+
+                new_job = self.add_job(initialization_time_shift=wait_time)
                 self.make_job_wait(job=new_job,
-                                   time_needed=self.rng.exponential(
-                                       scale=self.simulation_features["simulation_random_job_arrival_end_state_prevention_average_waiting_time"],
-                                       size=None))
+                                   time_needed=wait_time)
 
             if verbose > 1:
                 print(
@@ -804,6 +808,7 @@ class Warehouse:
             )
 
             job.features["job_relative_deadline"] = job.features["job_absolute_deadline"] - self.current_time
+            job.features["job_time_alive"] = self.current_time - job.features["job_initialization_time"]
 
         # machines' real time features
         for machine in self.machines:

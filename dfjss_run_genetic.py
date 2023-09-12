@@ -33,6 +33,7 @@ if __name__ == "__main__":
     gen_algo_settings.features = ["operation_windup",
                                   "operation_cooldown",
                                   "job_relative_deadline",
+                                  "job_time_alive",
                                   "job_remaining_number_of_operations",
                                   "job_remaining_work_to_complete",
                                   "machine_capacity",
@@ -59,7 +60,7 @@ if __name__ == "__main__":
 
     gen_algo_settings.tree_generation_max_depth = 2
     gen_algo_settings.tree_generation_mode = "half_and_half"
-    gen_algo_settings.tree_transformation_max_depth = 5
+    gen_algo_settings.tree_transformation_max_depth = 8
 
     gen_algo_settings.fitness_log_is_phenotype_mapper = True
     gen_algo_settings.phenotype_mapper_scenarios_amount = 100
