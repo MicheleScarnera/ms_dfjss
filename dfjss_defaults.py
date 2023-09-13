@@ -66,8 +66,8 @@ GENERATION_JOB_RANGES = {
     "job_lateness_penalty": (0.5, 2),
 
     # DELIVERY RELAXATION FACTOR
-    # If this is bigger than 1, the finished job will be treated as if it was completed earlier.
-    # If this is smaller than 1, it will be treated as if it was completed later.
+    # If this is bigger than 1, the finished job will be treated as if it was finished earlier.
+    # If this is smaller than 1, it will be treated as if it was finished later.
     # Units: seconds/second
     "job_delivery_relaxation": (0.5, 2),
 

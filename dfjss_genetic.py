@@ -22,12 +22,16 @@ FITNESSLOG_CSV_NAME = "fitness_log"
 GENALGOLOG_CSV_NAME = "genalgo_log"
 LASTSTATE_JSON_NAME = "last_state"
 
+
 def init_pool_processes(the_lock):
     '''Initialize each process with a global variable lock.
     '''
     global lock
     lock = the_lock
 
+
+def default_simulations_reduce(fitness_array):
+    return 0.75 * np.median(fitness_array) + 0.25 * np.mean(fitness_array)
 
 class GeneticAlgorithmSettings:
     reproduction_rate: Any
@@ -49,7 +53,8 @@ class GeneticAlgorithmSettings:
         self.fitness_is_random = False
 
         self.number_of_simulations_per_individual = 3
-        self.simulations_reduce = np.mean
+
+        self.simulations_reduce = default_simulations_reduce
         self.simulations_seeds = None
 
         self.features = DEFAULTS.MANDATORY_NUMERIC_FEATURES
@@ -573,7 +578,7 @@ class GeneticAlgorithm:
         if verbose > 1:
             print(f"\tTook {misc.timeformat(time.time() - start)}")
 
-        fitness_values = self.settings.simulations_reduce(fitness_values, axis=1)
+        fitness_values = np.array([self.settings.simulations_reduce(fitnesses) for fitnesses in np.split(fitness_values, indices_or_sections=len(self.population), axis=0)])
 
         result.population_data = pd.DataFrame(
             {"Individual": [repr(individual) for individual in self.population],
