@@ -739,10 +739,13 @@ class Warehouse:
                         job_of_operation_done.features["job_relative_deadline"]
                     )
 
-                    relaxed_deadline = job_of_operation_done.features["job_initialization_time"] + job_of_operation_done.features["job_delivery_relaxation"] * time_to_finish
+                    relaxed_absolute_deadline = job_of_operation_done.features["job_initialization_time"] +\
+                                                job_of_operation_done.features["job_delivery_relaxation"] *\
+                                                (job_of_operation_done.features["job_absolute_deadline"] - job_of_operation_done.features["job_initialization_time"])
+
                     simulation_output.jit_penalties.append(
-                        job_of_operation_done.features["job_earliness_penalty"] * max(relaxed_deadline - time_to_finish, 0) +\
-                        job_of_operation_done.features["job_lateness_penalty"] * max(time_to_finish - relaxed_deadline, 0)
+                        job_of_operation_done.features["job_earliness_penalty"] * max(relaxed_absolute_deadline - self.current_time, 0) +\
+                        job_of_operation_done.features["job_lateness_penalty"] * max(self.current_time - relaxed_absolute_deadline, 0)
                     )
 
                     if verbose > 1:

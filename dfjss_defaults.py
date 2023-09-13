@@ -78,7 +78,7 @@ GENERATION_JOB_RANGES = {
     # absolute deadline and initialization time are set during job creation.
     # Units: seconds
     "job_absolute_deadline": -1,
-    "job_relative_deadline": (720, 3600),
+    "job_relative_deadline": (120, 720),
     "job_initialization_time": -1,
     "job_time_alive": -1,
 
@@ -208,7 +208,7 @@ GENERATION_SIMULATION_RANGES = {
     # NUMBER OF STARTING MACHINES OVER ESSENTIAL
     # Number of machines to generate at the start, beyond the "essential" ones (one for each family)
     # Units: potatoes
-    "simulation_number_of_starting_machines_over_essential": [5, 10, 30],
+    "simulation_number_of_starting_machines_over_essential": (0, 15),
 
     # NUMBER OF STARTING JOBS
     # Number of jobs to generate at the start
@@ -218,7 +218,7 @@ GENERATION_SIMULATION_RANGES = {
     # RANDOM JOB ARRIVAL AVERAGE AMOUNT
     # Average amount of jobs that will arrive inside the time window.
     # Units: jobs (job arrivals happen under a "Poisson/Exponential" regimen)
-    "simulation_random_job_arrival_average_amount": (20, 100),
+    "simulation_random_job_arrival_average_amount": (20, 400),
 
     # RANDOM JOB ARRIVAL END STATE PREVENTION BATCH SIZE / AVERAGE WAITING TIME
     # If the simulation runs out of jobs,
