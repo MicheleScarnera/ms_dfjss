@@ -226,6 +226,7 @@ class WarehouseSimulationOutput:
     times_passed: list[float]
     job_times: list[float]
     job_relative_deadlines: list[float]
+    jit_penalties: list[float]
     workloads: list[float]
     machine_lifespans: list[float]
 
@@ -237,6 +238,7 @@ class WarehouseSimulationOutput:
                  job_times=None,
                  job_relative_deadlines=None,
                  workloads=None,
+                 jit_penalties=None,
                  machine_lifespans=None,
                  costs=None,
                  energies_used=None):
@@ -248,6 +250,8 @@ class WarehouseSimulationOutput:
         self.job_relative_deadlines = job_relative_deadlines
         self.workloads = workloads
 
+        self.jit_penalties = jit_penalties
+
         self.machine_lifespans = machine_lifespans
 
         self.costs = costs
@@ -257,6 +261,7 @@ class WarehouseSimulationOutput:
         result = dict()
         jt = np.array(self.job_times)
         jrd = np.array(self.job_relative_deadlines)
+        jit = np.array(self.jit_penalties)
         wl = np.array(self.workloads)
         ml = np.array(self.machine_lifespans)
         c = np.array(self.costs)
@@ -269,6 +274,8 @@ class WarehouseSimulationOutput:
         result["mean_tardiness"] = -np.mean(jrd, where=jrd < 0.) if np.any(jrd < 0.) else 0.
         result["max_earliness"] = np.max(jrd, where=jrd > 0., initial=0.) # if np.any(jrd > 0.) else 0.
         result["max_tardiness"] = -np.min(jrd, where=jrd < 0., initial=0.) # if np.any(jrd < 0.) else 0.
+
+        result["mean_jit_penalty"] = np.mean(jit)
 
         result["total_running_time"] = np.sum(ml)
 
@@ -593,7 +600,6 @@ class Warehouse:
 
         # Take note of operation's start time
         # If already positive, then treat it as "already started some other time, but somehow failed to complete"
-        # TODO: Chance for machines to break?
         if operation.features["operation_start_time"] < 0.:
             operation.features["operation_start_time"] = self.current_time
 
@@ -725,11 +731,18 @@ class Warehouse:
                     # job finished
                     self.jobs.remove(job_of_operation_done)
 
-                    simulation_output.job_times.append(
-                        self.current_time - job_of_operation_done.features["job_initialization_time"]
-                    )
+                    time_to_finish = self.current_time - job_of_operation_done.features["job_initialization_time"]
+
+                    simulation_output.job_times.append(time_to_finish)
+
                     simulation_output.job_relative_deadlines.append(
                         job_of_operation_done.features["job_relative_deadline"]
+                    )
+
+                    relaxed_deadline = job_of_operation_done.features["job_initialization_time"] + job_of_operation_done.features["job_delivery_relaxation"] * time_to_finish
+                    simulation_output.jit_penalties.append(
+                        job_of_operation_done.features["job_earliness_penalty"] * max(relaxed_deadline - time_to_finish, 0) +\
+                        job_of_operation_done.features["job_lateness_penalty"] * max(time_to_finish - relaxed_deadline, 0)
                     )
 
                     if verbose > 1:
@@ -761,6 +774,7 @@ class Warehouse:
                     print(
                         f"\tAvailable: Job with \'{waiting_job.job.operations[0].features['operation_family']}\' operation")
 
+        """
         # random job arrivals
         if len(self.jobs) > 0:
             jobarrival_rate = last_time_passed * self.simulation_features["simulation_random_job_arrival_rate"]
@@ -776,7 +790,7 @@ class Warehouse:
                             f"\tJob arrivals: {new_jobs} jobs have been added"
                         )
 
-        elif self.simulation_features["simulation_random_job_arrival_end_state_prevention_batch_size"] > 0 and self.simulation_features["simulation_random_job_arrival_rate"] > 0:
+        if len(self.jobs) == 0 and self.simulation_features["simulation_random_job_arrival_end_state_prevention_batch_size"] > 0 and self.simulation_features["simulation_random_job_arrival_rate"] > 0:
             to_spawn = self.simulation_features["simulation_random_job_arrival_end_state_prevention_batch_size"]
 
             for _ in range(to_spawn):
@@ -792,6 +806,7 @@ class Warehouse:
                 print(
                     f"\t{to_spawn} jobs have been added at once to prevent the simulation from ending abruptly"
                 )
+        """
 
 
         # REAL-TIME FEATURES
@@ -898,6 +913,7 @@ class Warehouse:
             times_passed=[],
             job_times=[],
             job_relative_deadlines=[],
+            jit_penalties=[],
             workloads=[],
             machine_lifespans=[],
             costs=[],
@@ -913,8 +929,8 @@ class Warehouse:
         # store starting time
         starting_time = self.current_time
 
-        # max simulation time
-        max_simulation_time = self.simulation_features["simulation_max_simulation_time"]
+        # simulation time window
+        simulation_time_window = self.simulation_features["simulation_time_window"]
 
         # add 1 machine for each family, each machine has a random recipe from within the family
         # TODO: define creation settings for machines
@@ -934,20 +950,37 @@ class Warehouse:
             print(f"Number of machines by recipe: {recipe_counter}")
 
         # add jobs
-        # TODO: define creation settings for jobs
 
         for _ in range(self.simulation_features["simulation_number_of_starting_jobs"]):
             self.add_job()
 
         if verbose > 1:
-            print(f"Number of jobs: {len(self.jobs)}")
+            print(f"Number of jobs available from the start: {len(self.jobs)}")
+
+        # random job arrival
+        jobarrival_rate = self.simulation_features["simulation_random_job_arrival_average_amount"]
+        if jobarrival_rate > 0.:
+            new_jobs = self.rng.poisson(lam=jobarrival_rate, size=None)
+
+            if new_jobs > 0:
+                for _ in range(new_jobs):
+                    available_at = self.rng.uniform(low=0., high=simulation_time_window)
+
+                    new_job = self.add_job(initialization_time_shift=available_at)
+
+                    self.make_job_wait(job=new_job, time_needed=available_at)
+
+                if verbose > 1:
+                    print(
+                        f"Random job arrivals throughout the simulation: {new_jobs}"
+                    )
 
         end_reason = "UNKNOWN"
         routine_step = 1
         # run routine...
         while True:
             if verbose > 1:
-                print(f"Routine step {routine_step} - Time: {misc.timeformat(self.current_time)} - Jobs to do: {len(self.jobs)}")
+                print(f"Routine step {routine_step} - Time: {misc.timeformat(self.current_time)} - Jobs to do: {len(self.jobs)} ({len([None for job in self.jobs if not self.is_job_busy(job)])} available)")
 
             routine_result = self.do_routine_once(simulation_output=simulation_output, decision_rule_override=decision_rule_override, verbose=verbose)
 
@@ -963,9 +996,11 @@ class Warehouse:
                     print(f"Routine step {routine_step} ended - Time elapsed: {routine_result.time_passed:.2f}s",
                           end="\n\n")
 
-            if max_simulation_time > 0 and self.current_time > (starting_time + max_simulation_time):
-                end_reason = "reaching the maximum simulation time"
-                break
+            if simulation_time_window > 0 and self.current_time > (starting_time + simulation_time_window):
+                # end_reason = "reaching the maximum simulation time"
+                # break
+                if verbose > 1:
+                    print("Notice: Simulation has gone beyond its time window. This is not necessarily an issue, there might still be jobs to finish.")
 
             if 0 < max_routine_steps <= routine_step:
                 end_reason = "reaching the maximum routine steps"

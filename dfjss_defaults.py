@@ -1,11 +1,12 @@
 import dfjss_misc as misc
 
 RECIPES = {
-    "heat": ["microwave", "gas_oven", "gas_burner", "electric_oven", "electric_burner"],
-    "boil": ["gas_oven", "gas_burner", "electric_oven", "electric_burner"],
-    "thaw": ["microwave"],
-    "freeze": ["freezer"],
-    "lick": ["thin_tongue", "wide_tongue"],
+    "make_toast": ["toaster", "oven"],
+    "cook_frozen_dinner": ["microwave", "oven"],
+    "cook_eggs": ["microwave", "oven"],
+    "wash_dishes": ["dishwasher"],
+    "wash_clothes": ["washing_machine"],
+    "dry_clothes": ["dryer"],
 }
 
 FAMILIES = list(RECIPES.keys())
@@ -57,6 +58,18 @@ GENERATION_JOB_RANGES = {
     # Number of operations the job starts with.
     # Units: potatoes
     "job_starting_number_of_operations": (2, 12),
+
+    # EARLINESS/LATENESS PER-SECOND PENALTY
+    # Penalty for every second the job has been completed early/late.
+    # Units: penalty/second
+    "job_earliness_penalty": (0.5, 1.5),
+    "job_lateness_penalty": (0.5, 2),
+
+    # DELIVERY RELAXATION FACTOR
+    # If this is bigger than 1, the finished job will be treated as if it was completed earlier.
+    # If this is smaller than 1, it will be treated as if it was completed later.
+    # Units: seconds/second
+    "job_delivery_relaxation": (0.5, 2),
 
     # ABSOLUTE/RELATIVE DEADLINE, INITIALIZATION TIME, TIME ALIVE
     # Amount of time to complete the job. Related to i.e. net tardiness objective functions.
@@ -186,25 +199,26 @@ GENERATION_PAIR_RANGES = {
 }
 
 GENERATION_SIMULATION_RANGES = {
-    # MAX SIMULATION TIME
-    # Maximum amount of time the simulation is allowed to run.
+    # SIMULATION TIME WINDOW
+    # Suggested amount of time the simulation is allowed to run.
+    # The simulation can run for longer, but things like random job arrivals will no longer happen.
     # Units: seconds
-    "simulation_max_simulation_time": 43200,
+    "simulation_time_window": 43200,
 
     # NUMBER OF STARTING MACHINES OVER ESSENTIAL
     # Number of machines to generate at the start, beyond the "essential" ones (one for each family)
     # Units: potatoes
-    "simulation_number_of_starting_machines_over_essential": 10,
+    "simulation_number_of_starting_machines_over_essential": [5, 10, 30],
 
     # NUMBER OF STARTING JOBS
     # Number of jobs to generate at the start
     # Units: potatoes
-    "simulation_number_of_starting_jobs": 15,
+    "simulation_number_of_starting_jobs": 10,
 
-    # RANDOM JOB ARRIVAL RATE
-    # Rate at which jobs randomly arrive.
-    # Units: jobs/second (job arrivals happen under a "Poisson/Exponential" regimen)
-    "simulation_random_job_arrival_rate": 0.0025,
+    # RANDOM JOB ARRIVAL AVERAGE AMOUNT
+    # Average amount of jobs that will arrive inside the time window.
+    # Units: jobs (job arrivals happen under a "Poisson/Exponential" regimen)
+    "simulation_random_job_arrival_average_amount": (20, 100),
 
     # RANDOM JOB ARRIVAL END STATE PREVENTION BATCH SIZE / AVERAGE WAITING TIME
     # If the simulation runs out of jobs,
@@ -212,10 +226,10 @@ GENERATION_SIMULATION_RANGES = {
     # These jobs also have randomized a waiting time.
     # If this is 0 while the job arrival rate isn't, the simulation may end sooner than expected.
     # Units: potatoes
-    "simulation_random_job_arrival_end_state_prevention_batch_size": 15,
+    # "simulation_random_job_arrival_end_state_prevention_batch_size": 0,
 
     # Units: seconds (waiting times will follow an exponential distribution)
-    "simulation_random_job_arrival_end_state_prevention_average_waiting_time": 10,
+    # "simulation_random_job_arrival_end_state_prevention_average_waiting_time": 10,
 
 }
 

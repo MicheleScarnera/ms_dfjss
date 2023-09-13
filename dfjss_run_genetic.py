@@ -36,6 +36,9 @@ if __name__ == "__main__":
                                   "job_time_alive",
                                   "job_remaining_number_of_operations",
                                   "job_remaining_work_to_complete",
+                                  "job_earliness_penalty",
+                                  "job_lateness_penalty",
+                                  "job_delivery_relaxation",
                                   "machine_capacity",
                                   "machine_cooldown",
                                   "machine_current_breakdown_rate",
@@ -54,8 +57,8 @@ if __name__ == "__main__":
 
     gen_algo_settings.multiprocessing_processes = 5
 
-    gen_algo_settings.population_size = 100
-    gen_algo_settings.number_of_simulations_per_individual = 12
+    gen_algo_settings.population_size = 500
+    gen_algo_settings.number_of_simulations_per_individual = 50
     gen_algo_settings.total_steps = 40
 
     gen_algo_settings.tree_generation_max_depth = 2
@@ -77,7 +80,7 @@ if __name__ == "__main__":
     gen_algo_settings.mutation_rate = 0.02
     gen_algo_settings.mutation_rate_increment = 0.0184
 
-    gen_algo_settings.tournament_percent_size = 0.25
+    gen_algo_settings.tournament_percent_size = 0.05
 
     gen_algo = genetic.GeneticAlgorithm(settings=gen_algo_settings, rng_seed=123)
 

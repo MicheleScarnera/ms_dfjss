@@ -100,8 +100,9 @@ class GeneticAlgorithmSettings:
         self.multiprocessing_processes = 4
 
     def fitness_func(self, objectives):
-        return 0.8 * (0.75 * objectives["mean_tardiness"] + 0.25 * objectives["max_tardiness"]) +\
-               0.2 * (0.75 * objectives["mean_earliness"] + 0.25 * objectives["max_earliness"])
+        return objectives["mean_jit_penalty"]
+        #return 0.8 * (0.75 * objectives["mean_tardiness"] + 0.25 * objectives["max_tardiness"]) +\
+        #       0.2 * (0.75 * objectives["mean_earliness"] + 0.25 * objectives["max_earliness"])
 
 
 class GeneticAlgorithmRoutineOutput:
