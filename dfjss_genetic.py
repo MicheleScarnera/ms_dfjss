@@ -510,7 +510,20 @@ class GeneticAlgorithm:
         # compute fitness values
         fitness_values = np.zeros(shape=(len(self.population), self.settings.number_of_simulations_per_individual))
 
-        chosen_seeds = self.rng.choice(a=self.settings.simulations_seeds, size=self.settings.number_of_simulations_per_individual, replace=False)
+        if self.settings.fitness_log_is_phenotype_mapper:
+            seeds_weights = [1. / max(1., self.fitness_log[seed].phenotype_amount()) for seed in
+                             self.settings.simulations_seeds]
+        else:
+            seeds_weights = [1. / max(1., len(self.fitness_log[seed].keys())) for seed in
+                             self.settings.simulations_seeds]
+
+        seeds_weights = np.array(seeds_weights) / np.sum(seeds_weights)
+
+        chosen_seeds = self.rng.choice(a=self.settings.simulations_seeds,
+                                       size=self.settings.number_of_simulations_per_individual,
+                                       p=seeds_weights,
+                                       replace=False)
+
         self.__worker_tasks = []
         for individual_index in range(len(self.population)):
             for seed_index in range(self.settings.number_of_simulations_per_individual):

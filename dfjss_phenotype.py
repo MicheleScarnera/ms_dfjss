@@ -118,3 +118,6 @@ class PhenotypeMapper:
 
     def get(self, key, fallback_value=None):
         return self[key] if key in self else fallback_value
+
+    def phenotype_amount(self):
+        return len(self.phenotype_to_fitness.keys())
