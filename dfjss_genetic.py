@@ -31,7 +31,7 @@ def init_pool_processes(the_lock):
 
 
 def default_simulations_reduce(fitness_array):
-    return 0.75 * np.median(fitness_array) + 0.25 * np.mean(fitness_array)
+    return 0.75 * np.nanmedian(fitness_array) + 0.25 * np.nanmean(fitness_array)
 
 class GeneticAlgorithmSettings:
     reproduction_rate: Any
@@ -53,6 +53,7 @@ class GeneticAlgorithmSettings:
         self.fitness_is_random = False
 
         self.number_of_simulations_per_individual = 3
+        self.number_of_possible_seeds = 10
 
         self.simulations_reduce = default_simulations_reduce
         self.simulations_seeds = None
@@ -136,9 +137,11 @@ class GeneticAlgorithm:
         if settings is None:
             settings = GeneticAlgorithmSettings()
 
+        if settings.number_of_simulations_per_individual > settings.number_of_possible_seeds:
+            raise ValueError("settings.number_of_simulations_per_individual cannot be bigger than settings.number_of_possible_seeds")
+
         if settings.simulations_seeds is None:
-            settings.simulations_seeds = np.linspace(0, 10000, num=settings.number_of_simulations_per_individual,
-                                                     endpoint=True, dtype=int)
+            settings.simulations_seeds = [0 + 25 * i for i in range(settings.number_of_possible_seeds)]
 
         self.settings = settings
 
@@ -146,15 +149,25 @@ class GeneticAlgorithm:
 
         self.population = []
 
-        if self.settings.fitness_log_is_phenotype_mapper:
-            self.fitness_log = pht.PhenotypeMapper(scenarios_seed=rng_seed,
-                                                   reference_scenarios_amount=self.settings.phenotype_mapper_scenarios_amount)
-        else:
-            self.fitness_log = dict()
+        self.fitness_log = dict()
+
+        for seed in settings.simulations_seeds:
+            if self.settings.fitness_log_is_phenotype_mapper:
+                self.fitness_log[seed] = pht.PhenotypeMapper(scenarios_seed=rng_seed,
+                                                             reference_scenarios_amount=self.settings.phenotype_mapper_scenarios_amount)
+            else:
+                self.fitness_log[seed] = dict()
 
         # multiprocessing
 
         self.__worker_tasks = []
+
+    def in_any_fitness_log(self, repr_individual):
+        for seed in self.settings.simulations_seeds:
+            if repr_individual in self.fitness_log[seed]:
+                return True
+
+        return False
 
     def random_number(self):
         return np.round(self.rng.uniform(low=self.settings.priority_function_random_number_range[0],
@@ -447,8 +460,8 @@ class GeneticAlgorithm:
 
         representation = repr(individual)
 
-        if representation in self.fitness_log:
-            return self.fitness_log[representation]
+        if representation in self.fitness_log[seed]:
+            return self.fitness_log[seed][representation]
 
         if self.settings.fitness_is_random:
             #fitness = np.mean(self.rng.uniform(high=1000, size=3))
@@ -474,9 +487,9 @@ class GeneticAlgorithm:
     def do_genetic_routine_once(self, current_step, max_steps, verbose=0):
         result = GeneticAlgorithmRoutineOutput()
 
-        if len(self.settings.simulations_seeds) != self.settings.number_of_simulations_per_individual:
+        if len(self.settings.simulations_seeds) != self.settings.number_of_possible_seeds:
             raise ValueError(
-                f"Number of seeds provided in settings.simulations_seeds ({len(self.settings.simulations_seeds)}) is not the same as settings.number_of_simulations_per_individual ({self.settings.number_of_simulations_per_individual})")
+                f"Number of seeds provided in settings.simulations_seeds ({len(self.settings.simulations_seeds)}) is not the same as settings.number_of_possible_seeds ({self.settings.number_of_simulations_per_individual})")
 
         # if population is empty (or below desired amount) fill with random individuals
         while len(self.population) < self.settings.population_size:
@@ -485,8 +498,9 @@ class GeneticAlgorithm:
                 random_individual = self.get_random_individual()
                 repr_individual = repr(random_individual)
 
-                if repr_individual in self.fitness_log or repr_individual in [repr(individual) for individual in
-                                                                              self.population]:
+                in_any_fitness_log = self.in_any_fitness_log(repr_individual)
+
+                if in_any_fitness_log or repr_individual in [repr(individual) for individual in self.population]:
                     continue
                 else:
                     break
@@ -496,10 +510,11 @@ class GeneticAlgorithm:
         # compute fitness values
         fitness_values = np.zeros(shape=(len(self.population), self.settings.number_of_simulations_per_individual))
 
+        chosen_seeds = self.rng.choice(a=self.settings.simulations_seeds, size=self.settings.number_of_simulations_per_individual, replace=False)
         self.__worker_tasks = []
         for individual_index in range(len(self.population)):
             for seed_index in range(self.settings.number_of_simulations_per_individual):
-                self.__worker_tasks.append((individual_index, seed_index, self.population[individual_index], self.settings.simulations_seeds[seed_index], copy.copy(self.settings.warehouse_settings)))
+                self.__worker_tasks.append((individual_index, seed_index, self.population[individual_index], chosen_seeds[seed_index], copy.copy(self.settings.warehouse_settings)))
 
         # shuffle the task order to make the ETA estimation less biased
         self.rng.shuffle(x=self.__worker_tasks)
@@ -578,19 +593,33 @@ class GeneticAlgorithm:
         if verbose > 1:
             print(f"\tTook {misc.timeformat(time.time() - start)}")
 
-        fitness_values = np.array([self.settings.simulations_reduce(fitnesses) for fitnesses in np.split(fitness_values, indices_or_sections=len(self.population), axis=0)])
+        df_input = dict()
+        df_input["Individual"] = [repr(individual) for individual in self.population]
+        df_input["Fitness"] = [None for individual in self.population]
 
-        result.population_data = pd.DataFrame(
-            {"Individual": [repr(individual) for individual in self.population],
-             "Fitness": fitness_values}
-        )
+        for seed in self.settings.simulations_seeds:
+            df_input[f"Fitness_{seed}"] = [None for individual in self.population]
 
         # annote fitness to precompute map
         for i in range(len(self.population)):
             representation = repr(self.population[i])
 
-            if representation not in self.fitness_log:
-                self.fitness_log[representation] = fitness_values[i]
+            fitnesses = []
+            for task_tuple in [task_tuple for task_tuple in self.__worker_tasks if task_tuple[0] == i]:
+                individual_index, seed_index, individual, seed, warehouse_settings = task_tuple
+
+                df_input[f"Fitness_{seed}"][i] = fitness_values[i, seed_index]
+                fitnesses.append(fitness_values[i, seed_index])
+
+                if representation not in self.fitness_log[seed]:
+                    self.fitness_log[seed][representation] = fitness_values[i, seed_index]
+
+            df_input["Fitness"][i] = self.settings.simulations_reduce(fitnesses)
+
+        result.population_data = pd.DataFrame(df_input)
+
+        fitness_values = np.array([self.settings.simulations_reduce(fitnesses) for fitnesses in
+                                   np.split(fitness_values, indices_or_sections=len(self.population), axis=0)])
 
         # sort by fitness
         fitness_order = np.argsort(a=fitness_values)
@@ -711,7 +740,7 @@ class GeneticAlgorithm:
                                                                   individual_2=old_population[best_participant_i_2],
                                                                   verbose=verbose)
 
-                        if repr(new_individual) not in self.fitness_log:
+                        if not self.in_any_fitness_log(repr(new_individual)):
                             break
 
                     if new_individual.depth() <= self.settings.tree_transformation_max_depth:
@@ -799,8 +828,9 @@ class GeneticAlgorithm:
 
         if verbose > 0:
             if did_at_least_one:
+                fitness = self.settings.simulations_reduce([self.fitness_log[seed].get(repr(routine_output.best_individual), np.nan) for seed in self.settings.simulations_seeds])
                 print(
-                    f"Done. Here is the best performing individual of the last step (with fitness {self.fitness_log[repr(routine_output.best_individual)]:.2f}):")
+                    f"Done. Here is the best performing individual of the last step (with fitness {fitness:.2f}):")
                 print(routine_output.best_individual)
             else:
                 print("There was no simulation output")
@@ -808,12 +838,38 @@ class GeneticAlgorithm:
             print(f"Genetic simulation took {misc.timeformat(time.time() - start)}")
 
         if did_at_least_one and self.settings.save_logs:
-            fitness_log_data = {"Individual": list(self.fitness_log.keys()),
-                                "Fitness": list(self.fitness_log.values())}
+            fitness_log_data = {"Individual": [],
+                                "Fitness": []}
 
-            if type(self.fitness_log) == pht.PhenotypeMapper:
-                fitness_log_data["Phenotype"] = [self.fitness_log.individual_to_phenotype[ind] for ind in
-                                                 fitness_log_data["Individual"]]
+            for seed in self.settings.simulations_seeds:
+                fitness_log_data[f"Fitness_{seed}"] = []
+
+            individuals = list(np.unique(misc.flatten([list(self.fitness_log[seed].keys()) for seed in self.settings.simulations_seeds])))
+            individuals = [str(ind) for ind in individuals]
+
+            phenotypes = [] if self.settings.fitness_log_is_phenotype_mapper else None
+
+            for individual in individuals:
+                fitness_log_data["Individual"].append(individual)
+
+                added_phenotype_yet = False
+
+                fitnesses = []
+                for seed in self.settings.simulations_seeds:
+                    f = self.fitness_log[seed].get(individual, np.nan)
+                    fitness_log_data[f"Fitness_{seed}"].append(f)
+                    fitnesses.append(f)
+
+                    if not added_phenotype_yet and self.settings.fitness_log_is_phenotype_mapper and individual in self.fitness_log[seed]:
+                        phenotypes.append(self.fitness_log[seed].individual_to_phenotype[individual])
+                        added_phenotype_yet = True
+
+                if not added_phenotype_yet and self.settings.fitness_log_is_phenotype_mapper:
+                    raise Exception(f"Failed to find phenotype for individual {individual}")
+
+                fitness_log_data[f"Fitness"].append(self.settings.simulations_reduce(fitnesses))
+
+            fitness_log_data["Phenotype"] = phenotypes
 
             fitness_log_dataframe = pd.DataFrame(data=fitness_log_data)
 
@@ -824,7 +880,7 @@ class GeneticAlgorithm:
 
             fitness_log_dataframe.drop(columns="string_length", inplace=True)
 
-            foldername = datetime.datetime.now().strftime('%d %b %Y %H_%M_%S')
+            foldername = datetime.datetime.now().strftime('%Y-%m-%d %H-%M-%S')
 
             if self.settings.fitness_is_random:
                 foldername = f"{foldername} random fitness"

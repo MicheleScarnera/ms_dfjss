@@ -7,7 +7,7 @@ import dfjss_priorityfunction as pf
 class PhenotypeMapper:
     def __init__(self, reference_rule=None, reference_scenarios_amount=16, scenarios_seed=None):
         self.reference_scenarios_amount = reference_scenarios_amount
-        self.dud_individual_std_threshold = 0.1
+        self.dud_individual_std_threshold = 0.01
 
         # go the extra mile to generate credible scenarios: generate them straight from a warehouse
         # it shouldn't be too slow since only one routine is ran
@@ -79,7 +79,7 @@ class PhenotypeMapper:
 
     def __contains__(self, individual_representation):
         if type(individual_representation) != str:
-            raise ValueError("PhenotypeMapper only allows individuals in string form for the \'contains\' operation")
+            raise ValueError(f"PhenotypeMapper only allows individuals in string form for the \'contains\' operation  ({type(individual_representation)} was supplied)")
 
         phenotype = self.get_phenotype_of_individual(individual_representation)
 
@@ -115,3 +115,6 @@ class PhenotypeMapper:
 
     def values(self):
         return [self.phenotype_to_fitness[self.individual_to_phenotype[individual_repr]] for individual_repr in self.keys()]
+
+    def get(self, key, fallback_value=None):
+        return self[key] if key in self else fallback_value

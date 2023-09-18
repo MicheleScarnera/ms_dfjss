@@ -218,7 +218,7 @@ GENERATION_SIMULATION_RANGES = {
     # RANDOM JOB ARRIVAL AVERAGE AMOUNT
     # Average amount of jobs that will arrive inside the time window.
     # Units: jobs (job arrivals happen under a "Poisson/Exponential" regimen)
-    "simulation_random_job_arrival_average_amount": (20, 400),
+    "simulation_random_job_arrival_average_amount": (20, 300),
 
     # RANDOM JOB ARRIVAL END STATE PREVENTION BATCH SIZE / AVERAGE WAITING TIME
     # If the simulation runs out of jobs,
