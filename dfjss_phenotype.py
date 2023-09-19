@@ -5,37 +5,43 @@ import dfjss_priorityfunction as pf
 
 
 class PhenotypeMapper:
-    def __init__(self, reference_rule=None, reference_scenarios_amount=16, scenarios_seed=None):
+    def __init__(self, reference_rule=None, reference_scenarios_amount=16, scenarios_seed=None, precomputed_scenarios=None):
         self.reference_scenarios_amount = reference_scenarios_amount
         self.dud_individual_std_threshold = 0.01
 
-        # go the extra mile to generate credible scenarios: generate them straight from a warehouse
-        # it shouldn't be too slow since only one routine is ran
+        if precomputed_scenarios is None:
+            # go the extra mile to generate credible scenarios: generate them straight from a warehouse
+            # it shouldn't be too slow since only one routine is ran
 
-        self.warehouse_settings = dfjss.WarehouseSettings()
+            self.warehouse_settings = dfjss.WarehouseSettings()
 
-        self.warehouse_settings.generation_simulation_ranges["simulation_number_of_starting_jobs"] = reference_scenarios_amount
+            self.warehouse_settings.generation_simulation_ranges["simulation_number_of_starting_jobs"] = reference_scenarios_amount
 
-        self.warehouse_settings.generation_simulation_ranges["simulation_number_of_starting_machines_over_essential"] = len(self.warehouse_settings.recipes) * 2
+            self.warehouse_settings.generation_simulation_ranges["simulation_number_of_starting_machines_over_essential"] = len(self.warehouse_settings.recipes) * 2
 
-        if reference_rule is not None:
-            self.warehouse_settings.decision_rule = reference_rule
+            if reference_rule is not None:
+                self.warehouse_settings.decision_rule = reference_rule
 
-        self._warehouse = dfjss.Warehouse(settings=self.warehouse_settings, rng_seed=scenarios_seed)
+            self._warehouse = dfjss.Warehouse(settings=self.warehouse_settings, rng_seed=scenarios_seed)
 
-        self._warehouse.simulate(max_routine_steps=1, verbose=0)
+            self._warehouse.simulate(max_routine_steps=1, verbose=0)
 
-        compatible_pairs = self._warehouse.compatible_pairs(include_busy=True)
+            compatible_pairs = self._warehouse.compatible_pairs(include_busy=True)
 
-        self.scenarios = [self._warehouse.all_features_of_compatible_pair(machine=machine, job=job)
-                          for machine, job in compatible_pairs]
+            self.scenarios = [self._warehouse.all_features_of_compatible_pair(machine=machine, job=job)
+                              for machine, job in compatible_pairs]
 
-        # if there are more than 'reference_scenarios_amount' scenarios, remove at random
-        if len(self.scenarios) > reference_scenarios_amount:
-            rng = np.random.default_rng(seed=scenarios_seed)
-            self.scenarios = list(rng.choice(a=self.scenarios, size=reference_scenarios_amount, replace=False))
-        elif len(self.scenarios) < reference_scenarios_amount:
-            raise Exception(f"Number of scenarios in phenotype mapper is unexpectedly below specified amount {reference_scenarios_amount}")
+            # if there are more than 'reference_scenarios_amount' scenarios, remove at random
+            if len(self.scenarios) > reference_scenarios_amount:
+                rng = np.random.default_rng(seed=scenarios_seed)
+                self.scenarios = list(rng.choice(a=self.scenarios, size=reference_scenarios_amount, replace=False))
+            elif len(self.scenarios) < reference_scenarios_amount:
+                raise Exception(f"Number of scenarios in phenotype mapper is unexpectedly below specified amount {reference_scenarios_amount}")
+        else:
+            self.warehouse_settings = None
+            self._warehouse = None
+
+            self.scenarios = precomputed_scenarios
 
         if reference_rule is None:
             rng = np.random.default_rng(seed=scenarios_seed)

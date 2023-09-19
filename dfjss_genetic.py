@@ -151,10 +151,15 @@ class GeneticAlgorithm:
 
         self.fitness_log = dict()
 
+        precomputed_scenarios = None
         for seed in settings.simulations_seeds:
             if self.settings.fitness_log_is_phenotype_mapper:
                 self.fitness_log[seed] = pht.PhenotypeMapper(scenarios_seed=rng_seed,
-                                                             reference_scenarios_amount=self.settings.phenotype_mapper_scenarios_amount)
+                                                             reference_scenarios_amount=self.settings.phenotype_mapper_scenarios_amount,
+                                                             precomputed_scenarios=precomputed_scenarios)
+
+                if precomputed_scenarios is None:
+                    precomputed_scenarios = self.fitness_log[seed].scenarios
             else:
                 self.fitness_log[seed] = dict()
 
@@ -547,6 +552,8 @@ class GeneticAlgorithm:
                 if verbose > 1:
                     initial_tasks = len(self.__worker_tasks)
                     previous_tasks_done = 0
+                    time_of_last_update = 0
+                    sims_per_sec = 0
                     current_eta = -1
                     time_increment = 1
                     while True:
@@ -557,7 +564,9 @@ class GeneticAlgorithm:
                         completed = tasks_done >= initial_tasks
 
                         if tasks_done > previous_tasks_done:
-                            current_eta = misc.timeleft(start, time.time(), tasks_done, initial_tasks)
+                            time_of_last_update = time.time()
+                            current_eta = misc.timeleft(start, time_of_last_update, tasks_done, initial_tasks)
+                            sims_per_sec = tasks_done / (time_of_last_update - start)
                         else:
                             current_eta = max(current_eta - time_increment, 0)
 
@@ -568,7 +577,10 @@ class GeneticAlgorithm:
                         to_print = f"\rRunning simulations..."
                         if tasks_done > 0:
                             absolute_eta = datetime.datetime.now() + datetime.timedelta(seconds=current_eta)
-                            to_print += f" {tasks_done} / {initial_tasks} ({tasks_done / initial_tasks:.1%}), ETA {misc.timeformat_hhmmss(current_eta)} ({absolute_eta.strftime('%a %d %b %Y, %H:%M:%S')})"
+
+                            sims_per_sec_print = f"{sims_per_sec:.2f} simulations/s" if sims_per_sec >= 1. else f"{misc.timeformat(1. / sims_per_sec)} per simulation"
+
+                            to_print += f" {tasks_done} / {initial_tasks} ({tasks_done / initial_tasks:.1%}), {sims_per_sec_print}, ETA {misc.timeformat_hhmmss(current_eta)} ({absolute_eta.strftime('%a %d %b %Y, %H:%M:%S')})"
 
                         previous_tasks_done = tasks_done
 
