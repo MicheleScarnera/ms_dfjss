@@ -539,6 +539,22 @@ class GeneticAlgorithm:
 
         start = time.time()
 
+        def to_print_func(tasks_done, initial_tasks, start, precomputed_sims_per_sec=None, precomputed_current_eta=None):
+            current_time = time.time()
+
+            current_eta = precomputed_current_eta if precomputed_current_eta is not None else misc.timeleft(start, current_time, tasks_done, initial_tasks)
+            sims_per_sec = precomputed_sims_per_sec if precomputed_sims_per_sec is not None else tasks_done / (current_time - start)
+
+            result = f"\rRunning simulations..."
+            if tasks_done > 0:
+                absolute_eta = datetime.datetime.now() + datetime.timedelta(seconds=current_eta)
+
+                sims_per_sec_print = f"{sims_per_sec:.2f} simulations/s" if sims_per_sec >= 1. else f"{misc.timeformat(1. / sims_per_sec)} per simulation"
+
+                result += f" {tasks_done} / {initial_tasks} ({tasks_done / initial_tasks:.1%}), {sims_per_sec_print}, ETA {misc.timeformat_hhmmss(current_eta)} ({absolute_eta.strftime('%a %d %b %Y, %H:%M:%S')})"
+
+            return result
+
         if self.settings.multiprocessing_processes > 1:
             lock = mp.Lock()
             with mp.get_context("spawn").Pool(initializer=init_pool_processes, initargs=(lock,), processes=self.settings.multiprocessing_processes) as pool:
@@ -552,7 +568,6 @@ class GeneticAlgorithm:
                 if verbose > 1:
                     initial_tasks = len(self.__worker_tasks)
                     previous_tasks_done = 0
-                    time_of_last_update = 0
                     sims_per_sec = 0
                     current_eta = -1
                     time_increment = 1
@@ -574,20 +589,15 @@ class GeneticAlgorithm:
                         if completed:
                             endch = "\n"
 
-                        to_print = f"\rRunning simulations..."
-                        if tasks_done > 0:
-                            absolute_eta = datetime.datetime.now() + datetime.timedelta(seconds=current_eta)
-
-                            sims_per_sec_print = f"{sims_per_sec:.2f} simulations/s" if sims_per_sec >= 1. else f"{misc.timeformat(1. / sims_per_sec)} per simulation"
-
-                            to_print += f" {tasks_done} / {initial_tasks} ({tasks_done / initial_tasks:.1%}), {sims_per_sec_print}, ETA {misc.timeformat_hhmmss(current_eta)} ({absolute_eta.strftime('%a %d %b %Y, %H:%M:%S')})"
+                        to_print = to_print_func(tasks_done, initial_tasks, start,
+                                                 precomputed_sims_per_sec=sims_per_sec, precomputed_current_eta=current_eta)
 
                         previous_tasks_done = tasks_done
 
+                        print(to_print, end=endch, flush=True)
+
                         if completed:
                             break
-
-                        print(to_print, end=endch, flush=True)
 
                 pool.join()
 
@@ -601,7 +611,7 @@ class GeneticAlgorithm:
                 fitness_values[individual_index, seed_index] = self.do_worker_task(task_tuple=task, is_multiprocessing=False)
 
                 if verbose > 1:
-                    tasks_done = i
+                    tasks_done = i + 1
 
                     completed = tasks_done >= initial_tasks
 
@@ -609,10 +619,7 @@ class GeneticAlgorithm:
                     if completed:
                         endch = "\n"
 
-                    to_print = f"\rRunning simulations..."
-                    if tasks_done > 0:
-                        to_print += f" {tasks_done} / {initial_tasks} ({tasks_done / initial_tasks:.1%}), ETA {misc.timeformat_hhmmss(misc.timeleft(start, time.time(), tasks_done, initial_tasks))}"
-
+                    to_print = to_print_func(tasks_done, initial_tasks, start)
                     print(to_print, end=endch)
 
         if verbose > 1:
