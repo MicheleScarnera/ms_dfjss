@@ -63,3 +63,31 @@ def is_number(s):
         return True
     except ValueError:
         return False
+
+
+def harmonic_number(n):
+    """
+    Returns an exact value of n-th harmonic number.
+    http://en.wikipedia.org/wiki/Harmonic_number
+
+    :type n: int
+    :return np.double
+    """
+
+    if n <= 0:
+        return 0.
+
+    return np.sum([1. / i for i in range(1, n+1)], dtype=np.double)
+
+
+def H(n):
+    """
+    Returns an exact value of n-th harmonic number.
+    http://en.wikipedia.org/wiki/Harmonic_number
+
+    :type n: float
+    :return float
+    """
+    # Euler-Mascheroni constant
+    gamma = 0.57721566490153286060651209008240243104215933593992
+    return gamma + np.log(n) + 0.5/n - 1./(12*n**2) + 1./(120*n**4)

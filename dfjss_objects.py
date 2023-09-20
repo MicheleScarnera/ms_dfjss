@@ -141,6 +141,8 @@ class WarehouseSettings:
 
         self.generation_pair_ranges = DEFAULTS.GENERATION_PAIR_RANGES
 
+        self.minimum_time_elapse = 0
+
 
 def generate_features(rng, ranges_dict):
     features = dict()
@@ -886,7 +888,7 @@ class Warehouse:
         times.extend([waiting_machine.time_needed for waiting_machine in self.waiting_machines])
         times.extend([waiting_job.time_needed for waiting_job in self.waiting_jobs])
 
-        smallest_time = np.min(a=times)
+        smallest_time = max(np.min(a=times), self.settings.minimum_time_elapse)
 
         # ELAPSE TIME
 

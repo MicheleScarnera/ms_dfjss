@@ -816,6 +816,10 @@ class GeneticAlgorithm:
         if verbose > 0:
             print("Running genetic algorithm...")
 
+            if self.settings.number_of_possible_seeds > self.settings.number_of_simulations_per_individual:
+                r = self.settings.number_of_possible_seeds / self.settings.number_of_simulations_per_individual
+                print(f"With {self.settings.number_of_simulations_per_individual} seeds per generation and {self.settings.number_of_possible_seeds} total seeds, you would need about {int(np.ceil(r * misc.H(r) ))} steps to exhaust them all (this is a *very fuzzy* upper bound)")
+
         individuals_evaluated_total = 0
 
         genalgo_log = None
