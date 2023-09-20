@@ -46,6 +46,7 @@ if __name__ == "__main__":
                                   "warehouse_utilization_rate",
                                   "pair_number_of_alternative_machines",
                                   "pair_number_of_alternative_operations",
+                                  "pair_expected_work_power",
                                   "pair_expected_processing_time"]
 
     #gen_algo_settings.warehouse_settings.generation_simulation_ranges["simulation_number_of_starting_jobs"] = 50
@@ -53,14 +54,14 @@ if __name__ == "__main__":
     #gen_algo_settings.warehouse_settings.generation_simulation_ranges["simulation_random_job_arrival_end_state_prevention_batch_size"] = 0
 
     #gen_algo_settings.fitness_func = custom_fitness_func
-    gen_algo_settings.fitness_is_random = False
+    gen_algo_settings.fitness_is_random = True
 
     gen_algo_settings.multiprocessing_processes = 5
 
-    gen_algo_settings.population_size = 100
-    gen_algo_settings.number_of_simulations_per_individual = 50
-    gen_algo_settings.number_of_possible_seeds = 200
-    gen_algo_settings.total_steps = 40
+    gen_algo_settings.population_size = 50
+    gen_algo_settings.number_of_simulations_per_individual = 1
+    gen_algo_settings.number_of_possible_seeds = 1
+    gen_algo_settings.total_steps = 2
 
     gen_algo_settings.tree_generation_max_depth = 2
     gen_algo_settings.tree_generation_mode = "half_and_half"

@@ -819,8 +819,14 @@ class GeneticAlgorithm:
         individuals_evaluated_total = 0
 
         genalgo_log = None
+        folder_name = None
         if self.settings.save_logs:
             genalgo_log = pd.DataFrame(columns=["Step", "Individual", "Fitness"])
+
+            folder_name = datetime.datetime.now().strftime('%Y-%m-%d %H-%M-%S')
+
+            if self.settings.fitness_is_random:
+                folder_name = f"{folder_name} random fitness"
 
         routine_output = None
         error_to_raise_later = None
@@ -837,7 +843,10 @@ class GeneticAlgorithm:
                 routine_output = self.do_genetic_routine_once(current_step=step, max_steps=self.settings.total_steps,
                                                               verbose=verbose)
 
+                individuals_evaluated_total += routine_output.individuals_evaluated
+
                 if self.settings.save_logs:
+                    # update genetic algorithm log
                     genalgo_log = pd.concat(objs=[genalgo_log,
                                                   pd.DataFrame({
                                                       "Step": step,
@@ -847,7 +856,93 @@ class GeneticAlgorithm:
                                                   ],
                                             ignore_index=True)
 
-                individuals_evaluated_total += routine_output.individuals_evaluated
+                    # save logs and last state
+                    fitness_log_data = {"Individual": [],
+                                        "Fitness": []}
+
+                    for seed in self.settings.simulations_seeds:
+                        fitness_log_data[f"Fitness_{seed}"] = []
+
+                    individuals = list(np.unique(misc.flatten(
+                        [list(self.fitness_log[seed].keys()) for seed in self.settings.simulations_seeds])))
+                    individuals = [str(ind) for ind in individuals]
+
+                    phenotypes = [] if self.settings.fitness_log_is_phenotype_mapper else None
+
+                    for individual in individuals:
+                        fitness_log_data["Individual"].append(individual)
+
+                        added_phenotype_yet = False
+
+                        fitnesses = []
+                        for seed in self.settings.simulations_seeds:
+                            f = self.fitness_log[seed].get(individual, np.nan)
+                            fitness_log_data[f"Fitness_{seed}"].append(f)
+                            fitnesses.append(f)
+
+                            if not added_phenotype_yet and self.settings.fitness_log_is_phenotype_mapper and individual in \
+                                    self.fitness_log[seed]:
+                                phenotypes.append(self.fitness_log[seed].individual_to_phenotype[individual])
+                                added_phenotype_yet = True
+
+                        if not added_phenotype_yet and self.settings.fitness_log_is_phenotype_mapper:
+                            raise Exception(f"Failed to find phenotype for individual {individual}")
+
+                        fitness_log_data[f"Fitness"].append(self.settings.simulations_reduce(fitnesses))
+
+                    fitness_log_data["Phenotype"] = phenotypes
+
+                    fitness_log_dataframe = pd.DataFrame(data=fitness_log_data)
+
+                    fitness_log_dataframe["string_length"] = fitness_log_dataframe.apply(
+                        lambda row: len(row["Individual"]),
+                        axis=1)
+
+                    fitness_log_dataframe.sort_values(by=["Fitness", "string_length"], inplace=True)
+
+                    fitness_log_dataframe.drop(columns="string_length", inplace=True)
+
+                    filepath_fitnesslog_str = f"{folder_name}/{FITNESSLOG_CSV_NAME}.csv"
+                    filepath_fitnesslog = Path(filepath_fitnesslog_str)
+                    filepath_fitnesslog.parent.mkdir(parents=True, exist_ok=True)
+
+                    try:
+                        fitness_log_dataframe.to_csv(path_or_buf=filepath_fitnesslog, index=False, mode="w")
+
+                        if verbose > 0:
+                            print("\tFitness log saved successfully")
+                    except Exception as error:
+                        if verbose > 0:
+                            print(f"\tCould not save fitness log ({error})")
+
+                    try:
+                        genalgo_log_path = f"{folder_name}/{GENALGOLOG_CSV_NAME}.csv"
+
+                        genalgo_log.to_csv(path_or_buf=genalgo_log_path, index=False)
+
+                        if verbose > 0:
+                            print("\tGenetic algorithm log saved successfully")
+                    except Exception as error:
+                        if verbose > 0:
+                            print(f"\tCould not save genetic algorithm log ({error})")
+
+                    try:
+                        laststate_json_path = f"{folder_name}/{LASTSTATE_JSON_NAME}.json"
+
+                        laststate_dict = dict()
+
+                        laststate_dict["rng_state"] = self.rng.bit_generator.state
+                        laststate_dict["population"] = [repr(individual) for individual in self.population]
+
+                        with open(laststate_json_path, 'w') as file:
+                            json.dump(laststate_dict, file)
+
+                        if verbose > 0:
+                            print("\tLast state saved successfully")
+                    except Exception as error:
+                        if verbose > 0:
+                            print(f"\tCould not save last state ({error})")
+
         except KeyboardInterrupt as kb_interrupt:
             print("\nGenetic algorithm was manually interrupted")
             pass
@@ -869,94 +964,7 @@ class GeneticAlgorithm:
 
             print(f"Genetic simulation took {misc.timeformat(time.time() - start)}")
 
-        if did_at_least_one and self.settings.save_logs:
-            fitness_log_data = {"Individual": [],
-                                "Fitness": []}
 
-            for seed in self.settings.simulations_seeds:
-                fitness_log_data[f"Fitness_{seed}"] = []
-
-            individuals = list(np.unique(misc.flatten([list(self.fitness_log[seed].keys()) for seed in self.settings.simulations_seeds])))
-            individuals = [str(ind) for ind in individuals]
-
-            phenotypes = [] if self.settings.fitness_log_is_phenotype_mapper else None
-
-            for individual in individuals:
-                fitness_log_data["Individual"].append(individual)
-
-                added_phenotype_yet = False
-
-                fitnesses = []
-                for seed in self.settings.simulations_seeds:
-                    f = self.fitness_log[seed].get(individual, np.nan)
-                    fitness_log_data[f"Fitness_{seed}"].append(f)
-                    fitnesses.append(f)
-
-                    if not added_phenotype_yet and self.settings.fitness_log_is_phenotype_mapper and individual in self.fitness_log[seed]:
-                        phenotypes.append(self.fitness_log[seed].individual_to_phenotype[individual])
-                        added_phenotype_yet = True
-
-                if not added_phenotype_yet and self.settings.fitness_log_is_phenotype_mapper:
-                    raise Exception(f"Failed to find phenotype for individual {individual}")
-
-                fitness_log_data[f"Fitness"].append(self.settings.simulations_reduce(fitnesses))
-
-            fitness_log_data["Phenotype"] = phenotypes
-
-            fitness_log_dataframe = pd.DataFrame(data=fitness_log_data)
-
-            fitness_log_dataframe["string_length"] = fitness_log_dataframe.apply(lambda row: len(row["Individual"]),
-                                                                                 axis=1)
-
-            fitness_log_dataframe.sort_values(by=["Fitness", "string_length"], inplace=True)
-
-            fitness_log_dataframe.drop(columns="string_length", inplace=True)
-
-            foldername = datetime.datetime.now().strftime('%Y-%m-%d %H-%M-%S')
-
-            if self.settings.fitness_is_random:
-                foldername = f"{foldername} random fitness"
-
-            filepath_fitnesslog_str = f"{foldername}/{FITNESSLOG_CSV_NAME}.csv"
-            filepath_fitnesslog = Path(filepath_fitnesslog_str)
-            filepath_fitnesslog.parent.mkdir(parents=True, exist_ok=True)
-
-            try:
-                fitness_log_dataframe.to_csv(path_or_buf=filepath_fitnesslog, index=False)
-
-                if verbose > 0:
-                    print("Fitness log saved successfully")
-            except Exception as error:
-                if verbose > 0:
-                    print(f"Could not save fitness log ({error})")
-
-            try:
-                genalgo_log_path = f"{foldername}/{GENALGOLOG_CSV_NAME}.csv"
-
-                genalgo_log.to_csv(path_or_buf=genalgo_log_path, index=False)
-
-                if verbose > 0:
-                    print("Genetic algorithm log saved successfully")
-            except Exception as error:
-                if verbose > 0:
-                    print(f"Could not save genetic algorithm log ({error})")
-
-            try:
-                laststate_json_path = f"{foldername}/{LASTSTATE_JSON_NAME}.json"
-
-                laststate_dict = dict()
-
-                laststate_dict["rng_state"] = self.rng.bit_generator.state
-                laststate_dict["population"] = [repr(individual) for individual in self.population]
-
-                with open(laststate_json_path, 'w') as file:
-                    json.dump(laststate_dict, file)
-
-                if verbose > 0:
-                    print("Last state saved successfully")
-            except Exception as error:
-                if verbose > 0:
-                    print(f"Could not save last state ({error})")
 
         if verbose > 2:
             print("Fitness log:")
