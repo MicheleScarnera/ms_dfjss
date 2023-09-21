@@ -31,7 +31,8 @@ if __name__ == "__main__":
                                   "pair_expected_processing_time"]
     """
 
-    gen_algo_settings.features = ["operation_windup",
+    gen_algo_settings.features = ["operation_work_required",
+                                  "operation_windup",
                                   "operation_cooldown",
                                   "job_relative_deadline",
                                   "job_time_alive",
