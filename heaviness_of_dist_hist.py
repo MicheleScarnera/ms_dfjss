@@ -4,6 +4,8 @@ import numpy as np
 import scipy.stats as stats
 import dfjss_misc as misc
 
+plt.rcParams['figure.dpi'] = 300
+
 df_sixty = pd.read_csv("FIFO cooldown 0 60/fitness_log.csv")
 df_fifteen = pd.read_csv("FIFO cooldown 0 15/fitness_log.csv")
 
