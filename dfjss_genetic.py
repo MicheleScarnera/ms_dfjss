@@ -38,7 +38,7 @@ class GeneticAlgorithmSettings:
 
     def __init__(self):
         self.population_size = 50
-        self.tournament_percent_size = 0.25
+        self.tournament_percent_size = 0.05
         self.total_steps = 100
 
         self.crossover_rate = 0.9

@@ -91,3 +91,10 @@ def H(n):
     # Euler-Mascheroni constant
     gamma = 0.57721566490153286060651209008240243104215933593992
     return gamma + np.log(n) + 0.5/n - 1./(12*n**2) + 1./(120*n**4)
+
+
+def begins_with(containing_string, contained_string):
+    containing_string = str(containing_string)
+    contained_string = str(contained_string)
+    return (len(containing_string) >= len(contained_string)) and (
+            containing_string[0:len(contained_string)] == contained_string)

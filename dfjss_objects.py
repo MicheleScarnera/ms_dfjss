@@ -86,13 +86,13 @@ class Machine:
 # DECISION RULES
 
 class BaseDecisionRule:
-    def make_decisions(self, warehouse):
+    def make_decisions(self, warehouse, values_offset=0.):
         raise NotImplementedError(
             "dfjss.BaseDecisionRule was used directly. Please make a class that inherits from BaseDecisionRule and overrides make_decision")
 
 
 class RandomDecisionRule(BaseDecisionRule):
-    def make_decisions(self, warehouse):
+    def make_decisions(self, warehouse, values_offset=0.):
         compatible_pairs = warehouse.compatible_pairs(include_busy=False)
 
         if len(compatible_pairs) <= 0:
@@ -115,9 +115,9 @@ class DecisionRuleOutput:
     def __init__(self, success, pairs=None):
         self.success = success
 
-        if success and (pairs is None or len(pairs) <= 0):
+        if success and (pairs is None):
             raise ValueError(
-                f"DecisionRuleOutput has success=True but no pairs have been given")
+                f"DecisionRuleOutput has success=True but pairs is None")
 
         self.pairs = pairs
 
@@ -142,6 +142,9 @@ class WarehouseSettings:
         self.generation_pair_ranges = DEFAULTS.GENERATION_PAIR_RANGES
 
         self.minimum_time_elapse = 0
+
+        self.wait_time = 5.
+        self.priority_function_offset_per_wait = 0.5
 
 
 def generate_features(rng, ranges_dict):
@@ -344,6 +347,8 @@ class Warehouse:
         self.simulation_features = generate_features(self.rng, self.settings.generation_simulation_ranges)
 
         self.current_time = 0.
+
+        self.current_wait_cumulative_offset = 0.
 
     def job_of_operation(self, operation):
         if operation.job is not None:
@@ -840,18 +845,17 @@ class Warehouse:
             print(f"\tUtilization rate: {self.warehouse_features['warehouse_utilization_rate']:.1%}")
 
         # assign operations to available machines according to the decision rule
-        first_time = True
-        decision_output = None
-
         precomputed_available_jobs = self.available_jobs()
 
-        while first_time or decision_output.success:
-            first_time = False
+        decision_rule = self.settings.decision_rule if decision_rule_override is None else decision_rule_override
 
-            decision_rule = self.settings.decision_rule if decision_rule_override is None else decision_rule_override
+        decision_output = decision_rule.make_decisions(warehouse=self, values_offset=self.current_wait_cumulative_offset)
+        if decision_output.success:
+            if len(decision_output.pairs) > 0:
+                # reset wait offset
+                self.current_wait_cumulative_offset = 0
 
-            decision_output = decision_rule.make_decisions(warehouse=self)
-            if decision_output.success:
+                # there are machine assignments to be done
                 for machine, job in decision_output.pairs:
                     self.assign_job_to_machine(job=job,
                                                machine=machine,
@@ -887,6 +891,13 @@ class Warehouse:
                  for busy_couple, ept in zip(self.busy_couples, EPTs)]
         times.extend([waiting_machine.time_needed for waiting_machine in self.waiting_machines])
         times.extend([waiting_job.time_needed for waiting_job in self.waiting_jobs])
+
+        if decision_output.success and len(decision_output.pairs) == 0:
+            times.append(self.settings.wait_time)
+            self.current_wait_cumulative_offset += self.settings.priority_function_offset_per_wait
+
+            if verbose > 1:
+                print(f"\tWaiting for {misc.timeformat(self.settings.wait_time)} (current offset: {self.current_wait_cumulative_offset:.1f})")
 
         smallest_time = max(np.min(a=times), self.settings.minimum_time_elapse)
 
