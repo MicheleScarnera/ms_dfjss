@@ -86,13 +86,13 @@ class Machine:
 # DECISION RULES
 
 class BaseDecisionRule:
-    def make_decisions(self, warehouse, values_offset=0.):
+    def make_decisions(self, warehouse, allow_wait=True, values_offset=0.):
         raise NotImplementedError(
             "dfjss.BaseDecisionRule was used directly. Please make a class that inherits from BaseDecisionRule and overrides make_decision")
 
 
 class RandomDecisionRule(BaseDecisionRule):
-    def make_decisions(self, warehouse, values_offset=0.):
+    def make_decisions(self, warehouse, allow_wait=True, values_offset=0.):
         compatible_pairs = warehouse.compatible_pairs(include_busy=False)
 
         if len(compatible_pairs) <= 0:
@@ -143,6 +143,7 @@ class WarehouseSettings:
 
         self.minimum_time_elapse = 0
 
+        self.allow_wait = True
         self.wait_time = 5.
         self.priority_function_offset_per_wait = 0.5
 
@@ -849,7 +850,9 @@ class Warehouse:
 
         decision_rule = self.settings.decision_rule if decision_rule_override is None else decision_rule_override
 
-        decision_output = decision_rule.make_decisions(warehouse=self, values_offset=self.current_wait_cumulative_offset)
+        offset = self.current_wait_cumulative_offset if self.settings.allow_wait else 0.
+
+        decision_output = decision_rule.make_decisions(warehouse=self, allow_wait=self.settings.allow_wait, values_offset=offset)
         if decision_output.success:
             if len(decision_output.pairs) > 0:
                 # reset wait offset
@@ -892,7 +895,7 @@ class Warehouse:
         times.extend([waiting_machine.time_needed for waiting_machine in self.waiting_machines])
         times.extend([waiting_job.time_needed for waiting_job in self.waiting_jobs])
 
-        if decision_output.success and len(decision_output.pairs) == 0:
+        if self.settings.allow_wait and decision_output.success and len(decision_output.pairs) == 0:
             times.append(self.settings.wait_time)
             self.current_wait_cumulative_offset += self.settings.priority_function_offset_per_wait
 

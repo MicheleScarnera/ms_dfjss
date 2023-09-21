@@ -568,7 +568,7 @@ class PriorityFunctionTreeDecisionRule(dfjss.BaseDecisionRule):
 
         self.priority_function_tree = priority_function_tree
 
-    def make_decisions(self, warehouse, values_offset=0.):
+    def make_decisions(self, warehouse, allow_wait=True, values_offset=0.):
         compatible_pairs = warehouse.compatible_pairs()
 
         if len(compatible_pairs) <= 0:
@@ -583,7 +583,7 @@ class PriorityFunctionTreeDecisionRule(dfjss.BaseDecisionRule):
 
         pairs = []
 
-        while np.any(remaining) and np.any(priority_values >= 0.):
+        while np.any(remaining) and (not allow_wait or np.any(priority_values >= 0.)):
             index_max = np.nanargmax(priority_values)
 
             pairs.append(compatible_pairs[index_max])
