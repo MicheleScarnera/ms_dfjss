@@ -145,7 +145,7 @@ class WarehouseSettings:
 
         self.allow_wait = True
         self.wait_time = 5.
-        self.priority_function_offset_per_wait = 0.5
+        self.priority_function_offset_per_wait = 1.
 
 
 def generate_features(rng, ranges_dict):
@@ -895,14 +895,21 @@ class Warehouse:
         times.extend([waiting_machine.time_needed for waiting_machine in self.waiting_machines])
         times.extend([waiting_job.time_needed for waiting_job in self.waiting_jobs])
 
+        waiting = False
         if self.settings.allow_wait and decision_output.success and len(decision_output.pairs) == 0:
-            times.append(self.settings.wait_time)
+            waiting = True
+            if len(times) == 0:
+                # if there are no times to wait for, wait settings.wait_time seconds
+                # otherwise, it will wait for the soonest thing
+                times.append(self.settings.wait_time)
+
             self.current_wait_cumulative_offset += self.settings.priority_function_offset_per_wait
 
-            if verbose > 1:
-                print(f"\tWaiting for {misc.timeformat(self.settings.wait_time)} (current offset: {self.current_wait_cumulative_offset:.1f})")
-
         smallest_time = max(np.min(a=times), self.settings.minimum_time_elapse)
+
+        if waiting:
+            if verbose > 1:
+                print(f"\tWaiting for {misc.timeformat(smallest_time)} (current offset: {self.current_wait_cumulative_offset:.1f})")
 
         # ELAPSE TIME
 

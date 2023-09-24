@@ -72,6 +72,8 @@ class PhenotypeMapper:
 
         priority_values = [individual.run(features=scenario) for scenario in self.scenarios]
 
+        del individual
+
         if np.std(priority_values) > self.dud_individual_std_threshold:
             return tuple(np.argsort(priority_values))
         else:
