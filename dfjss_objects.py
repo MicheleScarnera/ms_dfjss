@@ -121,6 +121,7 @@ class DecisionRuleOutput:
 
         self.pairs = pairs
 
+
 # WAREHOUSE
 
 
@@ -145,7 +146,8 @@ class WarehouseSettings:
 
         self.allow_wait = True
         self.wait_time = 5.
-        self.priority_function_offset_per_wait = 1.
+        self.priority_function_wait_starting_offset = 1.
+        self.priority_function_wait_multiplier_per_wait = 2.
 
 
 def generate_features(rng, ranges_dict):
@@ -278,8 +280,8 @@ class WarehouseSimulationOutput:
         result["mean_net_earliness"] = np.mean(jrd)
         result["mean_earliness"] = np.mean(jrd, where=jrd > 0.) if np.any(jrd > 0.) else 0.
         result["mean_tardiness"] = -np.mean(jrd, where=jrd < 0.) if np.any(jrd < 0.) else 0.
-        result["max_earliness"] = np.max(jrd, where=jrd > 0., initial=0.) # if np.any(jrd > 0.) else 0.
-        result["max_tardiness"] = -np.min(jrd, where=jrd < 0., initial=0.) # if np.any(jrd < 0.) else 0.
+        result["max_earliness"] = np.max(jrd, where=jrd > 0., initial=0.)  # if np.any(jrd > 0.) else 0.
+        result["max_tardiness"] = -np.min(jrd, where=jrd < 0., initial=0.)  # if np.any(jrd < 0.) else 0.
 
         result["mean_jit_penalty"] = np.mean(jit)
 
@@ -297,7 +299,6 @@ class WarehouseSimulationOutput:
         result["total_energy_consumption"] = np.sum(e)
 
         return result
-
 
     def summary(self):
         result = "SIMULATION OUTPUT\n"
@@ -439,7 +440,8 @@ class Warehouse:
         return np.sum([waiting_machine.machine == machine for waiting_machine in self.waiting_machines], dtype=int)
 
     def slots_used_up_on_machine(self, machine):
-        return self.concurrent_operations_processing_under_machine(machine) + self.concurrent_cooldowns_of_machine(machine)
+        return self.concurrent_operations_processing_under_machine(machine) + self.concurrent_cooldowns_of_machine(
+            machine)
 
     def is_machine_busy(self, machine):
         return self.slots_used_up_on_machine(machine) >= machine.features["machine_capacity"]
@@ -459,7 +461,7 @@ class Warehouse:
         return [machine for machine in self.machines if not self.is_machine_busy(machine)]
 
     def available_jobs(self):
-        #return [job for job in self.jobs if not self.is_job_busy(job)]
+        # return [job for job in self.jobs if not self.is_job_busy(job)]
         unavailable_jobs = set([busy_couple.job for busy_couple in self.busy_couples])
         unavailable_jobs.update([waiting_job.job for waiting_job in self.waiting_jobs])
 
@@ -695,7 +697,8 @@ class Warehouse:
         # RELEASE THINGS THAT CAN BE RELEASED
 
         # machine breakdown
-        last_time_passed = 0 if simulation_output.times_passed is None or len(simulation_output.times_passed) <= 0 else simulation_output.times_passed[-1]
+        last_time_passed = 0 if simulation_output.times_passed is None or len(simulation_output.times_passed) <= 0 else \
+        simulation_output.times_passed[-1]
         for machine in self.machines:
             breakdown_rate = machine.features["machine_current_breakdown_rate"] * last_time_passed
             if breakdown_rate > 0. and self.rng.uniform() < (1. - np.exp(-breakdown_rate)):
@@ -708,7 +711,8 @@ class Warehouse:
 
                 # machine replacement cooldown must be determined by the broken down machine
                 # otherwise, its value is kind of useless for priority functions
-                self.make_machine_wait(machine=new_machine, time_needed=machine.features["machine_replacement_cooldown"])
+                self.make_machine_wait(machine=new_machine,
+                                       time_needed=machine.features["machine_replacement_cooldown"])
 
                 if verbose > 1:
                     print(
@@ -747,13 +751,16 @@ class Warehouse:
                         job_of_operation_done.features["job_relative_deadline"]
                     )
 
-                    relaxed_absolute_deadline = job_of_operation_done.features["job_initialization_time"] +\
-                                                job_of_operation_done.features["job_delivery_relaxation"] *\
-                                                (job_of_operation_done.features["job_absolute_deadline"] - job_of_operation_done.features["job_initialization_time"])
+                    relaxed_absolute_deadline = job_of_operation_done.features["job_initialization_time"] + \
+                                                job_of_operation_done.features["job_delivery_relaxation"] * \
+                                                (job_of_operation_done.features["job_absolute_deadline"] -
+                                                 job_of_operation_done.features["job_initialization_time"])
 
                     simulation_output.jit_penalties.append(
-                        job_of_operation_done.features["job_earliness_penalty"] * max(relaxed_absolute_deadline - self.current_time, 0) +\
-                        job_of_operation_done.features["job_lateness_penalty"] * max(self.current_time - relaxed_absolute_deadline, 0)
+                        job_of_operation_done.features["job_earliness_penalty"] * max(
+                            relaxed_absolute_deadline - self.current_time, 0) + \
+                        job_of_operation_done.features["job_lateness_penalty"] * max(
+                            self.current_time - relaxed_absolute_deadline, 0)
                     )
 
                     if verbose > 1:
@@ -764,8 +771,10 @@ class Warehouse:
                 machine_wait_time = machine_of_operation_done.features["machine_cooldown"]
 
                 # monetary/energy costs
-                simulation_output.costs.append(workload * machine_of_operation_done.features["machine_processing_cost_per_second"])
-                simulation_output.energies_used.append(workload * machine_of_operation_done.features["machine_processing_energy_per_second"])
+                simulation_output.costs.append(
+                    workload * machine_of_operation_done.features["machine_processing_cost_per_second"])
+                simulation_output.energies_used.append(
+                    workload * machine_of_operation_done.features["machine_processing_energy_per_second"])
 
                 self.make_machine_wait(machine=machine_of_operation_done, time_needed=machine_wait_time)
 
@@ -819,11 +828,11 @@ class Warehouse:
                 )
         """
 
-
         # REAL-TIME FEATURES
 
         # utilization rate
-        self.warehouse_features["warehouse_utilization_rate"] = len(self.busy_couples) / np.sum([machine.features["machine_capacity"] for machine in self.machines])
+        self.warehouse_features["warehouse_utilization_rate"] = len(self.busy_couples) / np.sum(
+            [machine.features["machine_capacity"] for machine in self.machines])
 
         # jobs' real time features
         for job in self.jobs:
@@ -838,7 +847,8 @@ class Warehouse:
 
         # machines' real time features
         for machine in self.machines:
-            machine.features["machine_current_breakdown_rate"] = self.rng.uniform() * machine.features["machine_max_breakdown_rate"]
+            machine.features["machine_current_breakdown_rate"] = self.rng.uniform() * machine.features[
+                "machine_max_breakdown_rate"]
 
         # TODO: custom real-time features
 
@@ -852,7 +862,8 @@ class Warehouse:
 
         offset = self.current_wait_cumulative_offset if self.settings.allow_wait else 0.
 
-        decision_output = decision_rule.make_decisions(warehouse=self, allow_wait=self.settings.allow_wait, values_offset=offset)
+        decision_output = decision_rule.make_decisions(warehouse=self, allow_wait=self.settings.allow_wait,
+                                                       values_offset=offset)
         if decision_output.success:
             if len(decision_output.pairs) > 0:
                 # reset wait offset
@@ -903,13 +914,16 @@ class Warehouse:
                 # otherwise, it will wait for the soonest thing
                 times.append(self.settings.wait_time)
 
-            self.current_wait_cumulative_offset += self.settings.priority_function_offset_per_wait
+            self.current_wait_cumulative_offset = (
+                self.settings.priority_function_wait_starting_offset) if self.current_wait_cumulative_offset <= 0. \
+                else self.current_wait_cumulative_offset * self.settings.priority_function_wait_multiplier_per_wait
 
         smallest_time = max(np.min(a=times), self.settings.minimum_time_elapse)
 
         if waiting:
             if verbose > 1:
-                print(f"\tWaiting for {misc.timeformat(smallest_time)} (current offset: {self.current_wait_cumulative_offset:.1f})")
+                print(
+                    f"\tWaiting for {misc.timeformat(smallest_time)} (current offset: {self.current_wait_cumulative_offset:.1f})")
 
         # ELAPSE TIME
 
@@ -1006,9 +1020,11 @@ class Warehouse:
         # run routine...
         while True:
             if verbose > 1:
-                print(f"Routine step {routine_step} - Time: {misc.timeformat(self.current_time)} - Jobs to do: {len(self.jobs)} ({len([None for job in self.jobs if not self.is_job_busy(job)])} available)")
+                print(
+                    f"Routine step {routine_step} - Time: {misc.timeformat(self.current_time)} - Jobs to do: {len(self.jobs)} ({len([None for job in self.jobs if not self.is_job_busy(job)])} available)")
 
-            routine_result = self.do_routine_once(simulation_output=simulation_output, decision_rule_override=decision_rule_override, verbose=verbose)
+            routine_result = self.do_routine_once(simulation_output=simulation_output,
+                                                  decision_rule_override=decision_rule_override, verbose=verbose)
 
             if routine_result.end_simulation:
                 end_reason = "the routine ending it"
@@ -1026,7 +1042,8 @@ class Warehouse:
                 # end_reason = "reaching the maximum simulation time"
                 # break
                 if verbose > 1:
-                    print("Notice: Simulation has gone beyond its time window. This is not necessarily an issue, there might still be jobs to finish.")
+                    print(
+                        "Notice: Simulation has gone beyond its time window. This is not necessarily an issue, there might still be jobs to finish.")
 
             if 0 < max_routine_steps <= routine_step:
                 end_reason = "reaching the maximum routine steps"
@@ -1043,6 +1060,7 @@ class Warehouse:
             simulation_output.machine_lifespans.append(self.current_time - machine.features["machine_start_time"])
 
         if verbose > 0:
-            print(f"Simulation ended in {misc.timeformat(simulation_output.simulation_time)} ({misc.timeformat(time.time() - realtime_start)} real time) due to {end_reason}")
+            print(
+                f"Simulation ended in {misc.timeformat(simulation_output.simulation_time)} ({misc.timeformat(time.time() - realtime_start)} real time) due to {end_reason}")
 
         return simulation_output
