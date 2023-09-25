@@ -90,6 +90,9 @@ class PhenotypeMapper:
         if type(individual_representation) != str:
             raise ValueError(f"PhenotypeMapper only allows individuals in string form for the \'contains\' operation  ({type(individual_representation)} was supplied)")
 
+        if len(self.individual_to_phenotype.keys()) <= 0:
+            return False
+
         phenotype = self.get_phenotype_of_individual(individual_representation)
 
         if phenotype in self.phenotype_to_fitness:
