@@ -37,21 +37,22 @@ class PhenotypeMapper:
                 self.scenarios = list(rng.choice(a=self.scenarios, size=reference_scenarios_amount, replace=False))
             elif len(self.scenarios) < reference_scenarios_amount:
                 raise Exception(f"Number of scenarios in phenotype mapper is unexpectedly below specified amount {reference_scenarios_amount}")
+
+            if reference_rule is None:
+                rng = np.random.default_rng(seed=scenarios_seed)
+                order = rng.permutation(x=reference_scenarios_amount)
+            elif type(reference_rule) == pf.PriorityFunctionTreeDecisionRule:
+                order = np.argsort(
+                    [reference_rule.priority_function_tree.run(features=scenario) for scenario in scenarios_seed])
+            else:
+                raise ValueError(f"Reference rule of phenotype mapper is unexpected (of type {type(reference_rule)})")
+
+            self.scenarios = [self.scenarios[i_sorted] for i_sorted in order]
         else:
             self.warehouse_settings = None
             self._warehouse = None
 
             self.scenarios = precomputed_scenarios
-
-        if reference_rule is None:
-            rng = np.random.default_rng(seed=scenarios_seed)
-            order = rng.permutation(x=reference_scenarios_amount)
-        elif type(reference_rule) == pf.PriorityFunctionTreeDecisionRule:
-            order = np.argsort([reference_rule.priority_function_tree.run(features=scenario) for scenario in scenarios_seed])
-        else:
-            raise ValueError(f"Reference rule of phenotype mapper is unexpected (of type {type(reference_rule)})")
-
-        self.scenarios = [self.scenarios[i_sorted] for i_sorted in order]
 
         self.features = list(self.scenarios[0].keys())
 

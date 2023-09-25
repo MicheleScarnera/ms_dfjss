@@ -67,8 +67,8 @@ class GeneticAlgorithmSettings:
 
         self.tree_transformation_max_depth = 8
 
-        self.priority_function_random_number_range = (-10, 10)
-        self.random_number_granularity = 0.25
+        self.priority_function_random_number_range = (-15, 15)
+        self.random_number_granularity = 0.5
 
         self.tree_exnovo_generation_weights = {
             "another_branch": 0.43,
@@ -490,325 +490,340 @@ class GeneticAlgorithm:
         return fitness
 
     def do_genetic_routine_once(self, current_step, max_steps, verbose=0):
-        result = GeneticAlgorithmRoutineOutput()
+            result = GeneticAlgorithmRoutineOutput()
 
-        if len(self.settings.simulations_seeds) != self.settings.number_of_possible_seeds:
-            raise ValueError(
-                f"Number of seeds provided in settings.simulations_seeds ({len(self.settings.simulations_seeds)}) is not the same as settings.number_of_possible_seeds ({self.settings.number_of_simulations_per_individual})")
+            if len(self.settings.simulations_seeds) != self.settings.number_of_possible_seeds:
+                raise ValueError(
+                    f"Number of seeds provided in settings.simulations_seeds ({len(self.settings.simulations_seeds)}) is not the same as settings.number_of_possible_seeds ({self.settings.number_of_simulations_per_individual})")
 
-        # if population is empty (or below desired amount) fill with random individuals
-        while len(self.population) < self.settings.population_size:
-            # new individuals must be never seen before
-            while True:
-                random_individual = self.get_random_individual()
-                repr_individual = repr(random_individual)
+            start = time.time()
 
-                in_any_fitness_log = self.in_any_fitness_log(repr_individual)
+            # if population is empty (or below desired amount) fill with random individuals
+            while len(self.population) < self.settings.population_size:
+                # new individuals must be never seen before
+                while True:
+                    random_individual = self.get_random_individual()
+                    repr_individual = repr(random_individual)
 
-                if in_any_fitness_log or repr_individual in [repr(individual) for individual in self.population]:
-                    continue
-                else:
-                    break
+                    in_any_fitness_log = self.in_any_fitness_log(repr_individual)
 
-            self.population.append(random_individual)
+                    if in_any_fitness_log or repr_individual in [repr(individual) for individual in self.population]:
+                        continue
+                    else:
+                        break
 
-        # compute fitness values
-        fitness_values = np.zeros(shape=(len(self.population), self.settings.number_of_simulations_per_individual))
+                self.population.append(random_individual)
 
-        if self.settings.fitness_log_is_phenotype_mapper:
-            seeds_weights = [1. / max(1., self.fitness_log[seed].phenotype_amount()) for seed in
-                             self.settings.simulations_seeds]
-        else:
-            seeds_weights = [1. / max(1., len(self.fitness_log[seed].keys())) for seed in
-                             self.settings.simulations_seeds]
+            if verbose > 2:
+                print(f"Generate random individuals: {misc.timeformat(time.time() - start)}")
 
-        seeds_weights = np.array(seeds_weights) / np.sum(seeds_weights)
+            # compute fitness values
+            fitness_values = np.zeros(shape=(len(self.population), self.settings.number_of_simulations_per_individual))
 
-        chosen_seeds = self.rng.choice(a=self.settings.simulations_seeds,
-                                       size=self.settings.number_of_simulations_per_individual,
-                                       p=seeds_weights,
-                                       replace=False)
+            start = time.time()
 
-        self.__worker_tasks = []
-        for individual_index in range(len(self.population)):
-            for seed_index in range(self.settings.number_of_simulations_per_individual):
-                self.__worker_tasks.append((individual_index, seed_index, self.population[individual_index], chosen_seeds[seed_index], copy.copy(self.settings.warehouse_settings)))
+            if self.settings.fitness_log_is_phenotype_mapper:
+                seeds_weights = [1. / max(1., self.fitness_log[seed].phenotype_amount()) for seed in
+                                 self.settings.simulations_seeds]
+            else:
+                seeds_weights = [1. / max(1., len(self.fitness_log[seed].keys())) for seed in
+                                 self.settings.simulations_seeds]
 
-        # shuffle the task order to make the ETA estimation less biased
-        self.rng.shuffle(x=self.__worker_tasks)
+            seeds_weights = np.array(seeds_weights) / np.sum(seeds_weights)
 
-        start = time.time()
+            chosen_seeds = self.rng.choice(a=self.settings.simulations_seeds,
+                                           size=self.settings.number_of_simulations_per_individual,
+                                           p=seeds_weights,
+                                           replace=False)
 
-        def to_print_func(tasks_done, initial_tasks, start, precomputed_sims_per_sec=None, precomputed_current_eta=None):
-            current_time = time.time()
+            if verbose > 2:
+                print(f"Get simulation weights: {misc.timeformat(time.time() - start)}")
 
-            current_eta = precomputed_current_eta if precomputed_current_eta is not None else misc.timeleft(start, current_time, tasks_done, initial_tasks)
-            sims_per_sec = precomputed_sims_per_sec if precomputed_sims_per_sec is not None else tasks_done / (current_time - start)
+            start = time.time()
 
-            result = f"\rRunning simulations..."
-            if tasks_done > 0:
-                absolute_eta = datetime.datetime.now() + datetime.timedelta(seconds=current_eta)
+            self.__worker_tasks = []
+            for individual_index in range(len(self.population)):
+                for seed_index in range(self.settings.number_of_simulations_per_individual):
+                    self.__worker_tasks.append((individual_index, seed_index, self.population[individual_index], chosen_seeds[seed_index], copy.copy(self.settings.warehouse_settings)))
 
-                sims_per_sec_print = f"{sims_per_sec:.2f} simulations/s" if sims_per_sec >= 1. else f"{misc.timeformat(1. / sims_per_sec)} per simulation"
+            # shuffle the task order to make the ETA estimation less biased
+            self.rng.shuffle(x=self.__worker_tasks)
 
-                result += f" {tasks_done} / {initial_tasks} ({tasks_done / initial_tasks:.1%}), {sims_per_sec_print}, ETA {misc.timeformat_hhmmss(current_eta)} ({absolute_eta.strftime('%a %d %b %Y, %H:%M:%S')})"
+            if verbose > 2:
+                print(f"Get worker tasks: {misc.timeformat(time.time() - start)}")
 
-            return result
+            start = time.time()
 
-        if self.settings.multiprocessing_processes > 1:
-            lock = mp.Lock()
-            with mp.get_context("spawn").Pool(initializer=init_pool_processes, initargs=(lock,), processes=self.settings.multiprocessing_processes) as pool:
-            #with ThreadPool(initializer=init_pool_processes, initargs=(lock,), processes=self.settings.multiprocessing_processes) as pool:
-                apply_results = []
-                for task in self.__worker_tasks:
-                    apply_results.append(pool.apply_async(func=self.do_worker_task, args=(task, True)))
+            def to_print_func(tasks_done, initial_tasks, start, precomputed_sims_per_sec=None, precomputed_current_eta=None):
+                current_time = time.time()
 
-                pool.close()
+                current_eta = precomputed_current_eta if precomputed_current_eta is not None else misc.timeleft(start, current_time, tasks_done, initial_tasks)
+                sims_per_sec = precomputed_sims_per_sec if precomputed_sims_per_sec is not None else tasks_done / (current_time - start)
 
-                if verbose > 1:
-                    initial_tasks = len(self.__worker_tasks)
-                    previous_tasks_done = 0
-                    sims_per_sec = 0
-                    current_eta = -1
-                    time_increment = 1
-                    while True:
-                        time.sleep(time_increment)
+                result = f"\rRunning simulations..."
+                if tasks_done > 0:
+                    absolute_eta = datetime.datetime.now() + datetime.timedelta(seconds=current_eta)
 
-                        tasks_done = np.sum([apply_result.ready() for apply_result in apply_results])
+                    sims_per_sec_print = f"{sims_per_sec:.2f} simulations/s" if sims_per_sec >= 1. else f"{misc.timeformat(1. / sims_per_sec)} per simulation"
+
+                    result += f" {tasks_done} / {initial_tasks} ({tasks_done / initial_tasks:.1%}), {sims_per_sec_print}, ETA {misc.timeformat_hhmmss(current_eta)} ({absolute_eta.strftime('%a %d %b %Y, %H:%M:%S')})"
+
+                return result
+
+            if self.settings.multiprocessing_processes > 1:
+                lock = mp.Lock()
+                with mp.get_context("spawn").Pool(initializer=init_pool_processes, initargs=(lock,), processes=self.settings.multiprocessing_processes) as pool:
+                #with ThreadPool(initializer=init_pool_processes, initargs=(lock,), processes=self.settings.multiprocessing_processes) as pool:
+                    apply_results = []
+                    for task in self.__worker_tasks:
+                        apply_results.append(pool.apply_async(func=self.do_worker_task, args=(task, True)))
+
+                    pool.close()
+
+                    if verbose > 1:
+                        initial_tasks = len(self.__worker_tasks)
+                        previous_tasks_done = 0
+                        sims_per_sec = 0
+                        current_eta = -1
+                        time_increment = 1
+                        while True:
+                            time.sleep(time_increment)
+
+                            tasks_done = np.sum([apply_result.ready() for apply_result in apply_results])
+
+                            completed = tasks_done >= initial_tasks
+
+                            if tasks_done > previous_tasks_done:
+                                time_of_last_update = time.time()
+                                current_eta = misc.timeleft(start, time_of_last_update, tasks_done, initial_tasks)
+                                sims_per_sec = tasks_done / (time_of_last_update - start)
+                            else:
+                                current_eta = max(current_eta - time_increment, 0)
+
+                            endch = ""
+                            if completed:
+                                endch = "\n"
+
+                            to_print = to_print_func(tasks_done, initial_tasks, start,
+                                                     precomputed_sims_per_sec=sims_per_sec, precomputed_current_eta=current_eta)
+
+                            previous_tasks_done = tasks_done
+
+                            print(to_print, end=endch, flush=True)
+
+                            if completed:
+                                break
+
+                    pool.join()
+
+                    for (ind, seed, *_), apply_result in zip(self.__worker_tasks, apply_results):
+                        fitness_values[ind, seed] = apply_result.get()
+            else:
+                initial_tasks = len(self.__worker_tasks)
+                for i, task in enumerate(self.__worker_tasks):
+                    individual_index, seed_index, *_ = task
+
+                    fitness_values[individual_index, seed_index] = self.do_worker_task(task_tuple=task, is_multiprocessing=False)
+
+                    if verbose > 1:
+                        tasks_done = i + 1
 
                         completed = tasks_done >= initial_tasks
-
-                        if tasks_done > previous_tasks_done:
-                            time_of_last_update = time.time()
-                            current_eta = misc.timeleft(start, time_of_last_update, tasks_done, initial_tasks)
-                            sims_per_sec = tasks_done / (time_of_last_update - start)
-                        else:
-                            current_eta = max(current_eta - time_increment, 0)
 
                         endch = ""
                         if completed:
                             endch = "\n"
 
-                        to_print = to_print_func(tasks_done, initial_tasks, start,
-                                                 precomputed_sims_per_sec=sims_per_sec, precomputed_current_eta=current_eta)
+                        to_print = to_print_func(tasks_done, initial_tasks, start)
+                        print(to_print, end=endch)
 
-                        previous_tasks_done = tasks_done
+            if verbose > 1:
+                print(f"\tTook {misc.timeformat(time.time() - start)}")
 
-                        print(to_print, end=endch, flush=True)
+            df_input = dict()
+            df_input["Individual"] = [repr(individual) for individual in self.population]
+            df_input["Fitness"] = [None for individual in self.population]
 
-                        if completed:
-                            break
+            for seed in self.settings.simulations_seeds:
+                df_input[f"Fitness_{seed}"] = [None for individual in self.population]
 
-                pool.join()
+            # annote fitness to precompute map
+            for i in range(len(self.population)):
+                representation = repr(self.population[i])
 
-                for (ind, seed, *_), apply_result in zip(self.__worker_tasks, apply_results):
-                    fitness_values[ind, seed] = apply_result.get()
-        else:
-            initial_tasks = len(self.__worker_tasks)
-            for i, task in enumerate(self.__worker_tasks):
-                individual_index, seed_index, *_ = task
+                fitnesses = []
+                for task_tuple in [task_tuple for task_tuple in self.__worker_tasks if task_tuple[0] == i]:
+                    individual_index, seed_index, individual, seed, warehouse_settings = task_tuple
 
-                fitness_values[individual_index, seed_index] = self.do_worker_task(task_tuple=task, is_multiprocessing=False)
+                    df_input[f"Fitness_{seed}"][i] = fitness_values[i, seed_index]
+                    fitnesses.append(fitness_values[i, seed_index])
 
-                if verbose > 1:
-                    tasks_done = i + 1
+                    if representation not in self.fitness_log[seed]:
+                        self.fitness_log[seed][representation] = fitness_values[i, seed_index]
 
-                    completed = tasks_done >= initial_tasks
+                df_input["Fitness"][i] = self.settings.simulations_reduce(fitnesses)
 
-                    endch = ""
-                    if completed:
-                        endch = "\n"
+            result.population_data = pd.DataFrame(df_input)
 
-                    to_print = to_print_func(tasks_done, initial_tasks, start)
-                    print(to_print, end=endch)
+            fitness_values = np.array([self.settings.simulations_reduce(fitnesses) for fitnesses in
+                                       np.split(fitness_values, indices_or_sections=len(self.population), axis=0)])
 
-        if verbose > 1:
-            print(f"\tTook {misc.timeformat(time.time() - start)}")
+            # sort by fitness
+            fitness_order = np.argsort(a=fitness_values)
 
-        df_input = dict()
-        df_input["Individual"] = [repr(individual) for individual in self.population]
-        df_input["Fitness"] = [None for individual in self.population]
+            population_amount_before = len(self.population)
+            result.best_individual = self.population[fitness_order[0]]
+            result.best_fitness = fitness_values[fitness_order[0]]
 
-        for seed in self.settings.simulations_seeds:
-            df_input[f"Fitness_{seed}"] = [None for individual in self.population]
+            if verbose > 1:
+                print(f"\tBest individual: {result.best_individual}")
+                print(f"\tBest fitness: {result.best_fitness:.2f}")
 
-        # annote fitness to precompute map
-        for i in range(len(self.population)):
-            representation = repr(self.population[i])
+                print(
+                    f"\tMean fitness: {np.mean(fitness_values):.2f} (Interquartile range: [{np.quantile(fitness_values, q=0.25):.2f}, {np.quantile(fitness_values, q=0.75):.2f}])")
 
-            fitnesses = []
-            for task_tuple in [task_tuple for task_tuple in self.__worker_tasks if task_tuple[0] == i]:
-                individual_index, seed_index, individual, seed, warehouse_settings = task_tuple
+            cutoff_index_sorted = -1
 
-                df_input[f"Fitness_{seed}"][i] = fitness_values[i, seed_index]
-                fitnesses.append(fitness_values[i, seed_index])
+            if self.settings.reproduction_rate == "knee-point":
+                F = fitness_values[fitness_order[-1]]
+                f = fitness_values[fitness_order[0]]
+                I = len(self.population)
 
-                if representation not in self.fitness_log[seed]:
-                    self.fitness_log[seed][representation] = fitness_values[i, seed_index]
+                a = - (F - f) / (I - 1)
+                b = 1
+                c = - f
 
-            df_input["Fitness"][i] = self.settings.simulations_reduce(fitnesses)
+                distances_from_funny_line = np.array(
+                    [np.abs(a * i + b * fitness + c) / np.sqrt(a ** 2 + b ** 2) for i, fitness in
+                     enumerate(fitness_values[fitness_order])])
+                distances_from_funny_line_order = np.argsort(distances_from_funny_line)
+                cutoff_index_sorted = distances_from_funny_line_order[-1]
 
-        result.population_data = pd.DataFrame(df_input)
+            elif misc.is_number(self.settings.reproduction_rate) and 0. < self.settings.reproduction_rate < 1.:
+                cutoff_index_sorted = int(np.round(len(self.population) * self.settings.reproduction_rate))
+            else:
+                raise ValueError(f"self.settings.reproduction_rate has unexpected value {self.settings.reproduction_rate}")
 
-        fitness_values = np.array([self.settings.simulations_reduce(fitnesses) for fitnesses in
-                                   np.split(fitness_values, indices_or_sections=len(self.population), axis=0)])
+            # wipe current population
+            old_population = self.population
+            old_population_sorted = [self.population[fitness_order[i]] for i in range(len(fitness_order))]
+            self.population = []
 
-        # sort by fitness
-        fitness_order = np.argsort(a=fitness_values)
+            # fitness weights (to be used in "lower fitness is better" random draws
+            fitness_weights = np.array([1. / (i + 1) for i in range(population_amount_before)])
+            fitness_weights = fitness_weights / np.sum(fitness_weights)
 
-        population_amount_before = len(self.population)
-        result.best_individual = self.population[fitness_order[0]]
-        result.best_fitness = fitness_values[fitness_order[0]]
+            # reproduction, crossover, mutation
+            reproducing_individuals_amount = cutoff_index_sorted
 
-        if verbose > 1:
-            print(f"\tBest individual: {result.best_individual}")
-            print(f"\tBest fitness: {result.best_fitness:.2f}")
-
-            print(
-                f"\tMean fitness: {np.mean(fitness_values):.2f} (Interquartile range: [{np.quantile(fitness_values, q=0.25):.2f}, {np.quantile(fitness_values, q=0.75):.2f}])")
-
-        cutoff_index_sorted = -1
-
-        if self.settings.reproduction_rate == "knee-point":
-            F = fitness_values[fitness_order[-1]]
-            f = fitness_values[fitness_order[0]]
-            I = len(self.population)
-
-            a = - (F - f) / (I - 1)
-            b = 1
-            c = - f
-
-            distances_from_funny_line = np.array(
-                [np.abs(a * i + b * fitness + c) / np.sqrt(a ** 2 + b ** 2) for i, fitness in
-                 enumerate(fitness_values[fitness_order])])
-            distances_from_funny_line_order = np.argsort(distances_from_funny_line)
-            cutoff_index_sorted = distances_from_funny_line_order[-1]
-
-        elif misc.is_number(self.settings.reproduction_rate) and 0. < self.settings.reproduction_rate < 1.:
-            cutoff_index_sorted = int(np.round(len(self.population) * self.settings.reproduction_rate))
-        else:
-            raise ValueError(f"self.settings.reproduction_rate has unexpected value {self.settings.reproduction_rate}")
-
-        # wipe current population
-        old_population = self.population
-        old_population_sorted = [self.population[fitness_order[i]] for i in range(len(fitness_order))]
-        self.population = []
-
-        # fitness weights (to be used in "lower fitness is better" random draws
-        fitness_weights = np.array([1. / (i + 1) for i in range(population_amount_before)])
-        fitness_weights = fitness_weights / np.sum(fitness_weights)
-
-        # reproduction, crossover, mutation
-        reproducing_individuals_amount = cutoff_index_sorted
-
-        current_reproduction_rate = max(0.01,
-                                        reproducing_individuals_amount / population_amount_before + self.settings.reproduction_rate_increment * (
+            current_reproduction_rate = max(0.01,
+                                            reproducing_individuals_amount / population_amount_before + self.settings.reproduction_rate_increment * (
+                                                        current_step - 1))
+            current_crossover_rate = max(0.01,
+                                         self.settings.crossover_rate + self.settings.crossover_rate_increment * (
+                                                     current_step - 1))
+            current_mutation_rate = max(0.01,
+                                        self.settings.mutation_rate + self.settings.mutation_rate_increment * (
                                                     current_step - 1))
-        current_crossover_rate = max(0.01,
-                                     self.settings.crossover_rate + self.settings.crossover_rate_increment * (
-                                                 current_step - 1))
-        current_mutation_rate = max(0.01,
-                                    self.settings.mutation_rate + self.settings.mutation_rate_increment * (
-                                                current_step - 1))
 
-        rates_norm = current_reproduction_rate + current_crossover_rate + current_mutation_rate
+            rates_norm = current_reproduction_rate + current_crossover_rate + current_mutation_rate
 
-        current_reproduction_rate, current_crossover_rate, current_mutation_rate = current_reproduction_rate / rates_norm, current_crossover_rate / rates_norm, current_mutation_rate / rates_norm
+            current_reproduction_rate, current_crossover_rate, current_mutation_rate = current_reproduction_rate / rates_norm, current_crossover_rate / rates_norm, current_mutation_rate / rates_norm
 
-        reproducing_individuals_amount = int(np.round(current_reproduction_rate * population_amount_before))
+            reproducing_individuals_amount = int(np.round(current_reproduction_rate * population_amount_before))
 
-        # reproduction
-        # the best individual is always reproduced, the rest are drawn randomly
-        if verbose > 1:
-            print(f"\r\tDoing reproduction...", end="")
-
-        if reproducing_individuals_amount > 0:
-            self.population.append(old_population_sorted[0])
-
-            if reproducing_individuals_amount > 1:
-                self.population.extend(
-                    self.rng.choice(a=old_population_sorted[1:],
-                                    size=reproducing_individuals_amount - 1,
-                                    p=fitness_weights[1:] / np.sum(fitness_weights[1:]),
-                                    replace=False)
-                )
-
-        if current_reproduction_rate < 1.:
-            # crossover
-            crossovers_to_do = int(len(old_population) * current_crossover_rate)
-            tournament_size = int(self.settings.population_size * self.settings.tournament_percent_size)
-
-            # make tournament size even (and not bigger)
-            tournament_size -= tournament_size % 2
-            tournament_size = max(2, tournament_size)
-
-            crossover_start = time.time()
-
+            # reproduction
+            # the best individual is always reproduced, the rest are drawn randomly
             if verbose > 1:
-                print(f"\r                                           ", end="")
-                print(f"\r\tDoing crossover...", end="")
+                print(f"\r\tDoing reproduction...", end="")
 
-            for i in range(crossovers_to_do):
-                ph_e_attempts = max(self.settings.phenotype_exploration_attempts_during_crossover,
-                                    1) if self.settings.fitness_log_is_phenotype_mapper else 1
-                depth_attempts = max(self.settings.depth_attempts_during_crossover, 1)
+            if reproducing_individuals_amount > 0:
+                self.population.append(old_population_sorted[0])
 
-                new_individual = None
+                if reproducing_individuals_amount > 1:
+                    self.population.extend(
+                        self.rng.choice(a=old_population_sorted[1:],
+                                        size=reproducing_individuals_amount - 1,
+                                        p=fitness_weights[1:] / np.sum(fitness_weights[1:]),
+                                        replace=False)
+                    )
 
-                for _ in range(depth_attempts):
-                    for _ in range(ph_e_attempts):
-                        participants = self.rng.choice(a=len(old_population), size=tournament_size, replace=False)
-                        participants_1 = participants[0:tournament_size // 2]
-                        participants_2 = participants[tournament_size // 2:tournament_size]
+            if current_reproduction_rate < 1.:
+                # crossover
+                crossovers_to_do = int(len(old_population) * current_crossover_rate)
+                tournament_size = int(self.settings.population_size * self.settings.tournament_percent_size)
 
-                        assert len(participants_1) == len(participants_2)
+                # make tournament size even (and not bigger)
+                tournament_size -= tournament_size % 2
+                tournament_size = max(2, tournament_size)
 
-                        best_participant_i_1 = np.argmin(
-                            [fitness_values[participant] for participant in participants_1])
-                        best_participant_i_2 = np.argmin(
-                            [fitness_values[participant] for participant in participants_2])
-
-                        new_individual = self.combine_individuals(individual_1=old_population[best_participant_i_1],
-                                                                  individual_2=old_population[best_participant_i_2],
-                                                                  verbose=verbose)
-
-                        if not self.in_any_fitness_log(repr(new_individual)):
-                            break
-
-                    if new_individual.depth() <= self.settings.tree_transformation_max_depth:
-                        break
-
-                self.population.append(new_individual)
+                crossover_start = time.time()
 
                 if verbose > 1:
-                    print(
-                        f"\r\tDoing crossover... ETA {misc.timeformat_hhmmss(misc.timeleft(crossover_start, time.time(), i + 1, crossovers_to_do))}",
-                        end="")
+                    print(f"\r                                           ", end="")
+                    print(f"\r\tDoing crossover...", end="")
 
-            # mutation
+                for i in range(crossovers_to_do):
+                    ph_e_attempts = max(self.settings.phenotype_exploration_attempts_during_crossover,
+                                        1) if self.settings.fitness_log_is_phenotype_mapper else 1
+                    depth_attempts = max(self.settings.depth_attempts_during_crossover, 1)
+
+                    new_individual = None
+
+                    for _ in range(depth_attempts):
+                        for _ in range(ph_e_attempts):
+                            participants = self.rng.choice(a=len(old_population), size=tournament_size, replace=False)
+                            participants_1 = participants[0:tournament_size // 2]
+                            participants_2 = participants[tournament_size // 2:tournament_size]
+
+                            assert len(participants_1) == len(participants_2)
+
+                            best_participant_i_1 = np.argmin(
+                                [fitness_values[participant] for participant in participants_1])
+                            best_participant_i_2 = np.argmin(
+                                [fitness_values[participant] for participant in participants_2])
+
+                            new_individual = self.combine_individuals(individual_1=old_population[best_participant_i_1],
+                                                                      individual_2=old_population[best_participant_i_2],
+                                                                      verbose=verbose)
+
+                            if not self.in_any_fitness_log(repr(new_individual)):
+                                break
+
+                        if new_individual.depth() <= self.settings.tree_transformation_max_depth:
+                            break
+
+                    self.population.append(new_individual)
+
+                    if verbose > 1:
+                        print(
+                            f"\r\tDoing crossover... ETA {misc.timeformat_hhmmss(misc.timeleft(crossover_start, time.time(), i + 1, crossovers_to_do))}",
+                            end="")
+
+                # mutation
+                if verbose > 1:
+                    print(f"\r                                           ", end="")
+                    print(f"\r\tDoing mutation...", end="\r")
+
+                mutated_individuals_added = 0
+                while len(self.population) < population_amount_before:
+                    individual_to_mutate = self.rng.choice(a=old_population_sorted, p=fitness_weights)
+
+                    new_individual = self.mutate_individual(
+                        individual=individual_to_mutate,
+                        inplace=False)
+
+                    self.population.append(new_individual)
+
+                    mutated_individuals_added += 1
+            else:
+                current_crossover_rate, crossovers_to_do, current_mutation_rate, mutated_individuals_added = 0., 0, 0., 0
+
             if verbose > 1:
-                print(f"\r                                           ", end="")
-                print(f"\r\tDoing mutation...", end="\r")
+                print(
+                    f"\t{current_reproduction_rate:.1%} ({reproducing_individuals_amount}) reproduction, {current_crossover_rate:.1%} ({crossovers_to_do}) crossover, {current_mutation_rate:.1%} ({mutated_individuals_added}) mutation")
 
-            mutated_individuals_added = 0
-            while len(self.population) < population_amount_before:
-                individual_to_mutate = self.rng.choice(a=old_population_sorted, p=fitness_weights)
-
-                new_individual = self.mutate_individual(
-                    individual=individual_to_mutate,
-                    inplace=False)
-
-                self.population.append(new_individual)
-
-                mutated_individuals_added += 1
-        else:
-            current_crossover_rate, crossovers_to_do, current_mutation_rate, mutated_individuals_added = 0., 0, 0., 0
-
-        if verbose > 1:
-            print(
-                f"\t{current_reproduction_rate:.1%} ({reproducing_individuals_amount}) reproduction, {current_crossover_rate:.1%} ({crossovers_to_do}) crossover, {current_mutation_rate:.1%} ({mutated_individuals_added}) mutation")
-
-        return result
+            return result
 
     def run_genetic_algorithm(self, max_individuals_to_evaluate=-1, verbose=0):
         start = time.time()
@@ -967,12 +982,6 @@ class GeneticAlgorithm:
                 print("There was no simulation output")
 
             print(f"Genetic simulation took {misc.timeformat(time.time() - start)}")
-
-
-
-        if verbose > 2:
-            print("Fitness log:")
-            print(misc.dictformat(self.fitness_log))
 
         if error_to_raise_later is not None:
             raise error_to_raise_later

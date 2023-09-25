@@ -55,6 +55,8 @@ if __name__ == "__main__":
     #gen_algo_settings.warehouse_settings.generation_simulation_ranges["simulation_random_job_arrival_rate"] = 0
     #gen_algo_settings.warehouse_settings.generation_simulation_ranges["simulation_random_job_arrival_end_state_prevention_batch_size"] = 0
 
+    verbose = 3
+
     #gen_algo_settings.fitness_func = custom_fitness_func
     gen_algo_settings.fitness_is_random = False
 
@@ -70,7 +72,7 @@ if __name__ == "__main__":
     gen_algo_settings.tree_transformation_max_depth = 8
 
     gen_algo_settings.fitness_log_is_phenotype_mapper = True
-    gen_algo_settings.phenotype_mapper_scenarios_amount = 100
+    gen_algo_settings.phenotype_mapper_scenarios_amount = 16
     gen_algo_settings.phenotype_exploration_attempts_during_crossover = 3
 
     gen_algo_settings.depth_attempts_during_crossover = 3
@@ -90,7 +92,18 @@ if __name__ == "__main__":
 
     #gen_algo.import_state("29 Aug 2023 17_59_26 random fitness")
 
-    #gen_algo.population.append(pf.representation_to_priority_function_tree("(job_time_alive+0)",features=gen_algo.settings.features,operations=gen_algo.settings.operations))
+    #gen_algo_settings.operations = pf.DEFAULT_OPERATIONS
+
+    """
+    baseline = "((job_time_alive/(job_relative_deadline>0))*job_remaining_number_of_operations)"
+
+    for n in ["0.0", "15.0", "30.0"]:
+        gen_algo.population.append(pf.representation_to_priority_function_tree(
+            f"({baseline}-{n})",
+            features=gen_algo.settings.features, operations=gen_algo.settings.operations))
+
+    gen_algo_settings.population_size = len(gen_algo.population)
+    """
 
     gen_algo.run_genetic_algorithm(max_individuals_to_evaluate=-1,
-                                   verbose=2)
+                                   verbose=verbose)
