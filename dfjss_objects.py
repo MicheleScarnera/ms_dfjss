@@ -350,7 +350,11 @@ class Warehouse:
 
         self.current_time = 0.
 
-        self.current_wait_cumulative_offset = 0.
+        self.wait_debt = 0
+
+    def get_current_wait_offset(self):
+        return 0 if self.wait_debt <= 0 \
+                else self.settings.priority_function_wait_starting_offset * self.settings.priority_function_wait_multiplier_per_wait ** (self.wait_debt - 1)
 
     def job_of_operation(self, operation):
         if operation.job is not None:
@@ -860,14 +864,14 @@ class Warehouse:
 
         decision_rule = self.settings.decision_rule if decision_rule_override is None else decision_rule_override
 
-        offset = self.current_wait_cumulative_offset if self.settings.allow_wait else 0.
+        offset = self.get_current_wait_offset() if self.settings.allow_wait else 0.
 
         decision_output = decision_rule.make_decisions(warehouse=self, allow_wait=self.settings.allow_wait,
                                                        values_offset=offset)
         if decision_output.success:
             if len(decision_output.pairs) > 0:
                 # reset wait offset
-                self.current_wait_cumulative_offset = 0
+                self.wait_debt = max(0, self.wait_debt - 1)
 
                 # there are machine assignments to be done
                 for machine, job in decision_output.pairs:
@@ -906,6 +910,7 @@ class Warehouse:
         times.extend([waiting_machine.time_needed for waiting_machine in self.waiting_machines])
         times.extend([waiting_job.time_needed for waiting_job in self.waiting_jobs])
 
+        # waiting
         waiting = False
         if self.settings.allow_wait and decision_output.success and len(decision_output.pairs) == 0:
             waiting = True
@@ -914,16 +919,14 @@ class Warehouse:
                 # otherwise, it will wait for the soonest thing
                 times.append(self.settings.wait_time)
 
-            self.current_wait_cumulative_offset = (
-                self.settings.priority_function_wait_starting_offset) if self.current_wait_cumulative_offset <= 0. \
-                else self.current_wait_cumulative_offset * self.settings.priority_function_wait_multiplier_per_wait
+            self.wait_debt += 1
 
         smallest_time = max(np.min(a=times), self.settings.minimum_time_elapse)
 
-        if waiting:
-            if verbose > 1:
+        if verbose > 1:
+            if waiting:
                 print(
-                    f"\tWaiting for {misc.timeformat(smallest_time)} (current offset: {self.current_wait_cumulative_offset:.1f})")
+                    f"\tWaiting for {misc.timeformat(smallest_time)} (Current wait offset: {self.get_current_wait_offset():.1f})")
 
         # ELAPSE TIME
 

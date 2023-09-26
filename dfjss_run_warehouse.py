@@ -2,7 +2,6 @@ import dfjss_objects as dfjss
 import dfjss_defaults as DEFAULTS
 import dfjss_priorityfunction as pf
 import dfjss_misc as misc
-import dfjss_phenotype as pht
 
 import time
 
@@ -10,38 +9,7 @@ rng_seed = 14825
 max_steps = -1
 verbose = 0
 
-start_beginning = time.time()
-
-make_junk = True
-if make_junk:
-    if True:
-        fitness_log = dict()
-
-        precomputed_scenarios = None
-        for seed in range(0, 1500):
-            fitness_log[seed] = pht.PhenotypeMapper(scenarios_seed=rng_seed,
-                                                    reference_scenarios_amount=25,
-                                                    precomputed_scenarios=precomputed_scenarios)
-
-            if precomputed_scenarios is None:
-                precomputed_scenarios = fitness_log[seed].scenarios
-
-        print(len(fitness_log.keys()))
-
-        del precomputed_scenarios
-
-        for i in list(fitness_log.keys()):
-            del fitness_log[i]
-
-        del fitness_log
-
-    if False:
-        w = dict()
-
-        for i in range(1500):
-            w[i] = dfjss.Warehouse()
-
-start_warehouse = time.time()
+start = time.time()
 
 # random decision
 
@@ -86,6 +54,4 @@ print(priorityfunc.latex(parentheses=False))
 print("")
 print(prioritydecision_sim_out.summary())
 
-print(f"Beginning: {misc.timeformat(start_warehouse - start_beginning)}")
-print(f"Warehouse: {misc.timeformat(time.time() - start_warehouse)}")
-print(f"Total: {misc.timeformat(time.time() - start_beginning)}")
+print(f"Took {misc.timeformat(time.time() - start)}")

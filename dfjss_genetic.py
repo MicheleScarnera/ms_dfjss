@@ -98,7 +98,7 @@ class GeneticAlgorithmSettings:
         self.warehouse_settings = dfjss.WarehouseSettings()
 
         self.save_logs = True
-        self.fitness_log_is_phenotype_mapper = True
+        self.fitness_log_is_phenotype_mapper = False
         self.phenotype_mapper_scenarios_amount = 16
         self.phenotype_exploration_attempts_during_crossover = 3
         self.depth_attempts_during_crossover = 3
