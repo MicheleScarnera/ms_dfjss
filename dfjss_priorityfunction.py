@@ -583,7 +583,7 @@ class PriorityFunctionTreeDecisionRule(dfjss.BaseDecisionRule):
 
         pairs = []
 
-        while np.any(remaining) and (not allow_wait or np.any(priority_values >= -epsilon)):
+        while np.any(remaining) and (not allow_wait or np.any(~np.isnan(priority_values) & priority_values >= -epsilon)):
             index_max = np.nanargmax(priority_values)
 
             pairs.append(compatible_pairs[index_max])
