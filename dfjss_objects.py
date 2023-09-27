@@ -231,15 +231,15 @@ class WarehouseRoutineOutput:
 class WarehouseSimulationOutput:
     success: bool
     simulation_time: float
-    times_passed: list[float]
-    job_times: list[float]
-    job_relative_deadlines: list[float]
-    jit_penalties: list[float]
-    workloads: list[float]
-    machine_lifespans: list[float]
+    times_passed: List[float]
+    job_times: List[float]
+    job_relative_deadlines: List[float]
+    jit_penalties: List[float]
+    workloads: List[float]
+    machine_lifespans: List[float]
 
-    costs: list[float]
-    energies_used: list[float]
+    costs: List[float]
+    energies_used: List[float]
 
     def __init__(self, simulation_time=None,
                  times_passed=None,
@@ -324,10 +324,10 @@ class WarehouseSimulationOutput:
 class Warehouse:
     rng: np.random.Generator
     settings: WarehouseSettings
-    machines: list[Machine]
-    jobs: list[Job]
-    busy_couples: list[BusyCouple]
-    warehouse_features: dict[str, Any]
+    machines: List[Machine]
+    jobs: List[Job]
+    busy_couples: List[BusyCouple]
+    warehouse_features: Dict[str, Any]
 
     def __init__(self, settings=None, rng_seed=None):
         self.rng = np.random.default_rng(seed=rng_seed)

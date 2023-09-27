@@ -115,7 +115,7 @@ class GeneticAlgorithmRoutineOutput:
     best_individual: pf.PriorityFunctionTree
     best_fitness: float
 
-    population_data: dict[str, float]
+    population_data: Dict[str, float]
 
     individuals_evaluated: int
 
@@ -131,7 +131,7 @@ class GeneticAlgorithmRoutineOutput:
 class GeneticAlgorithm:
     settings: GeneticAlgorithmSettings
 
-    # fitness_log: dict[str, float]
+    # fitness_log: Dict[str, float]
 
     def __init__(self, settings=None, rng_seed=None):
         if settings is None:
