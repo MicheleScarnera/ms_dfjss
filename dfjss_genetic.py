@@ -857,7 +857,7 @@ class GeneticAlgorithm:
                     break
 
                 if verbose > 1:
-                    print(f"Step {step}")
+                    print(f"Step {step} of {self.settings.total_steps}")
 
                 routine_output = self.do_genetic_routine_once(current_step=step, max_steps=self.settings.total_steps,
                                                               verbose=verbose)

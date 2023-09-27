@@ -39,6 +39,7 @@ class MandatoryFeatureUnknownTypeWarning(Warning):
         super().__init__(message)
         self.value = value
 
+
 class JobWithBadOperationsError(Exception):
     def __init__(self, message, operations):
         super().__init__(message)

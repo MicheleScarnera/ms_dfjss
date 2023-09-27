@@ -7,7 +7,7 @@ import time
 
 rng_seed = 14825
 max_steps = -1
-verbose = 0
+verbose = 2
 
 start = time.time()
 
@@ -25,8 +25,9 @@ pf_features = DEFAULTS.MANDATORY_FEATURES
 
 # "((job_remaining_number_of_operations/(job_relative_deadline>0))/(pair_number_of_compatible_machines*pair_number_of_compatible_operations))"
 # "(((job_remaining_number_of_operations/(job_relative_deadline>0))/((pair_number_of_alternative_machines^warehouse_utilization_rate)*(pair_number_of_alternative_operations^(1-warehouse_utilization_rate))))-2.0)"
+# '((job_relative_deadline*-4.5)<(-5.0<pair_number_of_alternative_machines))'
 branch = pf.representation_to_root_branch(
-    representation='((job_relative_deadline*-4.5)<(-5.0<pair_number_of_alternative_machines))',
+    representation="((job_time_alive/(job_relative_deadline>0))*job_remaining_number_of_operations)",
     features=pf_features)
 
 priorityfunc = pf.PriorityFunctionTree(
