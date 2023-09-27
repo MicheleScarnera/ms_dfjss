@@ -110,7 +110,7 @@ class RandomDecisionRule(BaseDecisionRule):
 
 class DecisionRuleOutput:
     success: bool
-    pairs: list[(Machine, Job)]
+    pairs: list[tuple[Machine, Job]]
 
     def __init__(self, success, pairs=None):
         self.success = success
