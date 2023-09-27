@@ -583,14 +583,14 @@ class PriorityFunctionTreeDecisionRule(dfjss.BaseDecisionRule):
 
         pairs = []
 
-        while np.any(remaining) and (not allow_wait or np.any(~np.isnan(priority_values) & priority_values >= -epsilon)):
+        while np.any(remaining) and (not allow_wait or np.any(np.bitwise_and(~np.isnan(priority_values), priority_values >= -epsilon, casting="same_kind"))):
             index_max = np.nanargmax(priority_values)
 
             pairs.append(compatible_pairs[index_max])
 
             remaining = np.bitwise_and(remaining,
                                        [(machine != compatible_pairs[index_max][0] and job != compatible_pairs[index_max][1])
-                                        for i, (machine, job) in enumerate(compatible_pairs)])
+                                        for i, (machine, job) in enumerate(compatible_pairs)], casting="same_kind")
 
             priority_values[~remaining] = np.nan
 
