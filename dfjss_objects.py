@@ -1,4 +1,4 @@
-from typing import List, Any, Dict
+from typing import List, Any, Dict, Tuple
 import warnings
 from collections import Counter
 import time
@@ -110,7 +110,7 @@ class RandomDecisionRule(BaseDecisionRule):
 
 class DecisionRuleOutput:
     success: bool
-    pairs: list[tuple[Machine, Job]]
+    pairs: List[Tuple[Machine, Job]]
 
     def __init__(self, success, pairs=None):
         self.success = success
