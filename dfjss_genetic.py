@@ -62,7 +62,7 @@ class GeneticAlgorithmSettings:
         self.operations = pf.DEFAULT_OPERATIONS.copy()
         del self.operations["^"]
 
-        self.tree_generation_max_depth = 5
+        self.tree_generation_max_depth = 2
         self.tree_generation_mode = "half_and_half"
 
         self.tree_transformation_max_depth = 8

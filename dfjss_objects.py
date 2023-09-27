@@ -666,7 +666,7 @@ class Warehouse:
 
         operation = job.operations[0]
 
-        result = self.warehouse_features | machine.features | job.features | operation.features
+        result = {**self.warehouse_features,**machine.features, **job.features, **operation.features}
 
         result["pair_number_of_alternative_machines"] = len([
             m for m in self.available_machines() if self.machine_operation_compatible(m, operation)
