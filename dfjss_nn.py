@@ -257,7 +257,7 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
         val_progress = 0
         val_progress_needed = None
 
-        print(f"\rEpoch {epoch}: Validating...", flush=True)
+        print(f"\rEpoch {epoch}: Validating...", end="", flush=True)
 
         for sequence in val_loader:
             sequence = sequence.to(device)
@@ -271,10 +271,12 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
 
                 val_loss += loss.item()
 
+                val_progress += 1
+
                 print(
                     f"\rEpoch {epoch}: Validating... {val_progress / val_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(val_start, time.time(), val_progress, val_progress_needed))}",
                     end="", flush=True)
 
         print(
-            f"Epoch: {epoch} Train Loss: {train_loss/len(train_loader):.4f} Val Loss: {val_loss/len(val_loader):.4f}"
+            f"\rEpoch: {epoch} Train Loss: {train_loss/len(train_loader):.4f} Val Loss: {val_loss/len(val_loader):.4f}"
         )
