@@ -278,10 +278,10 @@ class WarehouseSimulationOutput:
         result["max_completion_time"] = self.simulation_time
 
         result["mean_net_earliness"] = np.mean(jrd)
-        result["mean_earliness"] = np.mean(jrd, where=jrd > 0.) if np.any(jrd > 0.) else 0.
-        result["mean_tardiness"] = -np.mean(jrd, where=jrd < 0.) if np.any(jrd < 0.) else 0.
-        result["max_earliness"] = np.max(jrd, where=jrd > 0., initial=0.)  # if np.any(jrd > 0.) else 0.
-        result["max_tardiness"] = -np.min(jrd, where=jrd < 0., initial=0.)  # if np.any(jrd < 0.) else 0.
+        result["mean_earliness"] = np.nanmean(np.where(jrd > 0., jrd, np.nan)) if np.any(jrd > 0.) else 0.
+        result["mean_tardiness"] = -np.nanmean(np.where(jrd < 0., jrd, np.nan)) if np.any(jrd < 0.) else 0.
+        result["max_earliness"] = np.max(jrd) if np.any(jrd > 0.) else 0.
+        result["max_tardiness"] = -np.min(jrd) if np.any(jrd < 0.) else 0.
 
         result["mean_jit_penalty"] = np.mean(jit)
 
