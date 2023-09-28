@@ -38,9 +38,8 @@ INDIVIDUALS_FEATURES = ["operation_work_required",
                         "pair_number_of_alternative_operations",
                         "pair_expected_work_power",
                         "pair_expected_processing_time"]
-VOCAB = ["(", ")", "+", "-", "*", "/", "<", ">", *INDIVIDUALS_FEATURES]
+VOCAB = ["NULL", "EOS", "(", ")", "+", "-", "*", "/", "<", ">", *INDIVIDUALS_FEATURES]
 VOCAB_SIZE = len(VOCAB)
-
 
 class IndividualAutoEncoder(nn.Module):
     def __init__(self, input_size=None, hidden_size=128, num_layers=1, dropout=0, bidirectional=False):
@@ -126,6 +125,57 @@ def generate_individuals_file(total_amount=5000, max_depth=8, rng_seed=100):
     return df
 
 
+def one_hot_sequence(individual):
+    return torch.stack([token_to_one_hot(s) for s in tokenize_with_vocab(individual)])
+
+
+def token_to_one_hot(s):
+    # Convert a token to a one-hot tensor
+    one_hot = torch.zeros(len(VOCAB))
+    if s in VOCAB:
+        index = VOCAB.index(s)
+        one_hot[index] = 1
+    else:
+        return token_to_one_hot("NULL")
+    return one_hot
+
+
+def tokenize_with_vocab(input_string):
+    # Sort the vocab list by length in descending order
+    sorted_vocab = sorted(VOCAB, key=lambda x: len(x), reverse=True)
+
+    tokens = []
+    i = 0
+
+    while i < len(input_string):
+        matched = False
+
+        for word in sorted_vocab:
+            if input_string[i:i + len(word)] == word:
+                tokens.append(word)
+                i += len(word)
+                matched = True
+                break
+
+        if not matched:
+            # If no match is found, add the character as a single-character token
+            tokens.append(input_string[i])
+            i += 1
+
+    return tokens
+
+
+def string_from_onehots(onehots):
+    if len(onehots.shape) != 2:
+        raise ValueError(f"onehots is not 2-D, but {len(onehots.shape)}-D {onehots.shape}")
+
+    result = ""
+    for onehot in onehots:
+        result += VOCAB[np.argmax(onehot)]
+
+    return result
+
+
 class IndividualDataset(data.IterableDataset):
     def __init__(self):
         super().__init__()
@@ -136,11 +186,14 @@ class IndividualDataset(data.IterableDataset):
         else:
             self.df = generate_individuals_file()
 
+        for i in range(len(self.df)):
+            self.df.loc[i, "Individual"] = self.df.loc[i, "Individual"] + "EOS"
+
     def __iter__(self):
         return self.data_iterator()
 
     def __getitem__(self, idx):
-        return self.one_hot_sequence(self.df.loc[idx, "Individual"])
+        return one_hot_sequence(self.df.loc[idx, "Individual"])
 
     def __len__(self):
         return len(self.df)
@@ -148,23 +201,9 @@ class IndividualDataset(data.IterableDataset):
     def data_iterator(self):
         # Iterate through each row in the CSV
         for _, row in self.df.iterrows():
-            individual_sequence = row['Individual']
+            individual = row['Individual']
 
-            # Convert the string to a list of one-hot vectors
-            one_hot_sequence = [self.string_to_one_hot(s) for s in individual_sequence]
-
-            yield torch.stack(one_hot_sequence)
-
-    def one_hot_sequence(self, individual):
-        return torch.stack([self.string_to_one_hot(s) for s in individual])
-
-    def string_to_one_hot(self, s):
-        # Convert a single character to a one-hot tensor
-        one_hot = torch.zeros(len(VOCAB))
-        if s in VOCAB:
-            index = VOCAB.index(s)
-            one_hot[index] = 1
-        return one_hot
+            yield one_hot_sequence(individual)
 
 
 def sequence_collate(batch):
@@ -175,6 +214,7 @@ def sequence_collate(batch):
     for sample in batch:
         if sample.shape[0] < longest_sequence_length:
             filler = torch.zeros((longest_sequence_length - sample.shape[0], VOCAB_SIZE))
+            filler[:, 0] = 1.  # fill with NULL
 
             sample = torch.cat((sample, filler), dim=0)
 
