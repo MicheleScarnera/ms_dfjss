@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.optim as optim
 import torch.utils.data as data
 
 import numpy as np
@@ -10,6 +11,8 @@ import os
 
 import dfjss_genetic as genetic
 import dfjss_misc as misc
+
+torch.autograd.set_detect_anomaly(True)
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -36,6 +39,7 @@ INDIVIDUALS_FEATURES = ["operation_work_required",
                         "pair_expected_work_power",
                         "pair_expected_processing_time"]
 VOCAB = ["(", ")", "+", "-", "*", "/", "<", ">", *INDIVIDUALS_FEATURES]
+VOCAB_SIZE = len(VOCAB)
 
 
 class IndividualAutoEncoder(nn.Module):
@@ -45,41 +49,52 @@ class IndividualAutoEncoder(nn.Module):
         if input_size is None:
             input_size = len(VOCAB)
 
+        self.d = 2 if bidirectional else 1
+        self.num_layers = num_layers
+        self.hidden_size = hidden_size
+
         self.encoder = nn.RNN(input_size=input_size,
                               hidden_size=hidden_size,
                               num_layers=num_layers,
                               dropout=dropout,
                               bidirectional=bidirectional,
+                              batch_first=True,
                               device=device)
 
-        d = 2 if bidirectional else 1
-        self.encoder_output_size = d * num_layers * hidden_size
+        self.encoder_output_size = self.d * num_layers * hidden_size
 
         self.decoder = nn.RNN(input_size=self.encoder_output_size,
                               hidden_size=input_size,
                               num_layers=num_layers,
                               dropout=dropout,
                               bidirectional=False,
+                              batch_first=False,
                               device=device)
 
     def forward(self, x):
+        is_batch = len(x.shape) == 3
+        batch_size = x.shape[0] if is_batch else None
+
         vocab_length = self.encoder.input_size
-        sequence_length = x.size()[0]
+        sequence_length = x.shape[1] if is_batch else x.shape[0]
 
-        _, encoded = self.encoder(x)
+        encoder_h_size = (self.d * self.num_layers, batch_size, self.encoder.hidden_size) if is_batch else (self.d * self.num_layers, self.encoder.hidden_size)
+        decoder_h_size = (self.num_layers, batch_size, self.decoder.hidden_size) if is_batch else (self.num_layers, self.decoder.hidden_size)
 
-        current_hidden_state = torch.zeros((1, vocab_length))
+        _, encoded = self.encoder(x, torch.zeros(encoder_h_size))
+
+        current_decoder_h = torch.zeros(decoder_h_size)
 
         decodes = []
         for i in range(sequence_length):
-            d, current_hidden_state = self.decoder(encoded, current_hidden_state)
+            d, current_decoder_h = self.decoder(encoded, current_decoder_h)
 
             decodes.append(d)
 
-        return torch.stack(decodes)
+        return torch.transpose(torch.cat(decodes), 0, 1) if is_batch else torch.cat(decodes)
 
 
-def generate_individuals_file(total_amount=500000, max_depth=8, rng_seed=100):
+def generate_individuals_file(total_amount=5000, max_depth=8, rng_seed=100):
     gen_algo = genetic.GeneticAlgorithm(rng_seed=rng_seed)
     gen_algo.settings.features = INDIVIDUALS_FEATURES
 
@@ -115,24 +130,33 @@ class IndividualDataset(data.IterableDataset):
     def __init__(self):
         super().__init__()
 
+        # Load the CSV file using pandas
+        if os.path.exists(INDIVIDUALS_FILENAME):
+            self.df = pd.read_csv(INDIVIDUALS_FILENAME)
+        else:
+            self.df = generate_individuals_file()
+
     def __iter__(self):
         return self.data_iterator()
 
-    def data_iterator(self):
-        # Load the CSV file using pandas
-        if os.path.exists(INDIVIDUALS_FILENAME):
-            df = pd.read_csv(INDIVIDUALS_FILENAME)
-        else:
-            df = generate_individuals_file()
+    def __getitem__(self, idx):
+        return self.one_hot_sequence(self.df.loc[idx, "Individual"])
 
+    def __len__(self):
+        return len(self.df)
+
+    def data_iterator(self):
         # Iterate through each row in the CSV
-        for _, row in df.iterrows():
+        for _, row in self.df.iterrows():
             individual_sequence = row['Individual']
 
             # Convert the string to a list of one-hot vectors
             one_hot_sequence = [self.string_to_one_hot(s) for s in individual_sequence]
 
             yield torch.stack(one_hot_sequence)
+
+    def one_hot_sequence(self, individual):
+        return torch.stack([self.string_to_one_hot(s) for s in individual])
 
     def string_to_one_hot(self, s):
         # Convert a single character to a one-hot tensor
@@ -141,3 +165,116 @@ class IndividualDataset(data.IterableDataset):
             index = VOCAB.index(s)
             one_hot[index] = 1
         return one_hot
+
+
+def sequence_collate(batch):
+    longest_sequence_length = max([sample.shape[0] for sample in batch])
+
+    collated_batch = []
+
+    for sample in batch:
+        if sample.shape[0] < longest_sequence_length:
+            filler = torch.zeros((longest_sequence_length - sample.shape[0], VOCAB_SIZE))
+
+            sample = torch.cat((sample, filler), dim=0)
+
+        collated_batch.append(sample)
+
+    return torch.stack(collated_batch)
+
+
+def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.2):
+    """
+    :type model: nn.Module
+
+    :param model:
+    :param dataset:
+    :param num_epochs:
+    :param val_split:
+    :param batch_size:
+    :return:
+    """
+    train_set, val_set = data.random_split(dataset=dataset, lengths=[1. - val_split, val_split])
+    train_loader = data.DataLoader(
+        train_set,
+        batch_size=batch_size,
+        collate_fn=sequence_collate,
+        shuffle=True
+    )
+
+    val_loader = data.DataLoader(
+        val_set,
+        batch_size=batch_size,
+        collate_fn=sequence_collate,
+        shuffle=True
+    )
+
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.SGD(model.parameters(),
+                          lr=0.001,
+                          momentum=0.9)
+
+    for epoch in range(1, num_epochs+1):
+        # Training
+        train_loss = 0.
+        model.train()
+
+        train_start = time.time()
+        train_progress = 0
+        train_progress_needed = None
+
+        print(f"Epoch {epoch}: Training...", end="")
+
+        for sequence in train_loader:
+            sequence = sequence.to(device)
+
+            optimizer.zero_grad()
+
+            outputs = model(sequence)
+            W = sequence.shape[0]
+            for w in range(W):
+                if train_progress_needed is None:
+                    train_progress_needed = len(train_loader) * W
+
+                is_last = w == W - 1
+
+                loss = criterion(outputs[w], sequence[w])
+                loss.backward(retain_graph=not is_last)
+
+                train_loss += loss.item()
+
+                train_progress += 1
+
+                print(f"\rEpoch {epoch}: Training... {train_progress/train_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(train_start, time.time(), train_progress, train_progress_needed))}", end="", flush=True)
+
+            optimizer.step()
+
+        # Validation
+        val_loss = 0.
+        model.eval()
+
+        val_start = time.time()
+        val_progress = 0
+        val_progress_needed = None
+
+        print(f"\rEpoch {epoch}: Validating...", flush=True)
+
+        for sequence in val_loader:
+            sequence = sequence.to(device)
+
+            outputs = model(sequence)
+            for w in range(sequence.shape[0]):
+                if val_progress_needed is None:
+                    val_progress_needed = len(train_loader) * sequence.shape[0]
+
+                loss = criterion(outputs[w], sequence[w])
+
+                val_loss += loss.item()
+
+                print(
+                    f"\rEpoch {epoch}: Validating... {val_progress / val_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(val_start, time.time(), val_progress, val_progress_needed))}",
+                    end="", flush=True)
+
+        print(
+            f"Epoch: {epoch} Train Loss: {train_loss/len(train_loader):.4f} Val Loss: {val_loss/len(val_loader):.4f}"
+        )
