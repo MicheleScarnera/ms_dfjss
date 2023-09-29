@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 import time
+import datetime
 import os
 
 import dfjss_genetic as genetic
@@ -38,11 +39,15 @@ INDIVIDUALS_FEATURES = ["operation_work_required",
                         "pair_number_of_alternative_operations",
                         "pair_expected_work_power",
                         "pair_expected_processing_time"]
-VOCAB = ["NULL", "EOS", "(", ")", "+", "-", "*", "/", "<", ">", *INDIVIDUALS_FEATURES]
+
+gp_settings = genetic.GeneticAlgorithmSettings()
+
+VOCAB = ["NULL", "EOS", "(", ")", "+", "-", "*", "/", "<", ">", *INDIVIDUALS_FEATURES, *[str(num) for num in gp_settings.random_numbers_set()]]
 VOCAB_SIZE = len(VOCAB)
 
+
 class IndividualAutoEncoder(nn.Module):
-    def __init__(self, input_size=None, hidden_size=128, num_layers=1, dropout=0, bidirectional=False):
+    def __init__(self, input_size=None, hidden_size=128, num_layers=1, dropout=0.5, bidirectional=False):
         super(IndividualAutoEncoder, self).__init__()
 
         if input_size is None:
@@ -234,6 +239,10 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
     :param batch_size:
     :return:
     """
+    folder_name = datetime.datetime.now().strftime('AUTOENCODER %Y-%m-%d %H-%M-%S')
+
+    print(f"Model(s) will be saved in \"{folder_name}\"")
+
     train_set, val_set = data.random_split(dataset=dataset, lengths=[1. - val_split, val_split])
     train_loader = data.DataLoader(
         train_set,
@@ -320,3 +329,5 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
         print(
             f"\rEpoch: {epoch} Train Loss: {train_loss/len(train_loader):.4f} Val Loss: {val_loss/len(val_loader):.4f}"
         )
+
+        torch.save(model.state_dict(), f"{folder_name}/model_epoch{epoch}.pth")
