@@ -47,7 +47,7 @@ VOCAB_SIZE = len(VOCAB)
 
 
 class IndividualAutoEncoder(nn.Module):
-    def __init__(self, input_size=None, hidden_size=128, num_layers=1, dropout=0.5, bidirectional=False):
+    def __init__(self, input_size=None, hidden_size=128, num_layers=2, dropout=0.5, bidirectional=False):
         super(IndividualAutoEncoder, self).__init__()
 
         if input_size is None:
@@ -65,7 +65,7 @@ class IndividualAutoEncoder(nn.Module):
                               batch_first=True,
                               device=device)
 
-        self.encoder_output_size = self.d * num_layers * hidden_size
+        self.encoder_output_size = self.d * hidden_size
 
         self.decoder = nn.RNN(input_size=self.encoder_output_size,
                               hidden_size=input_size,
@@ -93,9 +93,9 @@ class IndividualAutoEncoder(nn.Module):
         for i in range(sequence_length):
             d, current_decoder_h = self.decoder(encoded, current_decoder_h)
 
-            decodes.append(d)
+            decodes.append(d[-1, :])
 
-        return torch.transpose(torch.cat(decodes), 0, 1) if is_batch else torch.cat(decodes)
+        return torch.transpose(torch.stack(decodes), 0, 1) if is_batch else torch.stack(decodes)
 
 
 def generate_individuals_file(total_amount=5000, max_depth=8, rng_seed=100):
@@ -267,6 +267,9 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
         # Training
         train_loss = 0.
         model.train()
+
+        train_accuracy = 0.
+        train_perfect_matches = 0.
 
         train_start = time.time()
         train_progress = 0
