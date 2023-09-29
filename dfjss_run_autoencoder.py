@@ -18,4 +18,4 @@ autoencoded = autoencoder(example).detach()
 #print(autoencoded)
 print(f"Output size: {autoencoded.size()}")
 
-dfjss_nn.train_autoencoder(autoencoder, dataset, batch_size=16, num_epochs=10)
+dfjss_nn.train_autoencoder(autoencoder, dataset, batch_size=4, num_epochs=10)

@@ -47,7 +47,7 @@ VOCAB_SIZE = len(VOCAB)
 
 
 class IndividualAutoEncoder(nn.Module):
-    def __init__(self, input_size=None, hidden_size=128, num_layers=2, dropout=0.5, bidirectional=False):
+    def __init__(self, input_size=None, hidden_size=512, num_layers=2, dropout=0.5, bidirectional=False):
         super(IndividualAutoEncoder, self).__init__()
 
         if input_size is None:
@@ -98,7 +98,7 @@ class IndividualAutoEncoder(nn.Module):
         return torch.transpose(torch.stack(decodes), 0, 1) if is_batch else torch.stack(decodes)
 
 
-def generate_individuals_file(total_amount=5000, max_depth=8, rng_seed=100):
+def generate_individuals_file(total_amount=500000, max_depth=8, rng_seed=100):
     gen_algo = genetic.GeneticAlgorithm(rng_seed=rng_seed)
     gen_algo.settings.features = INDIVIDUALS_FEATURES
 
@@ -241,6 +241,9 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
     """
     folder_name = datetime.datetime.now().strftime('AUTOENCODER %Y-%m-%d %H-%M-%S')
 
+    if not os.path.exists(folder_name):
+        os.makedirs(folder_name)
+
     print(f"Model(s) will be saved in \"{folder_name}\"")
 
     train_set, val_set = data.random_split(dataset=dataset, lengths=[1. - val_split, val_split])
@@ -282,7 +285,7 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
 
             optimizer.zero_grad()
 
-            outputs = model(sequence)
+            outputs = model(sequence).to(device)
             W = sequence.shape[0]
             for w in range(W):
                 if train_progress_needed is None:
@@ -314,7 +317,7 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
         for sequence in val_loader:
             sequence = sequence.to(device)
 
-            outputs = model(sequence)
+            outputs = model(sequence).to(device)
             for w in range(sequence.shape[0]):
                 if val_progress_needed is None:
                     val_progress_needed = len(train_loader) * sequence.shape[0]
@@ -330,7 +333,7 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
                     end="", flush=True)
 
         print(
-            f"\rEpoch: {epoch} Train Loss: {train_loss/len(train_loader):.4f} Val Loss: {val_loss/len(val_loader):.4f}"
+            f"\rEpoch {epoch}: Train Loss: {train_loss/len(train_loader):.4f} Val Loss: {val_loss/len(val_loader):.4f}"
         )
 
         torch.save(model.state_dict(), f"{folder_name}/model_epoch{epoch}.pth")
