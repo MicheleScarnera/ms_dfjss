@@ -42,12 +42,34 @@ INDIVIDUALS_FEATURES = ["operation_work_required",
 
 gp_settings = genetic.GeneticAlgorithmSettings()
 
-VOCAB = ["NULL", "EOS", "(", ")", "+", "-", "*", "/", "<", ">", *INDIVIDUALS_FEATURES, *[str(num) for num in gp_settings.random_numbers_set()]]
+OPERATIONS = ["+", "-", "*", "/", "<", ">"]
+CONSTANTS = [str(num) for num in gp_settings.random_numbers_set()]
+
+VOCAB = ["NULL", "EOS", "(", ")"]  # , *OPERATIONS, *INDIVIDUALS_FEATURES, *CONSTANTS
+VOCAB_REDUCED = VOCAB.copy()
+
+VOCAB_OPERATIONS_LOCATION = (len(VOCAB), len(VOCAB) + len(OPERATIONS))
+VOCAB.extend(OPERATIONS)
+VOCAB_REDUCED.append("o")
+
+VOCAB_FEATURES_LOCATION = (len(VOCAB), len(VOCAB) + len(INDIVIDUALS_FEATURES) + len(CONSTANTS))
+VOCAB.extend(INDIVIDUALS_FEATURES)
+VOCAB.extend(CONSTANTS)
+VOCAB_REDUCED.append("F")
+
 VOCAB_SIZE = len(VOCAB)
+VOCAB_REDUCED_SIZE = len(VOCAB_REDUCED)
+
+VOCAB_REDUCTION_MATRIX = torch.zeros(size=(VOCAB_REDUCED_SIZE, VOCAB_SIZE))
+for i in (0, 1, 2, 3):
+    VOCAB_REDUCTION_MATRIX[i, i] = 1.
+
+VOCAB_REDUCTION_MATRIX[4, VOCAB_OPERATIONS_LOCATION[0]:VOCAB_OPERATIONS_LOCATION[1]] = 1.
+VOCAB_REDUCTION_MATRIX[5, VOCAB_FEATURES_LOCATION[0]:VOCAB_FEATURES_LOCATION[1]] = 1.
 
 
 class IndividualAutoEncoder(nn.Module):
-    def __init__(self, input_size=None, hidden_size=512, num_layers=2, dropout=0.5, bidirectional=False):
+    def __init__(self, input_size=None, hidden_size=128, num_layers=2, dropout=0.5, bidirectional=False):
         super(IndividualAutoEncoder, self).__init__()
 
         if input_size is None:
@@ -82,8 +104,10 @@ class IndividualAutoEncoder(nn.Module):
         vocab_length = self.encoder.input_size
         sequence_length = x.shape[1] if is_batch else x.shape[0]
 
-        encoder_h_size = (self.d * self.num_layers, batch_size, self.encoder.hidden_size) if is_batch else (self.d * self.num_layers, self.encoder.hidden_size)
-        decoder_h_size = (self.num_layers, batch_size, self.decoder.hidden_size) if is_batch else (self.num_layers, self.decoder.hidden_size)
+        encoder_h_size = (self.d * self.num_layers, batch_size, self.encoder.hidden_size) if is_batch else (
+        self.d * self.num_layers, self.encoder.hidden_size)
+        decoder_h_size = (self.num_layers, batch_size, self.decoder.hidden_size) if is_batch else (
+        self.num_layers, self.decoder.hidden_size)
 
         _, encoded = self.encoder(x, torch.zeros(encoder_h_size))
 
@@ -119,7 +143,9 @@ def generate_individuals_file(total_amount=500000, max_depth=8, rng_seed=100):
         for _ in range(amount_per_depth[d_]):
             df.loc[len(df)] = {"Individual": repr(gen_algo.get_random_individual())}
 
-            print(f"\rGenerating individuals... {current_amount / total_amount:.1%} {misc.timeformat(misc.timeleft(start, time.time(), current_amount, total_amount))}", end="", flush=True)
+            print(
+                f"\rGenerating individuals... {current_amount / total_amount:.1%} {misc.timeformat(misc.timeleft(start, time.time(), current_amount, total_amount))}",
+                end="", flush=True)
 
             current_amount += 1
 
@@ -170,13 +196,16 @@ def tokenize_with_vocab(input_string):
     return tokens
 
 
-def string_from_onehots(onehots):
+def string_from_onehots(onehots, vocab=None):
     if len(onehots.shape) != 2:
         raise ValueError(f"onehots is not 2-D, but {len(onehots.shape)}-D {onehots.shape}")
 
+    if vocab is None:
+        vocab = VOCAB
+
     result = ""
     for onehot in onehots:
-        result += VOCAB[np.argmax(onehot)]
+        result += vocab[np.argmax(onehot)]
 
     return result
 
@@ -266,7 +295,7 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
                           lr=0.001,
                           momentum=0.9)
 
-    for epoch in range(1, num_epochs+1):
+    for epoch in range(1, num_epochs + 1):
         # Training
         train_loss = 0.
         model.train()
@@ -300,7 +329,9 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
 
                 train_progress += 1
 
-                print(f"\rEpoch {epoch}: Training... {train_progress/train_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(train_start, time.time(), train_progress, train_progress_needed))}", end="", flush=True)
+                print(
+                    f"\rEpoch {epoch}: Training... {train_progress / train_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(train_start, time.time(), train_progress, train_progress_needed))}",
+                    end="", flush=True)
 
             optimizer.step()
 
@@ -333,7 +364,56 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
                     end="", flush=True)
 
         print(
-            f"\rEpoch {epoch}: Train Loss: {train_loss/len(train_loader):.4f} Val Loss: {val_loss/len(val_loader):.4f}"
+            f"\rEpoch {epoch}: Train Loss: {train_loss / len(train_loader):.4f} Val Loss: {val_loss / len(val_loader):.4f}"
         )
 
         torch.save(model.state_dict(), f"{folder_name}/model_epoch{epoch}.pth")
+
+
+# "house": sequence of tokens "(FoF)"
+
+HOUSE_DETECTOR_COORDINATES = [(0, 2), (1, 5), (2, 4), (3, 5), (4, 3)]
+
+HOUSE_DETECTOR_FILTER = torch.zeros(size=(5, VOCAB_REDUCED_SIZE))
+
+for i, j in HOUSE_DETECTOR_COORDINATES:
+    HOUSE_DETECTOR_FILTER[i, j] = 1.
+
+
+def detect_houses(x):
+    if x.shape[1] == VOCAB_SIZE:
+        y = x @ VOCAB_REDUCTION_MATRIX.T
+        #raise ValueError(f"Sequence must be in reduced form (Vocab of size {VOCAB_REDUCED_SIZE}), while vocab is of size {x.shape[1]}")
+    else:
+        y = x
+
+    if x.shape[0] % 4 != 1:
+        seq_length = x.shape[0] - x.shape[0] % 4 + 1
+        #raise ValueError(f"Sequence length must be 1 mod 4, got {sequence.shape[0]} ({sequence.shape[0] % 4} mod 4) instead")
+    else:
+        seq_length = x.shape[0]
+
+    sequence = y[0:seq_length, :]
+
+    def gmean(vector):
+        return vector.prod() ** (1.0/vector.shape[0])
+
+    l = []
+
+    for i in range(0, sequence.shape[0] - 4):
+        window = sequence[i:(i+5), :]
+        mask = torch.gt(HOUSE_DETECTOR_FILTER, 0.)
+        v = torch.masked_select(window, mask)#torch.stack([window[i, j] for i, j in HOUSE_DETECTOR_COORDINATES])
+
+        l.append(gmean(v))
+
+    return torch.stack(l)
+
+
+HOUSE_DETECTOR_WINDOW = torch.zeros(size=(5, 6))
+
+HOUSE_DETECTOR_WINDOW[0, 2] = 1.
+HOUSE_DETECTOR_WINDOW[1, 5] = 1.
+HOUSE_DETECTOR_WINDOW[2, 4] = 1.
+HOUSE_DETECTOR_WINDOW[3, 5] = 1.
+HOUSE_DETECTOR_WINDOW[4, 3] = 1.
