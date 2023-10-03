@@ -31,6 +31,10 @@ def dictformat(dict) -> str:
     return result
 
 
+def constant_format(x):
+    return f"{{{x}}}"
+
+
 def timeformat(secs):
     if np.abs(secs) < 60.:
         return f"{secs:.2f}s"

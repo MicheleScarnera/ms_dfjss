@@ -43,7 +43,7 @@ INDIVIDUALS_FEATURES = ["operation_work_required",
 gp_settings = genetic.GeneticAlgorithmSettings()
 
 OPERATIONS = ["+", "-", "*", "/", "<", ">"]
-CONSTANTS = [str(num) for num in gp_settings.random_numbers_set()]
+CONSTANTS = [misc.constant_format(num) for num in gp_settings.random_numbers_set()]
 
 VOCAB = ["NULL", "EOS", "(", ")"]  # , *OPERATIONS, *INDIVIDUALS_FEATURES, *CONSTANTS
 VOCAB_REDUCED = VOCAB.copy()
@@ -105,9 +105,9 @@ class IndividualAutoEncoder(nn.Module):
         sequence_length = x.shape[1] if is_batch else x.shape[0]
 
         encoder_h_size = (self.d * self.num_layers, batch_size, self.encoder.hidden_size) if is_batch else (
-        self.d * self.num_layers, self.encoder.hidden_size)
+            self.d * self.num_layers, self.encoder.hidden_size)
         decoder_h_size = (self.num_layers, batch_size, self.decoder.hidden_size) if is_batch else (
-        self.num_layers, self.decoder.hidden_size)
+            self.num_layers, self.decoder.hidden_size)
 
         _, encoded = self.encoder(x, torch.zeros(encoder_h_size))
 
@@ -156,24 +156,40 @@ def generate_individuals_file(total_amount=500000, max_depth=8, rng_seed=100):
     return df
 
 
-def one_hot_sequence(individual):
-    return torch.stack([token_to_one_hot(s) for s in tokenize_with_vocab(individual)])
+def one_hot_sequence(individual, vocab=None):
+    return torch.stack([token_to_one_hot(s) for s in tokenize_with_vocab(individual, vocab=vocab)])
 
 
-def token_to_one_hot(s):
+def reduce_sequence(sequence):
+    if sequence.shape[1] == VOCAB_REDUCED_SIZE:
+        raise ValueError("Sequence is already reduced")
+
+    if sequence.shape[1] != VOCAB_SIZE:
+        raise ValueError(f"Sequence is of unexpected vocabulary (expected {VOCAB_SIZE}, got {sequence.shape[1]})")
+
+    return sequence @ VOCAB_REDUCTION_MATRIX.T
+
+
+def token_to_one_hot(s, vocab=None):
+    if vocab is None:
+        vocab = VOCAB
+
     # Convert a token to a one-hot tensor
-    one_hot = torch.zeros(len(VOCAB))
-    if s in VOCAB:
-        index = VOCAB.index(s)
+    one_hot = torch.zeros(len(vocab))
+    if s in vocab:
+        index = vocab.index(s)
         one_hot[index] = 1
     else:
         return token_to_one_hot("NULL")
     return one_hot
 
 
-def tokenize_with_vocab(input_string):
+def tokenize_with_vocab(input_string, vocab=None):
+    if vocab is None:
+        vocab = VOCAB
+
     # Sort the vocab list by length in descending order
-    sorted_vocab = sorted(VOCAB, key=lambda x: len(x), reverse=True)
+    sorted_vocab = sorted(vocab, key=lambda x: len(x), reverse=True)
 
     tokens = []
     i = 0
@@ -181,13 +197,29 @@ def tokenize_with_vocab(input_string):
     while i < len(input_string):
         matched = False
 
+        #possible_words = []
         for word in sorted_vocab:
             if input_string[i:i + len(word)] == word:
+                #possible_words.append(word)
                 tokens.append(word)
                 i += len(word)
                 matched = True
                 break
 
+        """
+        if len(possible_words) > 0:
+            if vocab == VOCAB and "-" in possible_words and np.any([misc.is_number(pw) for pw in possible_words]) and (len(tokens) > 0 and tokens[-1] not in [*OPERATIONS, "("]):
+                possible_words = ["-"]
+
+            max_l = max([len(word) for word in possible_words])
+
+            for word in possible_words:
+                if len(word) == max_l:
+                    tokens.append(word)
+                    i += len(word)
+                    matched = True
+                    break
+        """
         if not matched:
             # If no match is found, add the character as a single-character token
             tokens.append(input_string[i])
@@ -205,7 +237,7 @@ def string_from_onehots(onehots, vocab=None):
 
     result = ""
     for onehot in onehots:
-        result += vocab[np.argmax(onehot)]
+        result += vocab[torch.argmax(onehot).item()]
 
     return result
 
@@ -379,41 +411,81 @@ HOUSE_DETECTOR_FILTER = torch.zeros(size=(5, VOCAB_REDUCED_SIZE))
 for i, j in HOUSE_DETECTOR_COORDINATES:
     HOUSE_DETECTOR_FILTER[i, j] = 1.
 
+HOUSE_DETECTOR_MASK = torch.gt(HOUSE_DETECTOR_FILTER, 0.)
+
 
 def detect_houses(x):
     if x.shape[1] == VOCAB_SIZE:
         y = x @ VOCAB_REDUCTION_MATRIX.T
-        #raise ValueError(f"Sequence must be in reduced form (Vocab of size {VOCAB_REDUCED_SIZE}), while vocab is of size {x.shape[1]}")
+        # raise ValueError(f"Sequence must be in reduced form (Vocab of size {VOCAB_REDUCED_SIZE}), while vocab is of size {x.shape[1]}")
     else:
         y = x
 
-    if x.shape[0] % 4 != 1:
-        seq_length = x.shape[0] - x.shape[0] % 4 + 1
-        #raise ValueError(f"Sequence length must be 1 mod 4, got {sequence.shape[0]} ({sequence.shape[0] % 4} mod 4) instead")
+    if y.shape[0] % 4 != 1:
+        seq_length = y.shape[0] - y.shape[0] % 4 + 1
+        # raise ValueError(f"Sequence length must be 1 mod 4, got {sequence.shape[0]} ({sequence.shape[0] % 4} mod 4) instead")
     else:
-        seq_length = x.shape[0]
+        seq_length = y.shape[0]
 
     sequence = y[0:seq_length, :]
 
     def gmean(vector):
-        return vector.prod() ** (1.0/vector.shape[0])
+        return vector.mean()
 
     l = []
 
     for i in range(0, sequence.shape[0] - 4):
-        window = sequence[i:(i+5), :]
-        mask = torch.gt(HOUSE_DETECTOR_FILTER, 0.)
-        v = torch.masked_select(window, mask)#torch.stack([window[i, j] for i, j in HOUSE_DETECTOR_COORDINATES])
+        window = sequence[i:(i + 5), :]
+        v = torch.masked_select(window, HOUSE_DETECTOR_MASK)
 
         l.append(gmean(v))
 
     return torch.stack(l)
 
 
-HOUSE_DETECTOR_WINDOW = torch.zeros(size=(5, 6))
+def syntax_score(x):
+    if x.shape[1] == VOCAB_SIZE:
+        y = x @ VOCAB_REDUCTION_MATRIX.T
+    else:
+        y = x
 
-HOUSE_DETECTOR_WINDOW[0, 2] = 1.
-HOUSE_DETECTOR_WINDOW[1, 5] = 1.
-HOUSE_DETECTOR_WINDOW[2, 4] = 1.
-HOUSE_DETECTOR_WINDOW[3, 5] = 1.
-HOUSE_DETECTOR_WINDOW[4, 3] = 1.
+    if y.shape[0] % 4 != 1:
+        seq_length = y.shape[0] - y.shape[0] % 4 + 1
+    else:
+        seq_length = y.shape[0]
+
+    sequence = y[0:seq_length, :]
+
+    result = None
+    i = 0
+    while result is None or result.shape[0] > 1:
+        result = detect_houses(sequence)
+
+        most_housey_idx = torch.argmax(result).item()
+
+        mask_before = torch.tensor(
+            [[r < most_housey_idx for c in range(VOCAB_REDUCED_SIZE)] for r in range(seq_length)], dtype=torch.bool)
+        mask_between = torch.tensor([[most_housey_idx <= r <= most_housey_idx + 4 for c in range(VOCAB_REDUCED_SIZE)]
+                                     for r in range(seq_length)], dtype=torch.bool)
+        mask_after = torch.tensor(
+            [[r > most_housey_idx + 4 for c in range(VOCAB_REDUCED_SIZE)] for r in range(seq_length)], dtype=torch.bool)
+
+        crammed = torch.zeros(size=[VOCAB_REDUCED_SIZE]).scatter_(0, torch.tensor([5]), result[
+            most_housey_idx]).unsqueeze_(0)  # torch.masked_select(sequence, mask_between).view((5, VOCAB_REDUCED_SIZE)) * HOUSE_DETECTOR_FILTER
+
+        pile = []
+
+        if most_housey_idx > 0:
+            pile.append(torch.masked_select(sequence, mask_before).view((most_housey_idx, VOCAB_REDUCED_SIZE)))
+
+        pile.append(crammed)
+
+        if most_housey_idx < seq_length - 4:
+            pile.append(torch.masked_select(sequence, mask_after).view((seq_length - (most_housey_idx + 5), VOCAB_REDUCED_SIZE)))
+
+        sequence = torch.cat(pile, dim=0)
+        seq_length = sequence.shape[0]
+
+        i += 1
+
+    return result

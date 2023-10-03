@@ -5,6 +5,7 @@ from collections import deque
 
 import dfjss_exceptions
 import dfjss_objects as dfjss
+import dfjss_misc as misc
 
 
 def is_number(s):
@@ -97,11 +98,15 @@ class PriorityFunctionBranch:
     def __repr__(self):
         if isinstance(self.left_feature, PriorityFunctionBranch):
             left = repr(self.left_feature)
+        elif is_number(self.left_feature):
+            left = misc.constant_format(self.left_feature)
         else:
             left = self.left_feature
 
         if isinstance(self.right_feature, PriorityFunctionBranch):
             right = repr(self.right_feature)
+        elif is_number(self.right_feature):
+            right = misc.constant_format(self.right_feature)
         else:
             right = self.right_feature
 
@@ -446,6 +451,17 @@ def representation_to_crumbs(representation, features=None, operations=None):
 
         # is c the first character of a number?
         if not found_anything:
+            if c == "{":
+                j = 0
+                while (i + j) < I:
+                    if representation[i + j] != "}":
+                        j += 1
+                    else:
+                        crumbs.append(float(representation[i+1:i + j]))
+                        found_anything = True
+                        i += j + 1
+                        break
+            """
             # if first character is a number, keep adding characters until it is no longer a number
             # note: since there will always be a closed parenthesis at the end of the number, any
             # well formed representation should have no problem
@@ -459,6 +475,7 @@ def representation_to_crumbs(representation, features=None, operations=None):
                         found_anything = True
                         i += j + 1
                         break
+            """
 
         # is c the first character of an operation?
         if not found_anything:
@@ -600,7 +617,7 @@ class PriorityFunctionTreeDecisionRule(dfjss.BaseDecisionRule):
 # UNIT TESTS
 
 # representation
-ut_representation = "((a/(b+3.25))<c)"
+ut_representation = "((a/(b+{3.25}))<c)"
 ut_priority_function = representation_to_priority_function_tree(ut_representation)
 ut_reconstruction = repr(ut_priority_function.root_branch)
 assert ut_reconstruction == ut_representation, \
