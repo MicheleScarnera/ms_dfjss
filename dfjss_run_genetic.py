@@ -39,7 +39,7 @@ if __name__ == "__main__":
     gen_algo_settings.population_size = 500
     gen_algo_settings.number_of_simulations_per_individual = 50
     gen_algo_settings.number_of_possible_seeds = 200
-    gen_algo_settings.total_steps = 10
+    gen_algo_settings.total_steps = 40
 
     gen_algo_settings.tree_generation_max_depth = 2
     gen_algo_settings.tree_generation_mode = "half_and_half"
