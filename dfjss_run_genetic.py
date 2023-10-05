@@ -36,7 +36,7 @@ if __name__ == "__main__":
 
     gen_algo_settings.multiprocessing_processes = 5
 
-    gen_algo_settings.population_size = 500
+    gen_algo_settings.population_size = 1000
     gen_algo_settings.number_of_simulations_per_individual = 50
     gen_algo_settings.number_of_possible_seeds = 200
     gen_algo_settings.total_steps = 40
