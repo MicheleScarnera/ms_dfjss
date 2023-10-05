@@ -571,6 +571,20 @@ def representation_to_root_branch(representation, features=None, operations=None
     return crumbs_to_root_branch(crumbs=crumbs, max_iter=max_iter, verbose=verbose)
 
 
+def is_representation_valid(representation, features=None, operations=None, max_iter=500):
+    try:
+        representation_to_root_branch(representation, features, operations, max_iter)
+    except (dfjss_exceptions.ForbiddenCharacterError,
+            dfjss_exceptions.BadSyntaxRepresentationError,
+            dfjss_exceptions.TooManyIterationsRepresentationError,
+            dfjss_exceptions.UnexpectedLoopEndRepresentationError,
+            dfjss_exceptions.BadFinalCrumbRepresentationError):
+        return False
+    except Exception as excp:
+        raise excp
+
+    return True
+
 # DECISION RULE
 
 

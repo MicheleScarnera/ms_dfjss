@@ -157,7 +157,7 @@ def generate_individuals_file(total_amount=500000, max_depth=8, rng_seed=100):
 
 
 def one_hot_sequence(individual, vocab=None):
-    return torch.stack([token_to_one_hot(s) for s in tokenize_with_vocab(individual, vocab=vocab)])
+    return torch.stack([token_to_one_hot(s, vocab=vocab) for s in tokenize_with_vocab(individual, vocab=vocab)])
 
 
 def reduce_sequence(sequence):
@@ -221,9 +221,7 @@ def tokenize_with_vocab(input_string, vocab=None):
                     break
         """
         if not matched:
-            # If no match is found, add the character as a single-character token
-            tokens.append(input_string[i])
-            i += 1
+            raise ValueError(f"Could not match character '{input_string[i]}' with anything in the vocabulary {vocab}")
 
     return tokens
 
@@ -414,6 +412,10 @@ for i, j in HOUSE_DETECTOR_COORDINATES:
 HOUSE_DETECTOR_MASK = torch.gt(HOUSE_DETECTOR_FILTER, 0.)
 
 
+def gmean(vector, epsilon=0.01):
+    return (vector + epsilon).prod() ** (1. / vector.shape[0]) - epsilon
+
+
 def detect_houses(x):
     if x.shape[1] == VOCAB_SIZE:
         y = x @ VOCAB_REDUCTION_MATRIX.T
@@ -429,9 +431,6 @@ def detect_houses(x):
 
     sequence = y[0:seq_length, :]
 
-    def gmean(vector):
-        return vector.mean()
-
     l = []
 
     for i in range(0, sequence.shape[0] - 4):
@@ -443,7 +442,7 @@ def detect_houses(x):
     return torch.stack(l)
 
 
-def syntax_score(x):
+def syntax_score(x, aggregate_with_gmean=True):
     if x.shape[1] == VOCAB_SIZE:
         y = x @ VOCAB_REDUCTION_MATRIX.T
     else:
@@ -456,12 +455,16 @@ def syntax_score(x):
 
     sequence = y[0:seq_length, :]
 
-    result = None
+    running_result = None
+    reconstruction = string_from_onehots(sequence, vocab=VOCAB_REDUCED)
+    chosen_scores = []
     i = 0
-    while result is None or result.shape[0] > 1:
-        result = detect_houses(sequence)
+    while running_result is None or running_result.shape[0] > 1:
+        reconstruction = string_from_onehots(sequence, vocab=VOCAB_REDUCED)
+        running_result = detect_houses(sequence)
 
-        most_housey_idx = torch.argmax(result).item()
+        most_housey_idx = torch.argmax(running_result).item()
+        chosen_scores.append(running_result[most_housey_idx])
 
         mask_before = torch.tensor(
             [[r < most_housey_idx for c in range(VOCAB_REDUCED_SIZE)] for r in range(seq_length)], dtype=torch.bool)
@@ -470,7 +473,7 @@ def syntax_score(x):
         mask_after = torch.tensor(
             [[r > most_housey_idx + 4 for c in range(VOCAB_REDUCED_SIZE)] for r in range(seq_length)], dtype=torch.bool)
 
-        crammed = torch.zeros(size=[VOCAB_REDUCED_SIZE]).scatter_(0, torch.tensor([5]), result[
+        crammed = torch.zeros(size=[VOCAB_REDUCED_SIZE]).scatter_(0, torch.tensor([5]), running_result[
             most_housey_idx]).unsqueeze_(0)  # torch.masked_select(sequence, mask_between).view((5, VOCAB_REDUCED_SIZE)) * HOUSE_DETECTOR_FILTER
 
         pile = []
@@ -488,4 +491,4 @@ def syntax_score(x):
 
         i += 1
 
-    return result
+    return gmean(torch.stack(chosen_scores, dim=0)) if aggregate_with_gmean else torch.stack(chosen_scores, dim=0).prod()
