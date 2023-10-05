@@ -22,7 +22,7 @@ rng = np.random.default_rng(seed=100)
 
 distortion = 0.01
 distortion_degree = 3
-replacement = 0.05
+replacement = 0.15
 
 print(f"Distortion = {distortion:.0%} ^ {distortion_degree}, Replacement = {replacement:.0%}")
 

@@ -18,26 +18,34 @@ def is_number(s):
 
 DEFAULT_FEATURES = alphabet
 
-def pf_add(x,y):
+
+def pf_add(x, y):
     return x + y
+
 
 def pf_subtract(x, y):
     return x - y
 
+
 def pf_multiply(x, y):
     return x * y
+
 
 def pf_safediv(x, y):
     return x / y if y != 0 else x
 
+
 def pf_power(x, y):
     return x ** y
+
 
 def pf_min(x, y):
     return min(x, y)
 
+
 def pf_max(x, y):
     return max(x, y)
+
 
 DEFAULT_OPERATIONS = {
     "+": pf_add,
@@ -50,6 +58,7 @@ DEFAULT_OPERATIONS = {
 }
 
 FORBIDDEN_CHARACTERS = ['(', ')']
+
 
 def latex_feature_formatting(feature_name, remove_prefix=True, join_with_underscore=False):
     parts = feature_name.split("_")
@@ -138,7 +147,8 @@ class PriorityFunctionBranch:
         going_deeper = False
 
         if isinstance(self.left_feature, PriorityFunctionBranch):
-            left = self.left_feature.latex(formatting=formatting, parentheses=parentheses, recursion_step=recursion_step+1)
+            left = self.left_feature.latex(formatting=formatting, parentheses=parentheses,
+                                           recursion_step=recursion_step + 1)
             going_deeper = True
         elif is_number(self.left_feature):
             left = self.left_feature
@@ -146,7 +156,8 @@ class PriorityFunctionBranch:
             left = formatting["feature"](self.left_feature)
 
         if isinstance(self.right_feature, PriorityFunctionBranch):
-            right = self.right_feature.latex(formatting=formatting, parentheses=parentheses, recursion_step=recursion_step+1)
+            right = self.right_feature.latex(formatting=formatting, parentheses=parentheses,
+                                             recursion_step=recursion_step + 1)
             going_deeper = True
         elif is_number(self.right_feature):
             right = self.right_feature
@@ -292,7 +303,8 @@ class PriorityFunctionBranch:
         try:
             return operations[self.operation_character](left, right)
         except TypeError as error:
-            raise TypeError(f"Could not do operation \'{self.operation_character}\' between {type(left)} ({self.left_feature} == {left}) and {type(right)} ({self.right_feature} == {right})")
+            raise TypeError(
+                f"Could not do operation \'{self.operation_character}\' between {type(left)} ({self.left_feature} == {left}) and {type(right)} ({self.right_feature} == {right})")
 
 
 class PriorityFunctionTree:
@@ -314,6 +326,8 @@ class PriorityFunctionTree:
 
         assert_features_and_operations_validity(features, operations)
 
+        assert_root_branch_validity(root_branch, features, operations)
+
         self.features = features
         self.operations = operations
         self.root_branch = root_branch
@@ -330,10 +344,10 @@ class PriorityFunctionTree:
         """
 
         return result
-    
+
     def latex(self, formatting=None, abbreviations=None, parentheses=True):
         return self.root_branch.latex(formatting=formatting, abbreviations=abbreviations, parentheses=parentheses)
-    
+
     def count(self):
         return self.root_branch.count()
 
@@ -354,9 +368,9 @@ class PriorityFunctionTree:
 
     def get_copy(self):
         return representation_to_priority_function_tree(
-                representation=repr(self.root_branch),
-                features=self.features,
-                operations=self.operations)
+            representation=repr(self.root_branch),
+            features=self.features,
+            operations=self.operations)
 
 
 def assert_features_and_operations_validity(features, operations):
@@ -366,6 +380,27 @@ def assert_features_and_operations_validity(features, operations):
 
         if c in operations.keys():
             raise dfjss_exceptions.ForbiddenCharacterError(f"Forbidden character \'{c}\' found in operations")
+
+
+def assert_root_branch_validity(root_branch, features, operations):
+    def check_features_and_operations(branch):
+        if isinstance(branch.left_feature, PriorityFunctionBranch):
+            check_features_and_operations(branch.left_feature)
+        elif not is_number(branch.left_feature) and branch.left_feature not in features:
+            raise dfjss_exceptions.UnknownFeatureError(
+                f"Feature {branch.left_feature} is not in features {features}")
+
+        if isinstance(branch.right_feature, PriorityFunctionBranch):
+            check_features_and_operations(branch.right_feature)
+        elif not is_number(branch.right_feature) and branch.right_feature not in features:
+            raise dfjss_exceptions.UnknownFeatureError(
+                f"Feature {branch.right_feature} is not in features {features}")
+
+        if branch.operation_character not in operations:
+            raise dfjss_exceptions.UnknownOperationError(
+                f"Operation {branch.operation_character} is not in operations {list(operations.keys())}")
+
+    check_features_and_operations(root_branch)
 
 
 def representation_to_priority_function_tree(representation, features=None, operations=None, max_iter=500, verbose=0):
@@ -408,10 +443,12 @@ def representation_to_crumbs(representation, features=None, operations=None):
             no_closed += 1
 
     if no_open != no_closed:
-        raise dfjss_exceptions.BadSyntaxRepresentationError(f"Representation \'{representation}\' has different amounts of open and closed parentheses")
+        raise dfjss_exceptions.BadSyntaxRepresentationError(
+            f"Representation \'{representation}\' has different amounts of open and closed parentheses")
 
     if len(par_stack) > 0:
-        raise dfjss_exceptions.BadSyntaxRepresentationError(f"Representation \'{representation}\' has ill formed parentheses")
+        raise dfjss_exceptions.BadSyntaxRepresentationError(
+            f"Representation \'{representation}\' has ill formed parentheses")
 
     def begins_with(containing_string, contained_string):
         containing_string = str(containing_string)
@@ -457,7 +494,7 @@ def representation_to_crumbs(representation, features=None, operations=None):
                     if representation[i + j] != "}":
                         j += 1
                     else:
-                        crumbs.append(float(representation[i+1:i + j]))
+                        crumbs.append(float(representation[i + 1:i + j]))
                         found_anything = True
                         i += j + 1
                         break
@@ -509,7 +546,6 @@ def crumbs_parenthesis_locations(crumbs):
 
 
 def crumbs_to_root_branch(crumbs, max_iter=500, verbose=0):
-
     def parentheses_locations():
         return crumbs_parenthesis_locations(crumbs)
 
@@ -519,7 +555,8 @@ def crumbs_to_root_branch(crumbs, max_iter=500, verbose=0):
             if isinstance(crumbs[0], PriorityFunctionBranch):
                 return crumbs[0]
             else:
-                raise dfjss_exceptions.BadFinalCrumbRepresentationError(f"Final crumb {crumbs[0]} is not a PriorityFunctionBranch", crumb=crumbs[0])
+                raise dfjss_exceptions.BadFinalCrumbRepresentationError(
+                    f"Final crumb {crumbs[0]} is not a PriorityFunctionBranch", crumb=crumbs[0])
 
         max_iter -= 1
         par_locs = parentheses_locations()
@@ -535,7 +572,8 @@ def crumbs_to_root_branch(crumbs, max_iter=500, verbose=0):
 
                 # syntax checks
                 if (end - start) != 4:
-                    raise dfjss_exceptions.BadSyntaxRepresentationError(f"Expression inside parentheses {''.join([str(crumb) for crumb in crumbs[start:end + 1]])} is too {'long' if (end - start) > 4 else 'short'}. Paretheses should just contain the first feature, one operation, and the second feature")
+                    raise dfjss_exceptions.BadSyntaxRepresentationError(
+                        f"Expression inside parentheses {''.join([str(crumb) for crumb in crumbs[start:end + 1]])} is too {'long' if (end - start) > 4 else 'short'}. Paretheses should just contain the first feature, one operation, and the second feature")
 
                 sub_crumbs = crumbs[start + 1:end]
 
@@ -552,9 +590,11 @@ def crumbs_to_root_branch(crumbs, max_iter=500, verbose=0):
             print(crumbs)
 
     if max_iter == 0:
-        raise dfjss_exceptions.TooManyIterationsRepresentationError(f"Maximum number of iterations reached (final crumbs state: {crumbs})", crumbs=crumbs)
+        raise dfjss_exceptions.TooManyIterationsRepresentationError(
+            f"Maximum number of iterations reached (final crumbs state: {crumbs})", crumbs=crumbs)
     else:
-        raise dfjss_exceptions.UnexpectedLoopEndRepresentationError(f"Loop ended unexpectedly with no result (final crumbs state: {crumbs})", crumbs=crumbs)
+        raise dfjss_exceptions.UnexpectedLoopEndRepresentationError(
+            f"Loop ended unexpectedly with no result (final crumbs state: {crumbs})", crumbs=crumbs)
 
 
 def representation_to_root_branch(representation, features=None, operations=None, max_iter=500, verbose=0):
@@ -573,17 +613,20 @@ def representation_to_root_branch(representation, features=None, operations=None
 
 def is_representation_valid(representation, features=None, operations=None, max_iter=500):
     try:
-        representation_to_root_branch(representation, features, operations, max_iter)
+        representation_to_priority_function_tree(representation, features, operations, max_iter)
     except (dfjss_exceptions.ForbiddenCharacterError,
             dfjss_exceptions.BadSyntaxRepresentationError,
             dfjss_exceptions.TooManyIterationsRepresentationError,
             dfjss_exceptions.UnexpectedLoopEndRepresentationError,
-            dfjss_exceptions.BadFinalCrumbRepresentationError):
+            dfjss_exceptions.BadFinalCrumbRepresentationError,
+            dfjss_exceptions.UnknownFeatureError,
+            dfjss_exceptions.UnknownOperationError):
         return False
     except Exception as excp:
         raise excp
 
     return True
+
 
 # DECISION RULE
 
@@ -614,13 +657,15 @@ class PriorityFunctionTreeDecisionRule(dfjss.BaseDecisionRule):
 
         pairs = []
 
-        while np.any(remaining) and (not allow_wait or np.any(np.bitwise_and(~np.isnan(priority_values), priority_values >= -epsilon, casting="same_kind"))):
+        while np.any(remaining) and (not allow_wait or np.any(
+                np.bitwise_and(~np.isnan(priority_values), priority_values >= -epsilon, casting="same_kind"))):
             index_max = np.nanargmax(priority_values)
 
             pairs.append(compatible_pairs[index_max])
 
             remaining = np.bitwise_and(remaining,
-                                       [(machine != compatible_pairs[index_max][0] and job != compatible_pairs[index_max][1])
+                                       [(machine != compatible_pairs[index_max][0] and job !=
+                                         compatible_pairs[index_max][1])
                                         for i, (machine, job) in enumerate(compatible_pairs)], casting="same_kind")
 
             priority_values[~remaining] = np.nan
@@ -637,7 +682,7 @@ ut_reconstruction = repr(ut_priority_function.root_branch)
 assert ut_reconstruction == ut_representation, \
     f"Unit Test failed: reconstructing the reference priority function should have yielded {ut_representation}, but yielded {ut_reconstruction} instead"
 
-#print(ut_priority_function.latex())
+# print(ut_priority_function.latex())
 
 # evaluation of expression
 ut_features_values = {'a': 50, 'b': 6.75, 'c': 100}

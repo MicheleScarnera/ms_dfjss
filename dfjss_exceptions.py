@@ -26,6 +26,13 @@ class BadFinalCrumbRepresentationError(Exception):
         self.crumb = crumb
 
 
+class UnknownFeatureError(Exception):
+    pass
+
+
+class UnknownOperationError(Exception):
+    pass
+
 # DFJSS Objects
 
 class MissingMandatoryFeaturesError(Exception):
