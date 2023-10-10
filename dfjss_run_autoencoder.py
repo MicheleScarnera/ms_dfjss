@@ -5,6 +5,7 @@ dataset = dfjss_nn.IndividualDataset()
 for datapoint in dataset:
     print(f"Original: {dataset.df.loc[0, 'Individual']}")
     print(f"Reconstructed: {dfjss_nn.string_from_onehots(datapoint)}")
+    print(f"Reduced: {dfjss_nn.string_from_onehots(dfjss_nn.reduce_sequence(datapoint), vocab=dfjss_nn.VOCAB_REDUCED)}")
     #print(datapoint)
     print(f"Input size: {datapoint.size()}")
     example = datapoint
@@ -18,4 +19,4 @@ autoencoded = autoencoder(example).detach()
 #print(autoencoded)
 print(f"Output size: {autoencoded.size()}")
 
-dfjss_nn.train_autoencoder(autoencoder, dataset, batch_size=4, num_epochs=10)
+dfjss_nn.train_autoencoder(autoencoder, dataset, batch_size=4, num_epochs=40, regularization_coefficient=10.)
