@@ -69,7 +69,7 @@ VOCAB_REDUCTION_MATRIX[5, VOCAB_FEATURES_LOCATION[0]:VOCAB_FEATURES_LOCATION[1]]
 
 
 class IndividualAutoEncoder(nn.Module):
-    def __init__(self, input_size=None, hidden_size=512, num_layers=2, dropout=0.5, bidirectional=False):
+    def __init__(self, input_size=None, hidden_size=128, num_layers=2, dropout=0.5, bidirectional=False):
         super(IndividualAutoEncoder, self).__init__()
 
         if input_size is None:
@@ -226,7 +226,7 @@ def tokenize_with_vocab(input_string, vocab=None):
     return tokens
 
 
-def string_from_onehots(onehots, vocab=None):
+def string_from_onehots(onehots, vocab=None, list_mode=False):
     if len(onehots.shape) > 3:
         raise ValueError(f"Too many dimensions ({len(onehots.shape)})")
 
@@ -239,9 +239,12 @@ def string_from_onehots(onehots, vocab=None):
     if vocab is None:
         vocab = VOCAB
 
-    result = ""
+    result = [] if list_mode else ""
     for onehot in onehots:
-        result += vocab[torch.argmax(onehot).item()]
+        if list_mode:
+            result.append(vocab[torch.argmax(onehot).item()])
+        else:
+            result += vocab[torch.argmax(onehot).item()]
 
     return result
 
@@ -422,7 +425,7 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
     df_cols = ["Epoch"]
 
     for tv in ("Train", "Val"):
-        for q in ("Loss", "Criterion", "SyntaxScore"):
+        for q in ("Loss", "Criterion", "SyntaxScore", "Accuracy", "Perfects"):
             df_cols.append(f"{tv}_{q}")
 
     df = pd.DataFrame(columns=df_cols)
@@ -455,7 +458,7 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
         model.train()
 
         train_accuracy = 0.
-        train_perfect_matches = 0.
+        train_perfect_matches = 0
 
         train_start = time.time()
         train_progress = 0
@@ -485,6 +488,29 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
                 train_criterion += loss_criterion.item()
                 train_syntaxscore += sntx.item()
 
+                true_tokens = string_from_onehots(true_sequences[w], list_mode=True)
+                output_tokens = string_from_onehots(outputs[w], list_mode=True)
+
+                found_mismatch = False
+
+                T = len(true_tokens)
+                matches = 0
+                for t in range(T):
+                    true_token = true_tokens[t]
+                    output_token = output_tokens[t]
+
+                    if true_token == output_token:
+                        matches += 1
+                    else:
+                        found_mismatch = True
+
+                    if true_token == "EOS" or t == (T - 1):
+                        train_accuracy += matches / (t + 1)
+                        break
+
+                if not found_mismatch:
+                    train_perfect_matches += 1
+
                 train_progress += 1
 
                 print(
@@ -498,6 +524,9 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
         val_criterion = 0.
         val_syntaxscore = 0.
         model.eval()
+
+        val_accuracy = 0.
+        val_perfect_matches = 0
 
         val_start = time.time()
         val_progress = 0
@@ -521,6 +550,29 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
                 val_criterion += loss_criterion.item()
                 val_syntaxscore += sntx.item()
 
+                true_tokens = string_from_onehots(true_sequences[w], list_mode=True)
+                output_tokens = string_from_onehots(outputs[w], list_mode=True)
+
+                found_mismatch = False
+
+                T = len(true_tokens)
+                matches = 0
+                for t in range(T):
+                    true_token = true_tokens[t]
+                    output_token = output_tokens[t]
+
+                    if true_token == output_token:
+                        matches += 1
+                    else:
+                        found_mismatch = True
+
+                    if true_token == "EOS" or t == (T - 1):
+                        val_accuracy += matches / (t + 1)
+                        break
+
+                if not found_mismatch:
+                    val_perfect_matches += 1
+
                 val_progress += 1
 
                 print(
@@ -534,12 +586,18 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
         train_criterion = train_criterion / l_t
         train_syntaxscore = train_syntaxscore / l_t
 
+        train_accuracy = train_accuracy / l_t
+        train_perfect_matches = train_perfect_matches / l_t
+
         val_loss = val_loss / l_v
         val_criterion = val_criterion / l_v
         val_syntaxscore = val_syntaxscore / l_v
 
+        val_accuracy = val_accuracy / l_v
+        val_perfect_matches = val_perfect_matches / l_v
+
         print(
-            f"\rEpoch {epoch}: Loss/Criterion/Syntax: (Train: {train_loss:.4f}/{train_criterion:.4f}/{train_syntaxscore:.2%}) (Val: {val_loss:.4f}/{val_criterion:.4f}/{val_syntaxscore:.2%}) Took {misc.timeformat(time.time() - train_start)}"
+            f"\rEpoch {epoch}: Loss/Criterion/Syntax/Accuracy/Perfects: (Train: {train_loss:.4f}/{train_criterion:.4f}/{train_syntaxscore:.2%}/{train_accuracy:.2%}/{train_perfect_matches:.2%}) (Val: {val_loss:.4f}/{val_criterion:.4f}/{val_syntaxscore:.2%}/{val_accuracy:.2%}/{val_perfect_matches:.2%}) Took {misc.timeformat(time.time() - train_start)}"
         )
 
         new_row = dict()
@@ -547,11 +605,19 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
         new_row["Train_Loss"] = train_loss
         new_row["Train_Criterion"] = train_criterion
         new_row["Train_SyntaxScore"] = train_syntaxscore
+        new_row["Train_Accuracy"] = train_accuracy
+        new_row["Train_Perfects"] = train_perfect_matches
+
         new_row["Val_Loss"] = val_loss
         new_row["Val_Criterion"] = val_criterion
         new_row["Val_SyntaxScore"] = val_syntaxscore
+        new_row["Val_Accuracy"] = val_accuracy
+        new_row["Val_Perfects"] = val_perfect_matches
 
-        df = pd.concat([df, pd.DataFrame(new_row, index=[0])], ignore_index=True)
+        if len(df) > 0:
+            df = pd.concat([df, pd.DataFrame(new_row, index=[0])], ignore_index=True)
+        else:
+            df = pd.DataFrame(new_row, index=[0])
 
         df.to_csv(path_or_buf=f"{folder_name}/log.csv", index=False)
 
