@@ -68,8 +68,30 @@ VOCAB_REDUCTION_MATRIX[4, VOCAB_OPERATIONS_LOCATION[0]:VOCAB_OPERATIONS_LOCATION
 VOCAB_REDUCTION_MATRIX[5, VOCAB_FEATURES_LOCATION[0]:VOCAB_FEATURES_LOCATION[1]] = 1.
 
 
+class EncoderHat(nn.Module):
+    module: nn.Module
+
+    def __init__(self, rnn):
+        super().__init__()
+        self.rnn = rnn
+
+    def forward(self, x, h):
+        return torch.atanh(self.rnn.forward(x, h)[1][-1, :].unsqueeze_(0))
+
+
+class DecoderTail(nn.Module):
+    rnn: nn.Module
+
+    def __init__(self, rnn):
+        super().__init__()
+        self.rnn = rnn
+
+    def forward(self, x, h):
+        return self.rnn.forward(torch.softmax(x, dim=1), h)
+
+
 class IndividualAutoEncoder(nn.Module):
-    def __init__(self, input_size=None, hidden_size=128, num_layers=2, dropout=0.5, bidirectional=False):
+    def __init__(self, input_size=None, hidden_size=512, num_layers=2, dropout=0.5, bidirectional=False):
         super(IndividualAutoEncoder, self).__init__()
 
         if input_size is None:
@@ -79,42 +101,55 @@ class IndividualAutoEncoder(nn.Module):
         self.num_layers = num_layers
         self.hidden_size = hidden_size
 
-        self.encoder = nn.RNN(input_size=input_size,
-                              hidden_size=hidden_size,
-                              num_layers=num_layers,
-                              dropout=dropout,
-                              bidirectional=bidirectional,
-                              batch_first=True,
-                              device=device)
+        self.encoder = EncoderHat(nn.RNN(input_size=input_size,
+                                         hidden_size=hidden_size,
+                                         num_layers=num_layers,
+                                         dropout=dropout,
+                                         bidirectional=bidirectional,
+                                         batch_first=True,
+                                         device=device))
 
         self.encoder_output_size = self.d * hidden_size
 
-        self.decoder = nn.RNN(input_size=self.encoder_output_size,
-                              hidden_size=input_size,
-                              num_layers=num_layers,
-                              dropout=dropout,
-                              bidirectional=False,
-                              batch_first=False,
-                              device=device)
+        self.decoder = DecoderTail(nn.RNN(input_size=self.encoder_output_size,
+                                          hidden_size=input_size,
+                                          num_layers=num_layers,
+                                          dropout=dropout,
+                                          bidirectional=False,
+                                          batch_first=False,
+                                          device=device))
+
+    def count_parameters(self, learnable=True):
+        return sum(p.numel() for p in self.parameters() if p.requires_grad == learnable)
+
+    def summary(self):
+        longdash = '------------------------------------'
+        result = [longdash, "Individual Auto-Encoder", f"Input size: {self.encoder.rnn.input_size}",
+                  f"Hidden size: {self.encoder.rnn.hidden_size}", f"Layers: {self.encoder.rnn.num_layers}",
+                  f"Dropout: {self.encoder.rnn.dropout}", f"Bidirectional: {self.encoder.rnn.bidirectional}",
+                  f"Number of parameters: (Learnable: {self.count_parameters()}, Fixed: {self.count_parameters(False)})",
+                  longdash]
+
+        return "\n".join(result)
 
     def forward(self, x):
         is_batch = len(x.shape) == 3
         batch_size = x.shape[0] if is_batch else None
 
-        vocab_length = self.encoder.input_size
+        vocab_length = self.encoder.rnn.input_size
         sequence_length = x.shape[1] if is_batch else x.shape[0]
 
-        encoder_h_size = (self.d * self.num_layers, batch_size, self.encoder.hidden_size) if is_batch else (
-            self.d * self.num_layers, self.encoder.hidden_size)
-        decoder_h_size = (self.num_layers, batch_size, self.decoder.hidden_size) if is_batch else (
-            self.num_layers, self.decoder.hidden_size)
+        encoder_h_size = (self.d * self.num_layers, batch_size, self.encoder.rnn.hidden_size) if is_batch else (
+            self.d * self.num_layers, self.encoder.rnn.hidden_size)
+        decoder_h_size = (self.num_layers, batch_size, self.decoder.rnn.hidden_size) if is_batch else (
+            self.num_layers, self.decoder.rnn.hidden_size)
 
-        _, encoded = self.encoder(x, torch.zeros(encoder_h_size))
+        encoded = self.encoder(x, torch.zeros(encoder_h_size))
 
         current_decoder_h = torch.zeros(decoder_h_size)
 
         decodes = []
-        for i in range(sequence_length):
+        for _ in range(sequence_length):
             d, current_decoder_h = self.decoder(encoded, current_decoder_h)
 
             decodes.append(d[-1, :])
@@ -122,7 +157,7 @@ class IndividualAutoEncoder(nn.Module):
         return torch.transpose(torch.stack(decodes), 0, 1) if is_batch else torch.stack(decodes)
 
 
-def generate_individuals_file(total_amount=5000, max_depth=8, rng_seed=100):
+def generate_individuals_file(total_amount=2500, max_depth=8, rng_seed=100):
     gen_algo = genetic.GeneticAlgorithm(rng_seed=rng_seed)
     gen_algo.settings.features = INDIVIDUALS_FEATURES
 
@@ -165,7 +200,8 @@ def reduce_sequence(sequence):
         raise ValueError("Sequence is already reduced")
 
     if sequence.shape[1] != VOCAB_SIZE:
-        raise ValueError(f"Sequence is of unexpected vocabulary (expected vocabulary of size {VOCAB_SIZE}, got {sequence.shape[1]})")
+        raise ValueError(
+            f"Sequence is of unexpected vocabulary (expected vocabulary of size {VOCAB_SIZE}, got {sequence.shape[1]})")
 
     return sequence @ VOCAB_REDUCTION_MATRIX.T
 
@@ -197,10 +233,10 @@ def tokenize_with_vocab(input_string, vocab=None):
     while i < len(input_string):
         matched = False
 
-        #possible_words = []
+        # possible_words = []
         for word in sorted_vocab:
             if input_string[i:i + len(word)] == word:
-                #possible_words.append(word)
+                # possible_words.append(word)
                 tokens.append(word)
                 i += len(word)
                 matched = True
@@ -332,7 +368,8 @@ def syntax_score(x, aggregate_with_gmean=True):
             [[r > most_housey_idx + 4 for c in range(VOCAB_REDUCED_SIZE)] for r in range(seq_length)], dtype=torch.bool)
 
         crammed = torch.zeros(size=[VOCAB_REDUCED_SIZE]).scatter_(0, torch.tensor([5]), running_result[
-            most_housey_idx]).unsqueeze_(0)  # torch.masked_select(sequence, mask_between).view((5, VOCAB_REDUCED_SIZE)) * HOUSE_DETECTOR_FILTER
+            most_housey_idx]).unsqueeze_(
+            0)  # torch.masked_select(sequence, mask_between).view((5, VOCAB_REDUCED_SIZE)) * HOUSE_DETECTOR_FILTER
 
         pile = []
 
@@ -342,14 +379,16 @@ def syntax_score(x, aggregate_with_gmean=True):
         pile.append(crammed)
 
         if most_housey_idx < seq_length - 4:
-            pile.append(torch.masked_select(sequence, mask_after).view((seq_length - (most_housey_idx + 5), VOCAB_REDUCED_SIZE)))
+            pile.append(torch.masked_select(sequence, mask_after).view(
+                (seq_length - (most_housey_idx + 5), VOCAB_REDUCED_SIZE)))
 
         sequence = torch.cat(pile, dim=0)
         seq_length = sequence.shape[0]
 
         i += 1
 
-    return gmean(torch.stack(chosen_scores, dim=0)) if aggregate_with_gmean else torch.stack(chosen_scores, dim=0).prod()
+    return gmean(torch.stack(chosen_scores, dim=0)) if aggregate_with_gmean else torch.stack(chosen_scores,
+                                                                                             dim=0).prod()
 
 
 class IndividualDataset(data.IterableDataset):
@@ -447,8 +486,10 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
 
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(),
-                          lr=0.001,
+                          lr=0.1,
                           momentum=0.9)
+
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, mode="max")
 
     for epoch in range(1, num_epochs + 1):
         # Training
@@ -578,6 +619,8 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
                 print(
                     f"\rEpoch {epoch}: Validating... {val_progress / val_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(val_start, time.time(), val_progress, val_progress_needed))}",
                     end="", flush=True)
+
+        scheduler.step(val_accuracy)
 
         l_t = train_progress
         l_v = val_progress

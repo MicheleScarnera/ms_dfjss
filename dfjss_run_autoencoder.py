@@ -15,8 +15,10 @@ autoencoder = dfjss_nn.IndividualAutoEncoder()
 
 autoencoder.eval()
 autoencoded = autoencoder(example).detach()
-#print(dfjss_nn.string_from_onehots(autoencoded))
+print(f"Autoencoded (Untrained): {dfjss_nn.string_from_onehots(autoencoded)}")
 #print(autoencoded)
 print(f"Output size: {autoencoded.size()}")
+
+print(autoencoder.summary())
 
 dfjss_nn.train_autoencoder(autoencoder, dataset, batch_size=4, num_epochs=40, regularization_coefficient=10.)
