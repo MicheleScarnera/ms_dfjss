@@ -76,18 +76,39 @@ class EncoderHat(nn.Module):
         self.rnn = rnn
 
     def forward(self, x, h):
-        return torch.atanh(self.rnn.forward(x, h)[1][-1, :].unsqueeze_(0))
+        return self.rnn.forward(x, h)[1]
 
 
-class DecoderTail(nn.Module):
-    rnn: nn.Module
+class DecoderHat(nn.Module):
+    rnn: nn.RNN
 
     def __init__(self, rnn):
         super().__init__()
         self.rnn = rnn
+        self.proj = nn.Linear(in_features=rnn.hidden_size, out_features=rnn.input_size)
 
     def forward(self, x, h):
-        return self.rnn.forward(torch.softmax(x, dim=1), h)
+        rnn_out = self.rnn.forward(x, h)
+
+        return self.proj(rnn_out[0]), rnn_out[1]
+
+        """
+        if len(x.shape) == 2:
+            return torch.softmax(self.proj(rnn_out[0]), dim=1), rnn_out[1]
+        elif len(x.shape) == 3:
+            return torch.softmax(self.proj(rnn_out[0]), dim=2), rnn_out[1]
+        else:
+            raise ValueError(f"Expected either 2-D or 3-D, got {len(x.shape)}-D")
+        """
+
+
+first_decoder_token = np.full(shape=VOCAB_SIZE, fill_value=0)
+first_decoder_token[VOCAB.index("(")] = 1
+first_decoder_token = first_decoder_token # / np.sum(first_decoder_token)
+
+
+def new_decoder_token(dtype):
+    return torch.tensor(first_decoder_token, dtype=dtype).unsqueeze_(0)
 
 
 class IndividualAutoEncoder(nn.Module):
@@ -111,13 +132,13 @@ class IndividualAutoEncoder(nn.Module):
 
         self.encoder_output_size = self.d * hidden_size
 
-        self.decoder = DecoderTail(nn.RNN(input_size=self.encoder_output_size,
-                                          hidden_size=input_size,
-                                          num_layers=num_layers,
-                                          dropout=dropout,
-                                          bidirectional=False,
-                                          batch_first=False,
-                                          device=device))
+        self.decoder = DecoderHat(nn.RNN(input_size=input_size,
+                                         hidden_size=hidden_size,
+                                         num_layers=num_layers,
+                                         dropout=dropout,
+                                         bidirectional=False,
+                                         batch_first=False,
+                                         device=device))
 
     def count_parameters(self, learnable=True):
         return sum(p.numel() for p in self.parameters() if p.requires_grad == learnable)
@@ -146,15 +167,17 @@ class IndividualAutoEncoder(nn.Module):
 
         encoded = self.encoder(x, torch.zeros(encoder_h_size))
 
-        current_decoder_h = torch.zeros(decoder_h_size)
+        # d = torch.stack([new_decoder_token(encoded.dtype) for _ in range(batch_size)], dim=1) if is_batch else new_decoder_token(encoded.dtype)
+        d = torch.zeros(size=(1, batch_size, self.decoder.rnn.input_size)) if is_batch else torch.zeros(size=(1, self.decoder.rnn.input_size))
+        current_decoder_h = encoded # torch.zeros(decoder_h_size)
 
         decodes = []
         for _ in range(sequence_length):
-            d, current_decoder_h = self.decoder(encoded, current_decoder_h)
+            d, current_decoder_h = self.decoder(d, current_decoder_h)
 
-            decodes.append(d[-1, :])
+            decodes.append(d)
 
-        return torch.transpose(torch.stack(decodes), 0, 1) if is_batch else torch.stack(decodes)
+        return torch.transpose(torch.cat(decodes, dim=0), 0, 1) if is_batch else torch.cat(decodes, dim=0)
 
 
 def generate_individuals_file(total_amount=2500, max_depth=8, rng_seed=100):
@@ -360,6 +383,9 @@ def syntax_score(x, aggregate_with_gmean=True):
         most_housey_idx = torch.argmax(running_result).item()
         chosen_scores.append(running_result[most_housey_idx])
 
+        if torch.less_equal(running_result[most_housey_idx], 0):
+            pass
+
         mask_before = torch.tensor(
             [[r < most_housey_idx for c in range(VOCAB_REDUCED_SIZE)] for r in range(seq_length)], dtype=torch.bool)
         mask_between = torch.tensor([[most_housey_idx <= r <= most_housey_idx + 4 for c in range(VOCAB_REDUCED_SIZE)]
@@ -443,6 +469,15 @@ def regularization_term_and_syntax_score(sequence, lam=10., eps=0.01):
     return lam / np.log(eps) * torch.log(score + eps), score
 
 
+class CrossEntropyForSoftmaxInput(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.cross_entropy = nn.CrossEntropyLoss()
+
+    def forward(self, pred, target):
+        return self.cross_entropy(torch.log(pred), target)
+
+
 def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.2, regularization_coefficient=10.):
     """
     :type model: nn.Module
@@ -484,7 +519,7 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
         shuffle=True
     )
 
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss() # CrossEntropyForSoftmaxInput()
     optimizer = optim.SGD(model.parameters(),
                           lr=0.1,
                           momentum=0.9)
@@ -520,17 +555,19 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
 
                 is_last = w == W - 1
 
+                true_tokens = string_from_onehots(true_sequences[w], list_mode=True)
+                output_tokens = string_from_onehots(outputs[w], list_mode=True)
+
+                eos_cutoff = true_tokens.index("EOS")
+
                 loss_criterion = criterion(outputs[w], true_sequences[w])
-                loss_reg, sntx = regularization_term_and_syntax_score(outputs[w], lam=regularization_coefficient)
+                loss_reg, sntx = regularization_term_and_syntax_score(outputs[w, 0:eos_cutoff], lam=regularization_coefficient)
                 loss = loss_criterion + loss_reg
                 loss.backward(retain_graph=not is_last)
 
                 train_loss += loss.item()
                 train_criterion += loss_criterion.item()
                 train_syntaxscore += sntx.item()
-
-                true_tokens = string_from_onehots(true_sequences[w], list_mode=True)
-                output_tokens = string_from_onehots(outputs[w], list_mode=True)
 
                 found_mismatch = False
 
