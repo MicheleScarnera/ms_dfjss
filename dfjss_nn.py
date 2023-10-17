@@ -10,6 +10,7 @@ import time
 import datetime
 import os
 
+import dfjss_priorityfunction as pf
 import dfjss_genetic as genetic
 import dfjss_misc as misc
 
@@ -91,7 +92,7 @@ class DecoderHat(nn.Module):
     def forward(self, x, h):
         rnn_out = self.rnn.forward(x, h)
 
-        #return self.proj(rnn_out[0]), rnn_out[1]
+        # return self.proj(rnn_out[0]), rnn_out[1]
 
         if len(x.shape) == 2:
             return nn.functional.log_softmax(self.layer_norm(self.proj(rnn_out[0])), dim=1), rnn_out[1]
@@ -103,7 +104,7 @@ class DecoderHat(nn.Module):
 
 first_decoder_token = np.full(shape=VOCAB_SIZE, fill_value=0)
 first_decoder_token[VOCAB.index("(")] = 1
-first_decoder_token = first_decoder_token # / np.sum(first_decoder_token)
+first_decoder_token = first_decoder_token  # / np.sum(first_decoder_token)
 
 
 def new_decoder_token(dtype):
@@ -170,8 +171,9 @@ class IndividualAutoEncoder(nn.Module):
         _, encoded = self.encoder(x, torch.zeros(encoder_h_size))
 
         # d = torch.stack([new_decoder_token(encoded.dtype) for _ in range(batch_size)], dim=1) if is_batch else new_decoder_token(encoded.dtype)
-        d = torch.zeros(size=(1, batch_size, self.decoder.rnn.input_size)) if is_batch else torch.zeros(size=(1, self.decoder.rnn.input_size))
-        current_decoder_h = encoded # torch.zeros(decoder_h_size)
+        d = torch.zeros(size=(1, batch_size, self.decoder.rnn.input_size)) if is_batch else torch.zeros(
+            size=(1, self.decoder.rnn.input_size))
+        current_decoder_h = encoded  # torch.zeros(decoder_h_size)
 
         decodes = []
         for _ in range(sequence_length):
@@ -267,20 +269,6 @@ def tokenize_with_vocab(input_string, vocab=None):
                 matched = True
                 break
 
-        """
-        if len(possible_words) > 0:
-            if vocab == VOCAB and "-" in possible_words and np.any([misc.is_number(pw) for pw in possible_words]) and (len(tokens) > 0 and tokens[-1] not in [*OPERATIONS, "("]):
-                possible_words = ["-"]
-
-            max_l = max([len(word) for word in possible_words])
-
-            for word in possible_words:
-                if len(word) == max_l:
-                    tokens.append(word)
-                    i += len(word)
-                    matched = True
-                    break
-        """
         if not matched:
             raise ValueError(f"Could not match character '{input_string[i]}' with anything in the vocabulary {vocab}")
 
@@ -416,34 +404,54 @@ def syntax_score(x, aggregate_with_gmean=True):
                                                                                              dim=0).mean()
 
 
-class IndividualDataset(data.IterableDataset):
-    def __init__(self):
+class AutoencoderDataset(data.Dataset):
+    def __init__(self, rng_seed=100, max_depth=8, size=5000, replacement_rate=0.):
         super().__init__()
 
-        # Load the CSV file using pandas
-        if os.path.exists(INDIVIDUALS_FILENAME):
-            self.df = pd.read_csv(INDIVIDUALS_FILENAME)
-        else:
-            self.df = generate_individuals_file()
+        self.gen_algo = genetic.GeneticAlgorithm(rng_seed=rng_seed)
+        self.gen_algo.settings.features = INDIVIDUALS_FEATURES
+        self.gen_algo.settings.tree_generation_max_depth = max_depth
 
-        for i in range(len(self.df)):
-            self.df.loc[i, "Individual"] = self.df.loc[i, "Individual"] + "EOS"
+        self.max_depth = max_depth
+        self.size = size
+        self.replacement_rate = replacement_rate
+
+        self.individuals = []
+        self.times_called = 0
+
+        self.rng = np.random.default_rng(rng_seed)
+
+        self.fill_individuals()
+
+    def fill_individuals(self):
+        depths = [d for d in range(2, self.max_depth + 1)]
+        while len(self.individuals) < self.size:
+            self.gen_algo.settings.tree_generation_max_depth = self.rng.choice(depths)
+
+            self.individuals.append(one_hot_sequence(repr(self.gen_algo.get_random_individual()) + "EOS"))
 
     def __iter__(self):
         return self.data_iterator()
 
     def __getitem__(self, idx):
-        return one_hot_sequence(self.df.loc[idx, "Individual"])
+        return self.individuals[idx]
 
     def __len__(self):
-        return len(self.df)
+        return len(self.individuals)
 
     def data_iterator(self):
-        # Iterate through each row in the CSV
-        for _, row in self.df.iterrows():
-            individual = row['Individual']
+        # permanence rate
+        if self.replacement_rate > 0. and self.times_called > 0:
+            for _ in range(int(self.size * self.replacement_rate)):
+                self.individuals.pop(0)
 
-            yield one_hot_sequence(individual)
+        # if length less than size, generate individuals
+        self.fill_individuals()
+
+        self.times_called += 1
+
+        for individual in self.individuals:
+            yield individual
 
 
 def sequence_collate(batch):
@@ -478,16 +486,25 @@ class CrossEntropyForSoftmaxInput(nn.Module):
         return self.cross_entropy(torch.log(pred), target)
 
 
-def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.2, regularization_coefficient=10., gradient_clip_value=5.):
+def train_autoencoder(model,
+                      num_epochs=10,
+                      batch_size=16,
+                      max_depth=8,
+                      train_size=5000,
+                      val_size=1000,
+                      regularization_coefficient=10.,
+                      gradient_clip_value=5.):
     """
-    :param regularization_coefficient:
     :type model: nn.Module
 
     :param model:
-    :param dataset:
+    :param max_depth:
     :param num_epochs:
-    :param val_split:
+    :param train_size:
+    :param val_size:
     :param batch_size:
+    :param regularization_coefficient:
+    :param gradient_clip_value:
     :return:
     """
     folder_name = datetime.datetime.now().strftime('AUTOENCODER %Y-%m-%d %H-%M-%S')
@@ -500,12 +517,20 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
     df_cols = ["Epoch"]
 
     for tv in ("Train", "Val"):
-        for q in ("Loss", "Criterion", "SyntaxScore", "Accuracy", "Perfects"):
+        for q in ("Loss", "Criterion", "SyntaxScore", "Valid", "Accuracy", "Perfects"):
             df_cols.append(f"{tv}_{q}")
 
     df = pd.DataFrame(columns=df_cols)
 
-    train_set, val_set = data.random_split(dataset=dataset, lengths=[1. - val_split, val_split])
+    train_set = AutoencoderDataset(max_depth=max_depth,
+                                   size=train_size,
+                                   replacement_rate=1.)
+
+    val_set = AutoencoderDataset(max_depth=max_depth,
+                                 size=val_size,
+                                 replacement_rate=0.)
+
+    # train_set, val_set = data.random_split(dataset=dataset, lengths=[1. - val_split, val_split])
     train_loader = data.DataLoader(
         train_set,
         batch_size=batch_size,
@@ -520,7 +545,7 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
         shuffle=True
     )
 
-    criterion = nn.NLLLoss() # nn.CrossEntropyLoss()
+    criterion = nn.NLLLoss()  # nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(),
                           lr=0.01,
                           momentum=0.9)
@@ -536,6 +561,7 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
         model.train()
 
         train_accuracy = 0.
+        train_valid = 0.
         train_perfect_matches = 0
 
         train_start = time.time()
@@ -553,20 +579,19 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
             losses = []
 
             outputs = model(true_sequences).to(device)
-            W = true_sequences.shape[0]
-            for w in range(W):
+            B = true_sequences.shape[0]
+            for b in range(B):
                 if train_progress_needed is None:
-                    train_progress_needed = len(train_loader) * W
+                    train_progress_needed = len(train_loader) * B
 
-                is_last = w == W - 1
-
-                true_tokens = string_from_onehots(true_sequences[w], list_mode=True)
-                output_tokens = string_from_onehots(outputs[w], list_mode=True)
+                true_tokens = string_from_onehots(true_sequences[b], list_mode=True)
+                output_tokens = string_from_onehots(outputs[b], list_mode=True)
 
                 eos_cutoff = true_tokens.index("EOS")
 
-                loss_criterion = criterion(outputs[w], true_sequences_sparse[w])
-                loss_reg, sntx = regularization_term_and_syntax_score(outputs[w, 0:eos_cutoff], lam=regularization_coefficient)
+                loss_criterion = criterion(outputs[b], true_sequences_sparse[b])
+                loss_reg, sntx = regularization_term_and_syntax_score(outputs[b, 0:eos_cutoff],
+                                                                      lam=regularization_coefficient)
                 loss = loss_criterion + loss_reg
 
                 losses.append(loss)
@@ -598,10 +623,17 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
                 if not found_mismatch:
                     train_perfect_matches += 1
 
+                if pf.is_representation_valid("".join(true_tokens[0:-2]), features=INDIVIDUALS_FEATURES):
+                    train_valid += 1. / B
+
                 train_progress += 1
 
+                datapoints_per_second = train_progress / (time.time() - train_start)
+
+                dps_text = f"{datapoints_per_second:.2f} datapoints per second" if datapoints_per_second > 1. else f"{misc.timeformat(1. / datapoints_per_second)} per datapoint"
+
                 print(
-                    f"\rEpoch {epoch}: Training... {train_progress / train_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(train_start, time.time(), train_progress, train_progress_needed))} (Largest criterion: {train_largest_criterion:.3f})",
+                    f"\rEpoch {epoch}: Training... {train_progress / train_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(train_start, time.time(), train_progress, train_progress_needed))}, {dps_text} (Largest criterion: {train_largest_criterion:.3f})",
                     end="", flush=True)
 
             torch.stack(losses).mean().backward()
@@ -616,6 +648,7 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
         model.eval()
 
         val_accuracy = 0.
+        val_valid = 0.
         val_perfect_matches = 0
 
         val_start = time.time()
@@ -629,20 +662,21 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
             true_sequences_sparse = torch.argmax(true_sequences, dim=2)
 
             outputs = model(true_sequences).to(device)
-            for w in range(true_sequences.shape[0]):
+            B = true_sequences.shape[0]
+            for b in range(B):
                 if val_progress_needed is None:
                     val_progress_needed = len(val_loader) * true_sequences.shape[0]
 
-                loss_criterion = criterion(outputs[w], true_sequences_sparse[w])
-                loss_reg, sntx = regularization_term_and_syntax_score(outputs[w], lam=regularization_coefficient)
+                loss_criterion = criterion(outputs[b], true_sequences_sparse[b])
+                loss_reg, sntx = regularization_term_and_syntax_score(outputs[b], lam=regularization_coefficient)
                 loss = loss_criterion + loss_reg
 
                 val_loss += loss.item()
                 val_criterion += loss_criterion.item()
                 val_syntaxscore += sntx.item()
 
-                true_tokens = string_from_onehots(true_sequences[w], list_mode=True)
-                output_tokens = string_from_onehots(outputs[w], list_mode=True)
+                true_tokens = string_from_onehots(true_sequences[b], list_mode=True)
+                output_tokens = string_from_onehots(outputs[b], list_mode=True)
 
                 found_mismatch = False
 
@@ -664,10 +698,17 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
                 if not found_mismatch:
                     val_perfect_matches += 1
 
+                if pf.is_representation_valid("".join(true_tokens[0:-2]), features=INDIVIDUALS_FEATURES):
+                    val_valid += 1. / B
+
                 val_progress += 1
 
+                datapoints_per_second = val_progress / (time.time() - val_start)
+
+                dps_text = f"{datapoints_per_second:.2f} datapoints per second" if datapoints_per_second > 1. else f"{misc.timeformat(1. / datapoints_per_second)} per datapoint"
+
                 print(
-                    f"\rEpoch {epoch}: Validating... {val_progress / val_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(val_start, time.time(), val_progress, val_progress_needed))}",
+                    f"\rEpoch {epoch}: Validating... {val_progress / val_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(val_start, time.time(), val_progress, val_progress_needed))}, {dps_text}",
                     end="", flush=True)
 
         scheduler.step(val_accuracy)
@@ -680,6 +721,7 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
         train_syntaxscore = train_syntaxscore / l_t
 
         train_accuracy = train_accuracy / l_t
+        train_valid = train_valid / l_t
         train_perfect_matches = train_perfect_matches / l_t
 
         val_loss = val_loss / l_v
@@ -687,10 +729,11 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
         val_syntaxscore = val_syntaxscore / l_v
 
         val_accuracy = val_accuracy / l_v
+        val_valid = val_valid / l_v
         val_perfect_matches = val_perfect_matches / l_v
 
         print(
-            f"\rEpoch {epoch}: Loss/Criterion/Syntax/Accuracy/Perfects: (Train: {train_loss:.4f}/{train_criterion:.4f}/{train_syntaxscore:.2%}/{train_accuracy:.2%}/{train_perfect_matches:.2%}) (Val: {val_loss:.4f}/{val_criterion:.4f}/{val_syntaxscore:.2%}/{val_accuracy:.2%}/{val_perfect_matches:.2%}) Took {misc.timeformat(time.time() - train_start)}"
+            f"\rEpoch {epoch}: Loss/Criterion/Syntax/Valid/Accuracy/Perfects: (Train: {train_loss:.4f}/{train_criterion:.4f}/{train_syntaxscore:.2%}/{train_valid:.2%}/{train_accuracy:.2%}/{train_perfect_matches:.2%}) (Val: {val_loss:.4f}/{val_criterion:.4f}/{val_syntaxscore:.2%}/{val_valid:.2%}/{val_accuracy:.2%}/{val_perfect_matches:.2%}) Took {misc.timeformat(time.time() - train_start)}"
         )
 
         new_row = dict()
@@ -698,12 +741,14 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
         new_row["Train_Loss"] = train_loss
         new_row["Train_Criterion"] = train_criterion
         new_row["Train_SyntaxScore"] = train_syntaxscore
+        new_row["Train_Valid"] = train_valid
         new_row["Train_Accuracy"] = train_accuracy
         new_row["Train_Perfects"] = train_perfect_matches
 
         new_row["Val_Loss"] = val_loss
         new_row["Val_Criterion"] = val_criterion
         new_row["Val_SyntaxScore"] = val_syntaxscore
+        new_row["Val_Valid"] = val_valid
         new_row["Val_Accuracy"] = val_accuracy
         new_row["Val_Perfects"] = val_perfect_matches
 
