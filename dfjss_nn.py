@@ -76,7 +76,7 @@ class EncoderHat(nn.Module):
         self.rnn = rnn
 
     def forward(self, x, h):
-        return self.rnn.forward(x, h)[1]
+        return self.rnn.forward(x, h)
 
 
 class DecoderHat(nn.Module):
@@ -86,6 +86,7 @@ class DecoderHat(nn.Module):
         super().__init__()
         self.rnn = rnn
         self.proj = nn.Linear(in_features=rnn.hidden_size, out_features=rnn.input_size, bias=False)
+        self.layer_norm = nn.LayerNorm(rnn.input_size)
 
     def forward(self, x, h):
         rnn_out = self.rnn.forward(x, h)
@@ -93,9 +94,9 @@ class DecoderHat(nn.Module):
         #return self.proj(rnn_out[0]), rnn_out[1]
 
         if len(x.shape) == 2:
-            return nn.functional.log_softmax(self.proj(rnn_out[0]), dim=1), rnn_out[1]
+            return nn.functional.log_softmax(self.layer_norm(self.proj(rnn_out[0])), dim=1), rnn_out[1]
         elif len(x.shape) == 3:
-            return nn.functional.log_softmax(self.proj(rnn_out[0]), dim=2), rnn_out[1]
+            return nn.functional.log_softmax(self.layer_norm(self.proj(rnn_out[0])), dim=2), rnn_out[1]
         else:
             raise ValueError(f"Expected either 2-D or 3-D, got {len(x.shape)}-D")
 
@@ -110,7 +111,7 @@ def new_decoder_token(dtype):
 
 
 class IndividualAutoEncoder(nn.Module):
-    def __init__(self, input_size=None, hidden_size=512, num_layers=2, dropout=0.5, bidirectional=False, gradient_clip_value=5.):
+    def __init__(self, input_size=None, hidden_size=512, num_layers=2, dropout=0.1, bidirectional=False):
         super(IndividualAutoEncoder, self).__init__()
 
         if input_size is None:
@@ -138,8 +139,8 @@ class IndividualAutoEncoder(nn.Module):
                                          batch_first=False,
                                          device=device))
 
-        for p in self.parameters():
-            p.register_hook(lambda grad: torch.clamp(grad, -gradient_clip_value, gradient_clip_value))
+        # for p in self.parameters():
+        #     p.register_hook(lambda grad: torch.clamp(grad, -gradient_clip_value, gradient_clip_value))
 
     def count_parameters(self, learnable=True):
         return sum(p.numel() for p in self.parameters() if p.requires_grad == learnable)
@@ -166,7 +167,7 @@ class IndividualAutoEncoder(nn.Module):
         decoder_h_size = (self.num_layers, batch_size, self.decoder.rnn.hidden_size) if is_batch else (
             self.num_layers, self.decoder.rnn.hidden_size)
 
-        encoded = self.encoder(x, torch.zeros(encoder_h_size))
+        _, encoded = self.encoder(x, torch.zeros(encoder_h_size))
 
         # d = torch.stack([new_decoder_token(encoded.dtype) for _ in range(batch_size)], dim=1) if is_batch else new_decoder_token(encoded.dtype)
         d = torch.zeros(size=(1, batch_size, self.decoder.rnn.input_size)) if is_batch else torch.zeros(size=(1, self.decoder.rnn.input_size))
@@ -181,7 +182,7 @@ class IndividualAutoEncoder(nn.Module):
         return torch.transpose(torch.cat(decodes, dim=0), 0, 1) if is_batch else torch.cat(decodes, dim=0)
 
 
-def generate_individuals_file(total_amount=2500, max_depth=8, rng_seed=100):
+def generate_individuals_file(total_amount=20000, max_depth=8, rng_seed=100):
     gen_algo = genetic.GeneticAlgorithm(rng_seed=rng_seed)
     gen_algo.settings.features = INDIVIDUALS_FEATURES
 
@@ -464,6 +465,7 @@ def sequence_collate(batch):
 
 def regularization_term_and_syntax_score(sequence, lam=10., eps=0.01):
     score = syntax_score(torch.softmax(sequence, dim=1))
+
     return lam / np.log(eps) * torch.log(score + eps), score
 
 
@@ -476,7 +478,7 @@ class CrossEntropyForSoftmaxInput(nn.Module):
         return self.cross_entropy(torch.log(pred), target)
 
 
-def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.2, regularization_coefficient=10.):
+def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.2, regularization_coefficient=10., gradient_clip_value=5.):
     """
     :param regularization_coefficient:
     :type model: nn.Module
@@ -520,7 +522,7 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
 
     criterion = nn.NLLLoss() # nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(),
-                          lr=0.1,
+                          lr=0.01,
                           momentum=0.9)
 
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, mode="max")
@@ -529,6 +531,7 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
         # Training
         train_loss = 0.
         train_criterion = 0.
+        train_largest_criterion = 0.
         train_syntaxscore = 0.
         model.train()
 
@@ -572,6 +575,9 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
                 train_criterion += loss_criterion.item()
                 train_syntaxscore += sntx.item()
 
+                if loss_criterion.item() > train_largest_criterion:
+                    train_largest_criterion = loss_criterion.item()
+
                 found_mismatch = False
 
                 T = len(true_tokens)
@@ -595,10 +601,12 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
                 train_progress += 1
 
                 print(
-                    f"\rEpoch {epoch}: Training... {train_progress / train_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(train_start, time.time(), train_progress, train_progress_needed))}",
+                    f"\rEpoch {epoch}: Training... {train_progress / train_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(train_start, time.time(), train_progress, train_progress_needed))} (Largest criterion: {train_largest_criterion:.3f})",
                     end="", flush=True)
 
             torch.stack(losses).mean().backward()
+            nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_value, error_if_nonfinite=True)
+
             optimizer.step()
 
         # Validation
@@ -618,13 +626,14 @@ def train_autoencoder(model, dataset, num_epochs=10, batch_size=16, val_split=0.
 
         for true_sequences in val_loader:
             true_sequences = true_sequences.to(device)
+            true_sequences_sparse = torch.argmax(true_sequences, dim=2)
 
             outputs = model(true_sequences).to(device)
             for w in range(true_sequences.shape[0]):
                 if val_progress_needed is None:
-                    val_progress_needed = len(train_loader) * true_sequences.shape[0]
+                    val_progress_needed = len(val_loader) * true_sequences.shape[0]
 
-                loss_criterion = criterion(outputs[w], true_sequences[w])
+                loss_criterion = criterion(outputs[w], true_sequences_sparse[w])
                 loss_reg, sntx = regularization_term_and_syntax_score(outputs[w], lam=regularization_coefficient)
                 loss = loss_criterion + loss_reg
 

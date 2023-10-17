@@ -21,4 +21,4 @@ print(f"Output size: {autoencoded.size()}")
 
 print(autoencoder.summary())
 
-dfjss_nn.train_autoencoder(autoencoder, dataset, batch_size=4, num_epochs=40, regularization_coefficient=10.)
+dfjss_nn.train_autoencoder(autoencoder, dataset, batch_size=16, num_epochs=40, regularization_coefficient=10.)
