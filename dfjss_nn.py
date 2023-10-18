@@ -75,19 +75,24 @@ class EncoderHat(nn.Module):
     def __init__(self, rnn):
         super().__init__()
         self.rnn = rnn
+        self.layer_norm = nn.LayerNorm(rnn.hidden_size)
 
     def forward(self, x, h):
-        return self.rnn.forward(x, h)
+        rnn_out = self.rnn.forward(x, h)
+        return self.layer_norm(rnn_out[0]), rnn_out[1]
 
 
 class DecoderHat(nn.Module):
     rnn: nn.RNN
 
-    def __init__(self, rnn):
+    def __init__(self, rnn, actual_input_size, reverse=True):
         super().__init__()
         self.rnn = rnn
-        self.proj = nn.Linear(in_features=rnn.hidden_size, out_features=rnn.input_size, bias=False)
-        self.layer_norm = nn.LayerNorm(rnn.input_size)
+        self.actual_input_size = actual_input_size
+        self.proj = nn.Linear(in_features=rnn.hidden_size, out_features=actual_input_size, bias=False)
+        self.layer_norm = nn.LayerNorm(rnn.hidden_size)
+
+        self.reverse = reverse
 
     def forward(self, x, h):
         rnn_out = self.rnn.forward(x, h)
@@ -95,9 +100,21 @@ class DecoderHat(nn.Module):
         # return self.proj(rnn_out[0]), rnn_out[1]
 
         if len(x.shape) == 2:
-            return nn.functional.log_softmax(self.layer_norm(self.proj(rnn_out[0])), dim=1), rnn_out[1]
+            decoder_y = self.layer_norm(rnn_out[0])
+            output = nn.functional.log_softmax(self.proj(decoder_y), dim=1)
+
+            if self.reverse:
+                output = torch.flip(output, dims=[0])
+
+            return decoder_y, rnn_out[1], output
         elif len(x.shape) == 3:
-            return nn.functional.log_softmax(self.layer_norm(self.proj(rnn_out[0])), dim=2), rnn_out[1]
+            decoder_y = self.layer_norm(rnn_out[0])
+            output = nn.functional.log_softmax(self.proj(decoder_y), dim=2)
+
+            if self.reverse:
+                output = torch.flip(output, dims=[1])
+
+            return decoder_y, rnn_out[1], output
         else:
             raise ValueError(f"Expected either 2-D or 3-D, got {len(x.shape)}-D")
 
@@ -132,13 +149,13 @@ class IndividualAutoEncoder(nn.Module):
 
         self.encoder_output_size = self.d * hidden_size
 
-        self.decoder = DecoderHat(nn.RNN(input_size=input_size,
+        self.decoder = DecoderHat(nn.RNN(input_size=hidden_size,
                                          hidden_size=hidden_size,
                                          num_layers=num_layers,
                                          dropout=dropout,
                                          bidirectional=False,
                                          batch_first=False,
-                                         device=device))
+                                         device=device), input_size)
 
         # for p in self.parameters():
         #     p.register_hook(lambda grad: torch.clamp(grad, -gradient_clip_value, gradient_clip_value))
@@ -168,16 +185,23 @@ class IndividualAutoEncoder(nn.Module):
         decoder_h_size = (self.num_layers, batch_size, self.decoder.rnn.hidden_size) if is_batch else (
             self.num_layers, self.decoder.rnn.hidden_size)
 
-        _, encoded = self.encoder(x, torch.zeros(encoder_h_size))
+        decoder_x_size = (1, batch_size, self.decoder.rnn.input_size) if is_batch else (
+            (1, self.decoder.rnn.input_size))
+
+        encoder_y, encoder_h = self.encoder(x, torch.zeros(encoder_h_size))
+
+        if is_batch:
+            pass
 
         # d = torch.stack([new_decoder_token(encoded.dtype) for _ in range(batch_size)], dim=1) if is_batch else new_decoder_token(encoded.dtype)
-        d = torch.zeros(size=(1, batch_size, self.decoder.rnn.input_size)) if is_batch else torch.zeros(
-            size=(1, self.decoder.rnn.input_size))
-        current_decoder_h = encoded  # torch.zeros(decoder_h_size)
+
+        decoder_x = torch.transpose(encoder_y[:, -1, :].unsqueeze(1), 0, 1) if is_batch else encoder_y[-1, :].unsqueeze(
+            0)  # torch.zeros(size=decoder_x_size)
+        current_decoder_h = torch.zeros(decoder_h_size)
 
         decodes = []
         for _ in range(sequence_length):
-            d, current_decoder_h = self.decoder(d, current_decoder_h)
+            decoder_x, current_decoder_h, d = self.decoder(decoder_x, current_decoder_h)
 
             decodes.append(d)
 
@@ -477,21 +501,14 @@ def regularization_term_and_syntax_score(sequence, lam=10., eps=0.01):
     return lam / np.log(eps) * torch.log(score + eps), score
 
 
-class CrossEntropyForSoftmaxInput(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.cross_entropy = nn.CrossEntropyLoss()
-
-    def forward(self, pred, target):
-        return self.cross_entropy(torch.log(pred), target)
-
-
 def train_autoencoder(model,
                       num_epochs=10,
                       batch_size=16,
                       max_depth=8,
                       train_size=5000,
+                      train_replacement_rate=1.,
                       val_size=1000,
+                      val_replacement_rate=0.,
                       regularization_coefficient=10.,
                       gradient_clip_value=5.):
     """
@@ -501,7 +518,9 @@ def train_autoencoder(model,
     :param max_depth:
     :param num_epochs:
     :param train_size:
+    :param train_replacement_rate:
     :param val_size:
+    :param val_replacement_rate:
     :param batch_size:
     :param regularization_coefficient:
     :param gradient_clip_value:
@@ -520,15 +539,17 @@ def train_autoencoder(model,
         for q in ("Loss", "Criterion", "SyntaxScore", "Valid", "Accuracy", "Perfects"):
             df_cols.append(f"{tv}_{q}")
 
+    df_cols.extend(("Example", "AutoencodedExample"))
+
     df = pd.DataFrame(columns=df_cols)
 
     train_set = AutoencoderDataset(max_depth=max_depth,
                                    size=train_size,
-                                   replacement_rate=1.)
+                                   replacement_rate=train_replacement_rate)
 
     val_set = AutoencoderDataset(max_depth=max_depth,
                                  size=val_size,
-                                 replacement_rate=0.)
+                                 replacement_rate=val_replacement_rate)
 
     # train_set, val_set = data.random_split(dataset=dataset, lengths=[1. - val_split, val_split])
     train_loader = data.DataLoader(
@@ -651,6 +672,9 @@ def train_autoencoder(model,
         val_valid = 0.
         val_perfect_matches = 0
 
+        val_example = ""
+        val_autoencoded = ""
+
         val_start = time.time()
         val_progress = 0
         val_progress_needed = None
@@ -662,10 +686,15 @@ def train_autoencoder(model,
             true_sequences_sparse = torch.argmax(true_sequences, dim=2)
 
             outputs = model(true_sequences).to(device)
+
             B = true_sequences.shape[0]
             for b in range(B):
                 if val_progress_needed is None:
                     val_progress_needed = len(val_loader) * true_sequences.shape[0]
+
+                if val_example == "":
+                    val_example = string_from_onehots(true_sequences[b])
+                    val_autoencoded = string_from_onehots(outputs[b])
 
                 loss_criterion = criterion(outputs[b], true_sequences_sparse[b])
                 loss_reg, sntx = regularization_term_and_syntax_score(outputs[b], lam=regularization_coefficient)
@@ -751,6 +780,9 @@ def train_autoencoder(model,
         new_row["Val_Valid"] = val_valid
         new_row["Val_Accuracy"] = val_accuracy
         new_row["Val_Perfects"] = val_perfect_matches
+
+        new_row["Example"] = val_example
+        new_row["AutoencodedExample"] = val_autoencoded
 
         if len(df) > 0:
             df = pd.concat([df, pd.DataFrame(new_row, index=[0])], ignore_index=True)
