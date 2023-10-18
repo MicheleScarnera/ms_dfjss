@@ -190,9 +190,6 @@ class IndividualAutoEncoder(nn.Module):
 
         encoder_y, encoder_h = self.encoder(x, torch.zeros(encoder_h_size))
 
-        if is_batch:
-            pass
-
         # d = torch.stack([new_decoder_token(encoded.dtype) for _ in range(batch_size)], dim=1) if is_batch else new_decoder_token(encoded.dtype)
 
         decoder_x = torch.transpose(encoder_y[:, -1, :].unsqueeze(1), 0, 1) if is_batch else encoder_y[-1, :].unsqueeze(
@@ -610,11 +607,11 @@ def train_autoencoder(model,
 
                 eos_cutoff = true_tokens.index("EOS")
 
-                true_tokens_cutoff = true_tokens[0:eos_cutoff]
-                output_tokens_cutoff = output_tokens[0:eos_cutoff]
+                true_tokens = true_tokens[0:eos_cutoff]
+                output_tokens = output_tokens[0:eos_cutoff]
 
                 output = outputs[b, 0:eos_cutoff, :]
-                true_sequence = true_sequences[b, 0:eos_cutoff, :]
+                # true_sequence = true_sequences[b, 0:eos_cutoff, :]
                 true_sequence_sparse = true_sequences_sparse[b, 0:eos_cutoff]
 
                 loss_criterion = criterion(output, true_sequence_sparse)
@@ -633,7 +630,7 @@ def train_autoencoder(model,
 
                 found_mismatch = False
 
-                T = len(true_tokens_cutoff)
+                T = len(true_tokens)
                 matches = 0
                 for t in range(eos_cutoff):
                     true_token = true_tokens[t]
@@ -651,7 +648,7 @@ def train_autoencoder(model,
                 if not found_mismatch:
                     train_perfect_matches += 1
 
-                if pf.is_representation_valid("".join(true_tokens[0:-2]), features=INDIVIDUALS_FEATURES):
+                if pf.is_representation_valid("".join(output_tokens), features=INDIVIDUALS_FEATURES):
                     train_valid += 1. / B
 
                 train_progress += 1
@@ -704,8 +701,8 @@ def train_autoencoder(model,
 
                 eos_cutoff = true_tokens.index("EOS")
 
-                true_tokens_cutoff = true_tokens[0:eos_cutoff]
-                output_tokens_cutoff = output_tokens[0:eos_cutoff]
+                true_tokens = true_tokens[0:eos_cutoff]
+                output_tokens = output_tokens[0:eos_cutoff]
 
                 output = outputs[b, 0:eos_cutoff, :]
                 true_sequence = true_sequences[b, 0:eos_cutoff, :]
@@ -725,11 +722,11 @@ def train_autoencoder(model,
 
                 found_mismatch = False
 
-                T = len(true_tokens_cutoff)
+                T = len(true_tokens)
                 matches = 0
                 for t in range(T):
-                    true_token = true_tokens_cutoff[t]
-                    output_token = output_tokens_cutoff[t]
+                    true_token = true_tokens[t]
+                    output_token = output_tokens[t]
 
                     if true_token == output_token:
                         matches += 1
@@ -743,7 +740,7 @@ def train_autoencoder(model,
                 if not found_mismatch:
                     val_perfect_matches += 1
 
-                if pf.is_representation_valid("".join(output_tokens_cutoff), features=INDIVIDUALS_FEATURES):
+                if pf.is_representation_valid("".join(output_tokens), features=INDIVIDUALS_FEATURES):
                     val_valid += 1. / B
 
                 val_progress += 1
