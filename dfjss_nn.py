@@ -75,11 +75,11 @@ class EncoderHat(nn.Module):
     def __init__(self, rnn):
         super().__init__()
         self.rnn = rnn
-        self.layer_norm = nn.LayerNorm(rnn.hidden_size)
+        #self.layer_norm = nn.LayerNorm(rnn.hidden_size)
 
     def forward(self, x, h):
         rnn_out = self.rnn.forward(x, h)
-        return self.layer_norm(rnn_out[0]), rnn_out[1]
+        return rnn_out[0], rnn_out[1]
 
 
 class DecoderHat(nn.Module):
@@ -129,7 +129,7 @@ def new_decoder_token(dtype):
 
 
 class IndividualAutoEncoder(nn.Module):
-    def __init__(self, input_size=None, hidden_size=512, num_layers=2, dropout=0.1, bidirectional=False):
+    def __init__(self, input_size=None, hidden_size=1024, num_layers=2, dropout=0.1, bidirectional=False):
         super(IndividualAutoEncoder, self).__init__()
 
         if input_size is None:
@@ -533,7 +533,7 @@ def train_autoencoder(model,
     df_cols = ["Epoch"]
 
     for tv in ("Train", "Val"):
-        for q in ("Loss", "Criterion", "SyntaxScore", "Valid", "Accuracy", "Perfects"):
+        for q in ("TotalDatapoints", "Loss", "Criterion", "SyntaxScore", "Valid", "Accuracy", "Perfects"):
             df_cols.append(f"{tv}_{q}")
 
     df_cols.extend(("Example", "AutoencodedExample"))
@@ -570,7 +570,14 @@ def train_autoencoder(model,
 
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, mode="max")
 
+    train_totaldatapoints = train_size
+    val_totaldatapoints = val_size
+
     for epoch in range(1, num_epochs + 1):
+        if epoch > 1:
+            train_totaldatapoints += int(train_size * train_replacement_rate)
+            val_totaldatapoints += int(val_size * val_replacement_rate)
+
         # Training
         train_loss = 0.
         train_criterion = 0.
@@ -640,6 +647,9 @@ def train_autoencoder(model,
 
                     eos_cutoff = true_tokens.index("EOS")
 
+                    # +1 because EOS needs to be present
+                    eos_cutoff = min(eos_cutoff + 1, len(true_tokens))
+
                     true_tokens = true_tokens[0:eos_cutoff]
                     output_tokens = output_tokens[0:eos_cutoff]
 
@@ -653,7 +663,7 @@ def train_autoencoder(model,
                             val_autoencoded = string_from_onehots(output)
 
                     loss_criterion = criterion(output, true_sequence_sparse)
-                    loss_reg, sntx = regularization_term_and_syntax_score(output,
+                    loss_reg, sntx = regularization_term_and_syntax_score(output[0:-1, :],
                                                                           lam=regularization_coefficient)
                     loss = loss_criterion + loss_reg
 
@@ -675,7 +685,7 @@ def train_autoencoder(model,
 
                     T = len(true_tokens)
                     matches = 0
-                    for t in range(eos_cutoff):
+                    for t in range(T):
                         true_token = true_tokens[t]
                         output_token = output_tokens[t]
 
@@ -697,7 +707,7 @@ def train_autoencoder(model,
                         else:
                             val_perfect_matches += 1
 
-                    if pf.is_representation_valid("".join(output_tokens), features=INDIVIDUALS_FEATURES):
+                    if pf.is_representation_valid("".join(output_tokens[0:-1]), features=INDIVIDUALS_FEATURES):
                         if is_train:
                             train_valid += 1. / B
                         else:
@@ -756,6 +766,7 @@ def train_autoencoder(model,
 
         new_row = dict()
         new_row["Epoch"] = epoch
+        new_row["Train_TotalDatapoints"] = train_totaldatapoints
         new_row["Train_Loss"] = train_loss
         new_row["Train_Criterion"] = train_criterion
         new_row["Train_SyntaxScore"] = train_syntaxscore
@@ -763,6 +774,7 @@ def train_autoencoder(model,
         new_row["Train_Accuracy"] = train_accuracy
         new_row["Train_Perfects"] = train_perfect_matches
 
+        new_row["Val_TotalDatapoints"] = val_totaldatapoints
         new_row["Val_Loss"] = val_loss
         new_row["Val_Criterion"] = val_criterion
         new_row["Val_SyntaxScore"] = val_syntaxscore
