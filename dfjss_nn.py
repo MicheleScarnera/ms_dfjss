@@ -610,8 +610,15 @@ def train_autoencoder(model,
 
                 eos_cutoff = true_tokens.index("EOS")
 
-                loss_criterion = criterion(outputs[b], true_sequences_sparse[b])
-                loss_reg, sntx = regularization_term_and_syntax_score(outputs[b, 0:eos_cutoff],
+                true_tokens_cutoff = true_tokens[0:eos_cutoff]
+                output_tokens_cutoff = output_tokens[0:eos_cutoff]
+
+                output = outputs[b, 0:eos_cutoff, :]
+                true_sequence = true_sequences[b, 0:eos_cutoff, :]
+                true_sequence_sparse = true_sequences_sparse[b, 0:eos_cutoff]
+
+                loss_criterion = criterion(output, true_sequence_sparse)
+                loss_reg, sntx = regularization_term_and_syntax_score(output,
                                                                       lam=regularization_coefficient)
                 loss = loss_criterion + loss_reg
 
@@ -626,9 +633,9 @@ def train_autoencoder(model,
 
                 found_mismatch = False
 
-                T = len(true_tokens)
+                T = len(true_tokens_cutoff)
                 matches = 0
-                for t in range(T):
+                for t in range(eos_cutoff):
                     true_token = true_tokens[t]
                     output_token = output_tokens[t]
 
@@ -637,8 +644,8 @@ def train_autoencoder(model,
                     else:
                         found_mismatch = True
 
-                    if true_token == "EOS" or t == (T - 1):
-                        train_accuracy += matches / (t + 1)
+                    if t == (T - 1):
+                        train_accuracy += matches / T
                         break
 
                 if not found_mismatch:
@@ -692,42 +699,51 @@ def train_autoencoder(model,
                 if val_progress_needed is None:
                     val_progress_needed = len(val_loader) * true_sequences.shape[0]
 
-                if val_example == "":
-                    val_example = string_from_onehots(true_sequences[b])
-                    val_autoencoded = string_from_onehots(outputs[b])
+                true_tokens = string_from_onehots(true_sequences[b], list_mode=True)
+                output_tokens = string_from_onehots(outputs[b], list_mode=True)
 
-                loss_criterion = criterion(outputs[b], true_sequences_sparse[b])
-                loss_reg, sntx = regularization_term_and_syntax_score(outputs[b], lam=regularization_coefficient)
+                eos_cutoff = true_tokens.index("EOS")
+
+                true_tokens_cutoff = true_tokens[0:eos_cutoff]
+                output_tokens_cutoff = output_tokens[0:eos_cutoff]
+
+                output = outputs[b, 0:eos_cutoff, :]
+                true_sequence = true_sequences[b, 0:eos_cutoff, :]
+                true_sequence_sparse = true_sequences_sparse[b, 0:eos_cutoff]
+
+                if val_example == "":
+                    val_example = string_from_onehots(true_sequence)
+                    val_autoencoded = string_from_onehots(output)
+
+                loss_criterion = criterion(output, true_sequence_sparse)
+                loss_reg, sntx = regularization_term_and_syntax_score(output, lam=regularization_coefficient)
                 loss = loss_criterion + loss_reg
 
                 val_loss += loss.item()
                 val_criterion += loss_criterion.item()
                 val_syntaxscore += sntx.item()
 
-                true_tokens = string_from_onehots(true_sequences[b], list_mode=True)
-                output_tokens = string_from_onehots(outputs[b], list_mode=True)
-
                 found_mismatch = False
 
-                T = len(true_tokens)
+                T = len(true_tokens_cutoff)
                 matches = 0
                 for t in range(T):
-                    true_token = true_tokens[t]
-                    output_token = output_tokens[t]
+                    true_token = true_tokens_cutoff[t]
+                    output_token = output_tokens_cutoff[t]
 
                     if true_token == output_token:
                         matches += 1
                     else:
                         found_mismatch = True
 
-                    if true_token == "EOS" or t == (T - 1):
-                        val_accuracy += matches / (t + 1)
+                    if t == (T - 1):
+                        val_accuracy += matches / T
                         break
 
                 if not found_mismatch:
                     val_perfect_matches += 1
 
-                if pf.is_representation_valid("".join(true_tokens[0:-2]), features=INDIVIDUALS_FEATURES):
+                if pf.is_representation_valid("".join(output_tokens_cutoff), features=INDIVIDUALS_FEATURES):
                     val_valid += 1. / B
 
                 val_progress += 1
