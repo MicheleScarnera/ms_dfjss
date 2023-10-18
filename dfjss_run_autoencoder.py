@@ -23,6 +23,6 @@ print(autoencoder.summary())
 dfjss_nn.train_autoencoder(autoencoder,
                            batch_size=16,
                            num_epochs=40,
-                           train_size=5000,
-                           val_size=1000,
+                           train_size=8192,
+                           val_size=1024,
                            regularization_coefficient=10.)

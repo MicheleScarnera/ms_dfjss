@@ -576,101 +576,20 @@ def train_autoencoder(model,
         train_criterion = 0.
         train_largest_criterion = 0.
         train_syntaxscore = 0.
-        model.train()
 
         train_accuracy = 0.
         train_valid = 0.
         train_perfect_matches = 0
 
-        train_start = time.time()
+        train_start = None
         train_progress = 0
         train_progress_needed = None
 
-        print(f"Epoch {epoch}: Training...", end="")
-
-        for true_sequences in train_loader:
-            true_sequences = true_sequences.to(device)
-            true_sequences_sparse = torch.argmax(true_sequences, dim=2)
-
-            optimizer.zero_grad()
-
-            losses = []
-
-            outputs = model(true_sequences).to(device)
-            B = true_sequences.shape[0]
-            for b in range(B):
-                if train_progress_needed is None:
-                    train_progress_needed = len(train_loader) * B
-
-                true_tokens = string_from_onehots(true_sequences[b], list_mode=True)
-                output_tokens = string_from_onehots(outputs[b], list_mode=True)
-
-                eos_cutoff = true_tokens.index("EOS")
-
-                true_tokens = true_tokens[0:eos_cutoff]
-                output_tokens = output_tokens[0:eos_cutoff]
-
-                output = outputs[b, 0:eos_cutoff, :]
-                # true_sequence = true_sequences[b, 0:eos_cutoff, :]
-                true_sequence_sparse = true_sequences_sparse[b, 0:eos_cutoff]
-
-                loss_criterion = criterion(output, true_sequence_sparse)
-                loss_reg, sntx = regularization_term_and_syntax_score(output,
-                                                                      lam=regularization_coefficient)
-                loss = loss_criterion + loss_reg
-
-                losses.append(loss)
-
-                train_loss += loss.item()
-                train_criterion += loss_criterion.item()
-                train_syntaxscore += sntx.item()
-
-                if loss_criterion.item() > train_largest_criterion:
-                    train_largest_criterion = loss_criterion.item()
-
-                found_mismatch = False
-
-                T = len(true_tokens)
-                matches = 0
-                for t in range(eos_cutoff):
-                    true_token = true_tokens[t]
-                    output_token = output_tokens[t]
-
-                    if true_token == output_token:
-                        matches += 1
-                    else:
-                        found_mismatch = True
-
-                    if t == (T - 1):
-                        train_accuracy += matches / T
-                        break
-
-                if not found_mismatch:
-                    train_perfect_matches += 1
-
-                if pf.is_representation_valid("".join(output_tokens), features=INDIVIDUALS_FEATURES):
-                    train_valid += 1. / B
-
-                train_progress += 1
-
-                datapoints_per_second = train_progress / (time.time() - train_start)
-
-                dps_text = f"{datapoints_per_second:.2f} datapoints per second" if datapoints_per_second > 1. else f"{misc.timeformat(1. / datapoints_per_second)} per datapoint"
-
-                print(
-                    f"\rEpoch {epoch}: Training... {train_progress / train_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(train_start, time.time(), train_progress, train_progress_needed))}, {dps_text} (Largest criterion: {train_largest_criterion:.3f})",
-                    end="", flush=True)
-
-            torch.stack(losses).mean().backward()
-            nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_value, error_if_nonfinite=True)
-
-            optimizer.step()
-
         # Validation
+
         val_loss = 0.
         val_criterion = 0.
         val_syntaxscore = 0.
-        model.eval()
 
         val_accuracy = 0.
         val_valid = 0.
@@ -679,79 +598,136 @@ def train_autoencoder(model,
         val_example = ""
         val_autoencoded = ""
 
-        val_start = time.time()
+        val_start = None
         val_progress = 0
         val_progress_needed = None
 
-        print(f"\rEpoch {epoch}: Validating...", end="", flush=True)
+        for is_train in (True, False):
+            if is_train:
+                print(f"Epoch {epoch}: Training...", end="")
+                model.train()
 
-        for true_sequences in val_loader:
-            true_sequences = true_sequences.to(device)
-            true_sequences_sparse = torch.argmax(true_sequences, dim=2)
+                train_start = time.time()
+            else:
+                print(f"\rEpoch {epoch}: Validating...", end="", flush=True)
+                model.eval()
 
-            outputs = model(true_sequences).to(device)
+                val_start = time.time()
 
-            B = true_sequences.shape[0]
-            for b in range(B):
-                if val_progress_needed is None:
-                    val_progress_needed = len(val_loader) * true_sequences.shape[0]
+            loader = train_loader if is_train else val_loader
 
-                true_tokens = string_from_onehots(true_sequences[b], list_mode=True)
-                output_tokens = string_from_onehots(outputs[b], list_mode=True)
+            for true_sequences in loader:
+                losses = None
+                if is_train:
+                    optimizer.zero_grad()
+                    losses = []
 
-                eos_cutoff = true_tokens.index("EOS")
+                true_sequences = true_sequences.to(device)
+                true_sequences_sparse = torch.argmax(true_sequences, dim=2)
 
-                true_tokens = true_tokens[0:eos_cutoff]
-                output_tokens = output_tokens[0:eos_cutoff]
-
-                output = outputs[b, 0:eos_cutoff, :]
-                true_sequence = true_sequences[b, 0:eos_cutoff, :]
-                true_sequence_sparse = true_sequences_sparse[b, 0:eos_cutoff]
-
-                if val_example == "":
-                    val_example = string_from_onehots(true_sequence)
-                    val_autoencoded = string_from_onehots(output)
-
-                loss_criterion = criterion(output, true_sequence_sparse)
-                loss_reg, sntx = regularization_term_and_syntax_score(output, lam=regularization_coefficient)
-                loss = loss_criterion + loss_reg
-
-                val_loss += loss.item()
-                val_criterion += loss_criterion.item()
-                val_syntaxscore += sntx.item()
-
-                found_mismatch = False
-
-                T = len(true_tokens)
-                matches = 0
-                for t in range(T):
-                    true_token = true_tokens[t]
-                    output_token = output_tokens[t]
-
-                    if true_token == output_token:
-                        matches += 1
+                outputs = model(true_sequences).to(device)
+                B = true_sequences.shape[0]
+                for b in range(B):
+                    if is_train:
+                        if train_progress_needed is None:
+                            train_progress_needed = len(train_loader) * B
                     else:
-                        found_mismatch = True
+                        if val_progress_needed is None:
+                            val_progress_needed = len(val_loader) * B
 
-                    if t == (T - 1):
-                        val_accuracy += matches / T
-                        break
+                    true_tokens = string_from_onehots(true_sequences[b], list_mode=True)
+                    output_tokens = string_from_onehots(outputs[b], list_mode=True)
 
-                if not found_mismatch:
-                    val_perfect_matches += 1
+                    eos_cutoff = true_tokens.index("EOS")
 
-                if pf.is_representation_valid("".join(output_tokens), features=INDIVIDUALS_FEATURES):
-                    val_valid += 1. / B
+                    true_tokens = true_tokens[0:eos_cutoff]
+                    output_tokens = output_tokens[0:eos_cutoff]
 
-                val_progress += 1
+                    output = outputs[b, 0:eos_cutoff, :]
+                    true_sequence = true_sequences[b, 0:eos_cutoff, :]
+                    true_sequence_sparse = true_sequences_sparse[b, 0:eos_cutoff]
 
-                datapoints_per_second = val_progress / (time.time() - val_start)
+                    if not is_train:
+                        if val_example == "":
+                            val_example = string_from_onehots(true_sequence)
+                            val_autoencoded = string_from_onehots(output)
 
-                dps_text = f"{datapoints_per_second:.2f} datapoints per second" if datapoints_per_second > 1. else f"{misc.timeformat(1. / datapoints_per_second)} per datapoint"
+                    loss_criterion = criterion(output, true_sequence_sparse)
+                    loss_reg, sntx = regularization_term_and_syntax_score(output,
+                                                                          lam=regularization_coefficient)
+                    loss = loss_criterion + loss_reg
 
-                print(
-                    f"\rEpoch {epoch}: Validating... {val_progress / val_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(val_start, time.time(), val_progress, val_progress_needed))}, {dps_text}",
-                    end="", flush=True)
+                    if is_train:
+                        losses.append(loss)
+
+                        train_loss += loss.item()
+                        train_criterion += loss_criterion.item()
+                        train_syntaxscore += sntx.item()
+
+                        if loss_criterion.item() > train_largest_criterion:
+                            train_largest_criterion = loss_criterion.item()
+                    else:
+                        val_loss += loss.item()
+                        val_criterion += loss_criterion.item()
+                        val_syntaxscore += sntx.item()
+
+                    found_mismatch = False
+
+                    T = len(true_tokens)
+                    matches = 0
+                    for t in range(eos_cutoff):
+                        true_token = true_tokens[t]
+                        output_token = output_tokens[t]
+
+                        if true_token == output_token:
+                            matches += 1
+                        else:
+                            found_mismatch = True
+
+                        if t == (T - 1):
+                            if is_train:
+                                train_accuracy += matches / T
+                            else:
+                                val_accuracy += matches / T
+                            break
+
+                    if not found_mismatch:
+                        if is_train:
+                            train_perfect_matches += 1
+                        else:
+                            val_perfect_matches += 1
+
+                    if pf.is_representation_valid("".join(output_tokens), features=INDIVIDUALS_FEATURES):
+                        if is_train:
+                            train_valid += 1. / B
+                        else:
+                            val_valid += 1. / B
+
+                    if is_train:
+                        train_progress += 1
+
+                        datapoints_per_second = train_progress / (time.time() - train_start)
+                    else:
+                        val_progress += 1
+
+                        datapoints_per_second = val_progress / (time.time() - val_start)
+
+                    dps_text = f"{datapoints_per_second:.2f} datapoints per second" if datapoints_per_second > 1. else f"{misc.timeformat(1. / datapoints_per_second)} per datapoint"
+
+                    if is_train:
+                        print(
+                            f"\rEpoch {epoch}: Training... {train_progress / train_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(train_start, time.time(), train_progress, train_progress_needed))}, {dps_text} (Largest criterion: {train_largest_criterion:.3f})",
+                            end="", flush=True)
+                    else:
+                        print(
+                            f"\rEpoch {epoch}: Validating... {val_progress / val_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(val_start, time.time(), val_progress, val_progress_needed))}, {dps_text}",
+                            end="", flush=True)
+
+                if is_train:
+                    torch.stack(losses).mean().backward()
+                    nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_value, error_if_nonfinite=True)
+
+                    optimizer.step()
 
         scheduler.step(val_accuracy)
 
