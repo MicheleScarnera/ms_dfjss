@@ -85,14 +85,12 @@ class EncoderHat(nn.Module):
 class DecoderHat(nn.Module):
     rnn: nn.RNN
 
-    def __init__(self, rnn, actual_input_size, reverse=True):
+    def __init__(self, rnn, actual_input_size):
         super().__init__()
         self.rnn = rnn
         self.actual_input_size = actual_input_size
         self.proj = nn.Linear(in_features=rnn.hidden_size, out_features=actual_input_size, bias=False)
         self.layer_norm = nn.LayerNorm(rnn.hidden_size)
-
-        self.reverse = reverse
 
     def forward(self, x, h):
         rnn_out = self.rnn.forward(x, h)
@@ -103,16 +101,10 @@ class DecoderHat(nn.Module):
             decoder_y = self.layer_norm(rnn_out[0])
             output = nn.functional.log_softmax(self.proj(decoder_y), dim=1)
 
-            if self.reverse:
-                output = torch.flip(output, dims=[0])
-
             return decoder_y, rnn_out[1], output
         elif len(x.shape) == 3:
             decoder_y = self.layer_norm(rnn_out[0])
             output = nn.functional.log_softmax(self.proj(decoder_y), dim=2)
-
-            if self.reverse:
-                output = torch.flip(output, dims=[1])
 
             return decoder_y, rnn_out[1], output
         else:
@@ -129,7 +121,7 @@ def new_decoder_token(dtype):
 
 
 class IndividualAutoEncoder(nn.Module):
-    def __init__(self, input_size=None, hidden_size=1024, num_layers=2, dropout=0.1, bidirectional=False):
+    def __init__(self, input_size=None, hidden_size=512, num_layers=8, dropout=0.1, bidirectional=False):
         super(IndividualAutoEncoder, self).__init__()
 
         if input_size is None:
@@ -190,11 +182,8 @@ class IndividualAutoEncoder(nn.Module):
 
         encoder_y, encoder_h = self.encoder(x, torch.zeros(encoder_h_size))
 
-        # d = torch.stack([new_decoder_token(encoded.dtype) for _ in range(batch_size)], dim=1) if is_batch else new_decoder_token(encoded.dtype)
-
-        decoder_x = torch.transpose(encoder_y[:, -1, :].unsqueeze(1), 0, 1) if is_batch else encoder_y[-1, :].unsqueeze(
-            0)  # torch.zeros(size=decoder_x_size)
-        current_decoder_h = torch.zeros(decoder_h_size)
+        decoder_x = torch.zeros(size=decoder_x_size)  # torch.transpose(encoder_y[:, -1, :].unsqueeze(1), 0, 1) if is_batch else encoder_y[-1, :].unsqueeze(0)
+        current_decoder_h = encoder_h  # torch.zeros(decoder_h_size)
 
         decodes = []
         for _ in range(sequence_length):
@@ -761,7 +750,7 @@ def train_autoencoder(model,
         val_perfect_matches = val_perfect_matches / l_v
 
         print(
-            f"\rEpoch {epoch}: Loss/Criterion/Syntax/Valid/Accuracy/Perfects: (Train: {train_loss:.4f}/{train_criterion:.4f}/{train_syntaxscore:.2%}/{train_valid:.2%}/{train_accuracy:.2%}/{train_perfect_matches:.2%}) (Val: {val_loss:.4f}/{val_criterion:.4f}/{val_syntaxscore:.2%}/{val_valid:.2%}/{val_accuracy:.2%}/{val_perfect_matches:.2%}) Took {misc.timeformat(time.time() - train_start)}"
+            f"\rEpoch {epoch}: Loss/Criterion/Syntax/Valid/Accuracy/Perfects: (Train: {train_loss:.4f}/{train_criterion:.4f}/{train_syntaxscore:.2%}/{train_valid:.2%}/{train_accuracy:.2%}/{train_perfect_matches:.2%}) (Val: {val_loss:.4f}/{val_criterion:.4f}/{val_syntaxscore:.2%}/{val_valid:.2%}/{val_accuracy:.2%}/{val_perfect_matches:.2%}) (Total data: {train_totaldatapoints}, {val_totaldatapoints}) Took {misc.timeformat(time.time() - train_start)} ({misc.timeformat(val_start - train_start)}, {misc.timeformat(time.time() - val_start)})"
         )
 
         new_row = dict()
