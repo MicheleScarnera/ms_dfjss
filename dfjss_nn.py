@@ -428,6 +428,7 @@ class AutoencoderDataset(data.Dataset):
 
         self.individuals = []
         self.times_called = 0
+        self.total_datapoints = 0
 
         self.rng = np.random.default_rng(rng_seed)
 
@@ -440,16 +441,9 @@ class AutoencoderDataset(data.Dataset):
 
             self.individuals.append(one_hot_sequence(repr(self.gen_algo.get_random_individual()) + "EOS"))
 
-    def __iter__(self):
-        return self.data_iterator()
+            self.total_datapoints += 1
 
-    def __getitem__(self, idx):
-        return self.individuals[idx]
-
-    def __len__(self):
-        return len(self.individuals)
-
-    def data_iterator(self):
+    def refresh_data(self):
         # permanence rate
         if self.replacement_rate > 0. and self.times_called > 0:
             for _ in range(int(self.size * self.replacement_rate)):
@@ -460,6 +454,16 @@ class AutoencoderDataset(data.Dataset):
 
         self.times_called += 1
 
+    def __iter__(self):
+        return self.data_iterator()
+
+    def __getitem__(self, idx):
+        return self.individuals[idx]
+
+    def __len__(self):
+        return len(self.individuals)
+
+    def data_iterator(self):
         for individual in self.individuals:
             yield individual
 
@@ -537,7 +541,6 @@ def train_autoencoder(model,
                                  size=val_size,
                                  replacement_rate=val_replacement_rate)
 
-    # train_set, val_set = data.random_split(dataset=dataset, lengths=[1. - val_split, val_split])
     train_loader = data.DataLoader(
         train_set,
         batch_size=batch_size,
@@ -552,6 +555,7 @@ def train_autoencoder(model,
         shuffle=True
     )
 
+    # train_set, val_set = data.random_split(dataset=dataset, lengths=[1. - val_split, val_split])
     criterion = nn.NLLLoss()  # nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(),
                           lr=0.01,
@@ -559,14 +563,7 @@ def train_autoencoder(model,
 
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, mode="max")
 
-    train_totaldatapoints = train_size
-    val_totaldatapoints = val_size
-
     for epoch in range(1, num_epochs + 1):
-        if epoch > 1:
-            train_totaldatapoints += int(train_size * train_replacement_rate)
-            val_totaldatapoints += int(val_size * val_replacement_rate)
-
         # Training
         train_loss = 0.
         train_criterion = 0.
@@ -730,6 +727,9 @@ def train_autoencoder(model,
 
         scheduler.step(val_accuracy)
 
+        train_set.refresh_data()
+        val_set.refresh_data()
+
         l_t = train_progress
         l_v = val_progress
 
@@ -750,12 +750,12 @@ def train_autoencoder(model,
         val_perfect_matches = val_perfect_matches / l_v
 
         print(
-            f"\rEpoch {epoch}: Loss/Criterion/Syntax/Valid/Accuracy/Perfects: (Train: {train_loss:.4f}/{train_criterion:.4f}/{train_syntaxscore:.2%}/{train_valid:.2%}/{train_accuracy:.2%}/{train_perfect_matches:.2%}) (Val: {val_loss:.4f}/{val_criterion:.4f}/{val_syntaxscore:.2%}/{val_valid:.2%}/{val_accuracy:.2%}/{val_perfect_matches:.2%}) (Total data: {train_totaldatapoints}, {val_totaldatapoints}) Took {misc.timeformat(time.time() - train_start)} ({misc.timeformat(val_start - train_start)}, {misc.timeformat(time.time() - val_start)})"
+            f"\rEpoch {epoch}: Loss/Criterion/Syntax/Valid/Accuracy/Perfects: (Train: {train_loss:.4f}/{train_criterion:.4f}/{train_syntaxscore:.2%}/{train_valid:.2%}/{train_accuracy:.2%}/{train_perfect_matches:.2%}) (Val: {val_loss:.4f}/{val_criterion:.4f}/{val_syntaxscore:.2%}/{val_valid:.2%}/{val_accuracy:.2%}/{val_perfect_matches:.2%}) (Total data: {train_set.total_datapoints}, {val_set.total_datapoints}) Took {misc.timeformat(time.time() - train_start)} ({misc.timeformat(val_start - train_start)}, {misc.timeformat(time.time() - val_start)})"
         )
 
         new_row = dict()
         new_row["Epoch"] = epoch
-        new_row["Train_TotalDatapoints"] = train_totaldatapoints
+        new_row["Train_TotalDatapoints"] = train_set.total_datapoints
         new_row["Train_Loss"] = train_loss
         new_row["Train_Criterion"] = train_criterion
         new_row["Train_SyntaxScore"] = train_syntaxscore
@@ -763,7 +763,7 @@ def train_autoencoder(model,
         new_row["Train_Accuracy"] = train_accuracy
         new_row["Train_Perfects"] = train_perfect_matches
 
-        new_row["Val_TotalDatapoints"] = val_totaldatapoints
+        new_row["Val_TotalDatapoints"] = val_set.total_datapoints
         new_row["Val_Loss"] = val_loss
         new_row["Val_Criterion"] = val_criterion
         new_row["Val_SyntaxScore"] = val_syntaxscore
