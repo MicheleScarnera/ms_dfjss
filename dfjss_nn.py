@@ -415,7 +415,7 @@ def syntax_score(x, aggregate_with_gmean=True):
 
 
 class AutoencoderDataset(data.Dataset):
-    def __init__(self, rng_seed=100, max_depth=8, size=5000, replacement_rate=0.):
+    def __init__(self, rng_seed=100, max_depth=8, size=5000, refresh_rate=0.):
         super().__init__()
 
         self.gen_algo = genetic.GeneticAlgorithm(rng_seed=rng_seed)
@@ -424,7 +424,7 @@ class AutoencoderDataset(data.Dataset):
 
         self.max_depth = max_depth
         self.size = size
-        self.replacement_rate = replacement_rate
+        self.refresh_rate = refresh_rate
 
         self.individuals = []
         self.times_called = 0
@@ -445,8 +445,8 @@ class AutoencoderDataset(data.Dataset):
 
     def refresh_data(self):
         # permanence rate
-        if self.replacement_rate > 0. and self.times_called > 0:
-            for _ in range(int(self.size * self.replacement_rate)):
+        if self.refresh_rate > 0. and self.times_called > 0:
+            for _ in range(int(self.size * self.refresh_rate)):
                 self.individuals.pop(0)
 
         # if length less than size, generate individuals
@@ -496,9 +496,11 @@ def train_autoencoder(model,
                       batch_size=16,
                       max_depth=8,
                       train_size=5000,
-                      train_replacement_rate=1.,
+                      train_refresh_rate=1.,
+                      train_seed=100,
                       val_size=1000,
-                      val_replacement_rate=0.,
+                      val_refresh_rate=0.,
+                      val_seed=1337,
                       regularization_coefficient=10.,
                       gradient_clip_value=5.):
     """
@@ -508,9 +510,9 @@ def train_autoencoder(model,
     :param max_depth:
     :param num_epochs:
     :param train_size:
-    :param train_replacement_rate:
+    :param train_refresh_rate:
     :param val_size:
-    :param val_replacement_rate:
+    :param val_refresh_rate:
     :param batch_size:
     :param regularization_coefficient:
     :param gradient_clip_value:
@@ -535,11 +537,13 @@ def train_autoencoder(model,
 
     train_set = AutoencoderDataset(max_depth=max_depth,
                                    size=train_size,
-                                   replacement_rate=train_replacement_rate)
+                                   refresh_rate=train_refresh_rate,
+                                   rng_seed=train_seed)
 
     val_set = AutoencoderDataset(max_depth=max_depth,
                                  size=val_size,
-                                 replacement_rate=val_replacement_rate)
+                                 refresh_rate=val_refresh_rate,
+                                 rng_seed=val_seed)
 
     train_loader = data.DataLoader(
         train_set,
@@ -720,7 +724,7 @@ def train_autoencoder(model,
                             end="", flush=True)
 
                 if is_train:
-                    torch.stack(losses).mean().backward()
+                    torch.stack(losses).sum().backward()
                     nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_value, error_if_nonfinite=True)
 
                     optimizer.step()
