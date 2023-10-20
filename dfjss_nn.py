@@ -500,15 +500,15 @@ def train_autoencoder(model,
                       batch_size=16,
                       max_depth=8,
                       train_size=5000,
-                      train_refresh_rate=1.,
+                      train_refresh_rate=0.25,
                       train_seed=100,
                       val_size=1000,
                       val_refresh_rate=0.,
                       val_seed=1337,
                       regularization_coefficient=10.,
                       gradient_value_threshold=5.,
-                      clipping_is_norm=False,
-                      gradient_norm_threshold=500.,
+                      clipping_is_norm=True,
+                      gradient_norm_threshold=50.,
                       clipping_norm_type=2.):
     """
     :type model: nn.Module
@@ -573,9 +573,7 @@ def train_autoencoder(model,
 
     # train_set, val_set = data.random_split(dataset=dataset, lengths=[1. - val_split, val_split])
     criterion = nn.NLLLoss()  # nn.CrossEntropyLoss()
-    optimizer = optim.SGD(model.parameters(),
-                          lr=0.01,
-                          momentum=0.9)
+    optimizer = optim.Adam(model.parameters(), lr=0.001)  # optim.SGD(model.parameters(), lr=0.001, momentum=0.25)
 
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, mode="max")
 
@@ -734,7 +732,7 @@ def train_autoencoder(model,
                         gradient_norms_text = f"{np.mean(gradients_thrown_out):.2%}" if len(
                             gradients_thrown_out) > 0 else "N/A"
                         print(
-                            f"\rEpoch {epoch}: Training... {train_progress / train_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(train_start, time.time(), train_progress, train_progress_needed))}, {dps_text} (Largest criterion: {train_largest_criterion:.3f}, Gradients' norms lost due to clipping: {gradient_norms_text})",
+                            f"\rEpoch {epoch}: Training... {train_progress / train_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(train_start, time.time(), train_progress, train_progress_needed))}, {dps_text} (Average criterion: {train_criterion / train_progress:.3f}, Largest criterion: {train_largest_criterion:.3f}, Gradients' norms lost due to clipping: {gradient_norms_text})",
                             end="", flush=True)
                     else:
                         print(
