@@ -415,7 +415,7 @@ def syntax_score(x, aggregate_with_gmean=True):
 
 
 class AutoencoderDataset(data.Dataset):
-    def __init__(self, rng_seed=100, max_depth=8, size=5000, refresh_rate=0.):
+    def __init__(self, rng_seed=100, max_depth=8, size=5000, refresh_rate=0., refresh_is_random=False):
         super().__init__()
 
         self.gen_algo = genetic.GeneticAlgorithm(rng_seed=rng_seed)
@@ -425,9 +425,10 @@ class AutoencoderDataset(data.Dataset):
         self.max_depth = max_depth
         self.size = size
         self.refresh_rate = refresh_rate
+        self.refresh_is_random = refresh_is_random
 
         self.individuals = []
-        self.times_called = 0
+        self.times_refreshed = 0
         self.total_datapoints = 0
 
         self.rng = np.random.default_rng(rng_seed)
@@ -445,14 +446,16 @@ class AutoencoderDataset(data.Dataset):
 
     def refresh_data(self):
         # permanence rate
-        if self.refresh_rate > 0. and self.times_called > 0:
+        if self.refresh_rate > 0. and self.times_refreshed > 0:
             for _ in range(int(self.size * self.refresh_rate)):
-                self.individuals.pop(0)
+                index = self.rng.choice(len(self.individuals)) if self.refresh_is_random else 0
+
+                self.individuals.pop(index)
 
         # if length less than size, generate individuals
         self.fill_individuals()
 
-        self.times_called += 1
+        self.times_refreshed += 1
 
     def __iter__(self):
         return self.data_iterator()
@@ -502,7 +505,7 @@ def train_autoencoder(model,
                       val_refresh_rate=0.,
                       val_seed=1337,
                       regularization_coefficient=10.,
-                      gradient_clip_value=5.):
+                      gradient_clip_value=150.):
     """
     :type model: nn.Module
 
@@ -511,8 +514,10 @@ def train_autoencoder(model,
     :param num_epochs:
     :param train_size:
     :param train_refresh_rate:
+    :param train_seed:
     :param val_size:
     :param val_refresh_rate:
+    :param val_seed:
     :param batch_size:
     :param regularization_coefficient:
     :param gradient_clip_value:
@@ -600,11 +605,14 @@ def train_autoencoder(model,
         val_progress_needed = None
 
         for is_train in (True, False):
+            gradient_norms = None
             if is_train:
                 print(f"Epoch {epoch}: Training...", end="")
                 model.train()
 
                 train_start = time.time()
+
+                gradient_norms = []
             else:
                 print(f"\rEpoch {epoch}: Validating...", end="", flush=True)
                 model.eval()
@@ -615,6 +623,7 @@ def train_autoencoder(model,
 
             for true_sequences in loader:
                 losses = None
+
                 if is_train:
                     optimizer.zero_grad()
                     losses = []
@@ -715,8 +724,9 @@ def train_autoencoder(model,
                     dps_text = f"{datapoints_per_second:.2f} datapoints per second" if datapoints_per_second > 1. else f"{misc.timeformat(1. / datapoints_per_second)} per datapoint"
 
                     if is_train:
+                        gradient_norms_text = f"{np.mean([max((norm - gradient_clip_value) / norm, 0) for norm in gradient_norms if norm > 0.]):.2%}" if len(gradient_norms) > 0 else "N/A"
                         print(
-                            f"\rEpoch {epoch}: Training... {train_progress / train_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(train_start, time.time(), train_progress, train_progress_needed))}, {dps_text} (Largest criterion: {train_largest_criterion:.3f})",
+                            f"\rEpoch {epoch}: Training... {train_progress / train_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(train_start, time.time(), train_progress, train_progress_needed))}, {dps_text} (Largest criterion: {train_largest_criterion:.3f}, Gradients' norms lost due to clipping: {gradient_norms_text})",
                             end="", flush=True)
                     else:
                         print(
@@ -725,7 +735,9 @@ def train_autoencoder(model,
 
                 if is_train:
                     torch.stack(losses).sum().backward()
-                    nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_value, error_if_nonfinite=True)
+                    grad_norm = nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_value, error_if_nonfinite=True)
+
+                    gradient_norms.append(grad_norm.item())
 
                     optimizer.step()
 
