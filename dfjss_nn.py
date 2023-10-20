@@ -75,7 +75,7 @@ class EncoderHat(nn.Module):
     def __init__(self, rnn):
         super().__init__()
         self.rnn = rnn
-        #self.layer_norm = nn.LayerNorm(rnn.hidden_size)
+        # self.layer_norm = nn.LayerNorm(rnn.hidden_size)
 
     def forward(self, x, h):
         rnn_out = self.rnn.forward(x, h)
@@ -182,7 +182,8 @@ class IndividualAutoEncoder(nn.Module):
 
         encoder_y, encoder_h = self.encoder(x, torch.zeros(encoder_h_size))
 
-        decoder_x = torch.zeros(size=decoder_x_size)  # torch.transpose(encoder_y[:, -1, :].unsqueeze(1), 0, 1) if is_batch else encoder_y[-1, :].unsqueeze(0)
+        decoder_x = torch.zeros(
+            size=decoder_x_size)  # torch.transpose(encoder_y[:, -1, :].unsqueeze(1), 0, 1) if is_batch else encoder_y[-1, :].unsqueeze(0)
         current_decoder_h = encoder_h  # torch.zeros(decoder_h_size)
 
         decodes = []
@@ -505,7 +506,10 @@ def train_autoencoder(model,
                       val_refresh_rate=0.,
                       val_seed=1337,
                       regularization_coefficient=10.,
-                      gradient_clip_value=150.):
+                      gradient_value_threshold=5.,
+                      clipping_is_norm=False,
+                      gradient_norm_threshold=500.,
+                      clipping_norm_type=2.):
     """
     :type model: nn.Module
 
@@ -520,7 +524,10 @@ def train_autoencoder(model,
     :param val_seed:
     :param batch_size:
     :param regularization_coefficient:
-    :param gradient_clip_value:
+    :param gradient_value_threshold:
+    :param clipping_is_norm:
+    :param gradient_norm_threshold:
+    :param clipping_norm_type:
     :return:
     """
     folder_name = datetime.datetime.now().strftime('AUTOENCODER %Y-%m-%d %H-%M-%S')
@@ -605,14 +612,14 @@ def train_autoencoder(model,
         val_progress_needed = None
 
         for is_train in (True, False):
-            gradient_norms = None
+            gradients_thrown_out = None
             if is_train:
                 print(f"Epoch {epoch}: Training...", end="")
                 model.train()
 
                 train_start = time.time()
 
-                gradient_norms = []
+                gradients_thrown_out = []
             else:
                 print(f"\rEpoch {epoch}: Validating...", end="", flush=True)
                 model.eval()
@@ -724,7 +731,8 @@ def train_autoencoder(model,
                     dps_text = f"{datapoints_per_second:.2f} datapoints per second" if datapoints_per_second > 1. else f"{misc.timeformat(1. / datapoints_per_second)} per datapoint"
 
                     if is_train:
-                        gradient_norms_text = f"{np.mean([max((norm - gradient_clip_value) / norm, 0) for norm in gradient_norms if norm > 0.]):.2%}" if len(gradient_norms) > 0 else "N/A"
+                        gradient_norms_text = f"{np.mean(gradients_thrown_out):.2%}" if len(
+                            gradients_thrown_out) > 0 else "N/A"
                         print(
                             f"\rEpoch {epoch}: Training... {train_progress / train_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(train_start, time.time(), train_progress, train_progress_needed))}, {dps_text} (Largest criterion: {train_largest_criterion:.3f}, Gradients' norms lost due to clipping: {gradient_norms_text})",
                             end="", flush=True)
@@ -735,9 +743,23 @@ def train_autoencoder(model,
 
                 if is_train:
                     torch.stack(losses).sum().backward()
-                    grad_norm = nn.utils.clip_grad_norm_(model.parameters(), gradient_clip_value, error_if_nonfinite=True)
 
-                    gradient_norms.append(grad_norm.item())
+                    if clipping_is_norm:
+                        grad_norm = nn.utils.clip_grad_norm_(model.parameters(),
+                                                             max_norm=gradient_norm_threshold,
+                                                             norm_type=clipping_norm_type,
+                                                             error_if_nonfinite=True)
+
+                        if grad_norm > 0.:
+                            norm = grad_norm.item()
+                            gradients_thrown_out.append(max((norm - gradient_norm_threshold) / norm, 0))
+                    else:
+                        grads = torch.cat([torch.flatten(p.grad) for p in model.parameters()])
+                        gradients_thrown_out.append(
+                            np.mean(np.max([(grads - gradient_value_threshold) / grads, np.zeros(len(grads))], axis=0,
+                                           where=grads > 0., initial=0.)))
+
+                        nn.utils.clip_grad_value_(model.parameters(), gradient_value_threshold)
 
                     optimizer.step()
 
