@@ -49,6 +49,8 @@ CONSTANTS = [misc.constant_format(num) for num in gp_settings.random_numbers_set
 VOCAB = ["NULL", "EOS", "(", ")"]  # , *OPERATIONS, *INDIVIDUALS_FEATURES, *CONSTANTS
 VOCAB_REDUCED = VOCAB.copy()
 
+FIRST_NONFUNCTIONAL_REDUCED_TOKEN_INDEX = len(VOCAB_REDUCED)
+
 VOCAB_OPERATIONS_LOCATION = (len(VOCAB), len(VOCAB) + len(OPERATIONS))
 VOCAB.extend(OPERATIONS)
 VOCAB_REDUCED.append("o")
@@ -78,7 +80,15 @@ class EncoderHat(nn.Module):
         # self.layer_norm = nn.LayerNorm(rnn.hidden_size)
 
     def forward(self, x, h):
-        rnn_out = self.rnn.forward(x, h)
+        is_batch = len(x.shape) == 3
+        if is_batch:
+            x_reduced = torch.stack([reduce_sequence(x_)[:, FIRST_NONFUNCTIONAL_REDUCED_TOKEN_INDEX:len(VOCAB_REDUCED)] for x_ in x], dim=0)
+            x_cat = torch.cat([x, x_reduced], dim=2)
+        else:
+            x_reduced = reduce_sequence(x)[:, FIRST_NONFUNCTIONAL_REDUCED_TOKEN_INDEX:len(VOCAB_REDUCED)]
+            x_cat = torch.cat([x, x_reduced], dim=1)
+
+        rnn_out = self.rnn.forward(x_cat, h)
         return rnn_out[0], rnn_out[1]
 
 
@@ -92,8 +102,13 @@ class DecoderHat(nn.Module):
         self.proj = nn.Linear(in_features=rnn.hidden_size, out_features=actual_input_size, bias=False)
         self.layer_norm = nn.LayerNorm(rnn.hidden_size)
 
-    def forward(self, x, h):
-        rnn_out = self.rnn.forward(x, h)
+    def forward(self, x, h, reverse_input_h=True):
+        if reverse_input_h:
+            h_ = torch.flip(h, dims=[0])
+        else:
+            h_ = h
+
+        rnn_out = self.rnn.forward(x, h_)
 
         # return self.proj(rnn_out[0]), rnn_out[1]
 
@@ -121,22 +136,27 @@ def new_decoder_token(dtype):
 
 
 class IndividualAutoEncoder(nn.Module):
-    def __init__(self, input_size=None, hidden_size=512, num_layers=8, dropout=0.1, bidirectional=False):
+    def __init__(self, input_size=None, hidden_size=512, num_layers=8, dropout=0.1, bidirectional=False, nonlinearity='relu'):
         super(IndividualAutoEncoder, self).__init__()
 
         if input_size is None:
             input_size = len(VOCAB)
 
+        self.input_size = input_size
+
+        input_size_encoder = input_size + len(VOCAB_REDUCED[FIRST_NONFUNCTIONAL_REDUCED_TOKEN_INDEX:len(VOCAB_REDUCED)])
+
         self.d = 2 if bidirectional else 1
         self.num_layers = num_layers
         self.hidden_size = hidden_size
 
-        self.encoder = EncoderHat(nn.RNN(input_size=input_size,
+        self.encoder = EncoderHat(nn.RNN(input_size=input_size_encoder,
                                          hidden_size=hidden_size,
                                          num_layers=num_layers,
                                          dropout=dropout,
                                          bidirectional=bidirectional,
                                          batch_first=True,
+                                         nonlinearity=nonlinearity,
                                          device=device))
 
         self.encoder_output_size = self.d * hidden_size
@@ -147,6 +167,7 @@ class IndividualAutoEncoder(nn.Module):
                                          dropout=dropout,
                                          bidirectional=False,
                                          batch_first=False,
+                                         nonlinearity=nonlinearity,
                                          device=device), input_size)
 
         # for p in self.parameters():
@@ -157,7 +178,7 @@ class IndividualAutoEncoder(nn.Module):
 
     def summary(self):
         longdash = '------------------------------------'
-        result = [longdash, "Individual Auto-Encoder", f"Input size: {self.encoder.rnn.input_size}",
+        result = [longdash, "Individual Auto-Encoder", f"Input size: {self.input_size} (Encoder: {self.encoder.rnn.input_size})",
                   f"Hidden size: {self.encoder.rnn.hidden_size}", f"Layers: {self.encoder.rnn.num_layers}",
                   f"Dropout: {self.encoder.rnn.dropout}", f"Bidirectional: {self.encoder.rnn.bidirectional}",
                   f"Number of parameters: (Learnable: {self.count_parameters()}, Fixed: {self.count_parameters(False)})",
@@ -233,7 +254,10 @@ def one_hot_sequence(individual, vocab=None):
     return torch.stack([token_to_one_hot(s, vocab=vocab) for s in tokenize_with_vocab(individual, vocab=vocab)])
 
 
-def reduce_sequence(sequence):
+def reduce_sequence(sequence, input_is_logs=False):
+    if len(sequence.shape) == 3:
+        return torch.stack([reduce_sequence(x_) for x_ in sequence], dim=0)
+
     if sequence.shape[1] == VOCAB_REDUCED_SIZE:
         raise ValueError("Sequence is already reduced")
 
@@ -241,7 +265,10 @@ def reduce_sequence(sequence):
         raise ValueError(
             f"Sequence is of unexpected vocabulary (expected vocabulary of size {VOCAB_SIZE}, got {sequence.shape[1]})")
 
-    return sequence @ VOCAB_REDUCTION_MATRIX.T
+    if input_is_logs:
+        return torch.log(torch.softmax(sequence, dim=1) @ VOCAB_REDUCTION_MATRIX.T)
+    else:
+        return sequence @ VOCAB_REDUCTION_MATRIX.T
 
 
 def token_to_one_hot(s, vocab=None):
@@ -505,10 +532,14 @@ def train_autoencoder(model,
                       val_size=1000,
                       val_refresh_rate=0.,
                       val_seed=1337,
+                      raw_criterion_weight=0.,
+                      raw_criterion_weight_inc=0.1,
+                      reduced_criterion_weight=1.,
+                      reduced_criterion_weight_inc=0.,
                       regularization_coefficient=10.,
-                      gradient_value_threshold=5.,
+                      gradient_value_threshold=1.,
                       clipping_is_norm=True,
-                      gradient_norm_threshold=50.,
+                      gradient_norm_threshold=5.,
                       clipping_norm_type=2.):
     """
     :type model: nn.Module
@@ -537,10 +568,10 @@ def train_autoencoder(model,
 
     print(f"Model(s) will be saved in \"{folder_name}\"")
 
-    df_cols = ["Epoch"]
+    df_cols = ["Epoch", "Criterion_Weight_Raw", "Criterion_Weight_Reduced"]
 
     for tv in ("Train", "Val"):
-        for q in ("TotalDatapoints", "Loss", "Criterion", "SyntaxScore", "Valid", "Accuracy", "Perfects"):
+        for q in ("TotalDatapoints", "Loss", "Total_Criterion", "Raw_Criterion", "Reduced_Criterion", "SyntaxScore", "Valid", "Accuracy", "Perfects"):
             df_cols.append(f"{tv}_{q}")
 
     df_cols.extend(("Example", "AutoencodedExample"))
@@ -577,10 +608,14 @@ def train_autoencoder(model,
 
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, mode="max")
 
+    reduced_criterion_scale = np.log(len(VOCAB)) / np.log(len(VOCAB_REDUCED))
+
     for epoch in range(1, num_epochs + 1):
         # Training
         train_loss = 0.
-        train_criterion = 0.
+        train_raw_criterion = 0.
+        train_reduced_criterion = 0.
+        train_total_criterion = 0.
         train_largest_criterion = 0.
         train_syntaxscore = 0.
 
@@ -595,7 +630,9 @@ def train_autoencoder(model,
         # Validation
 
         val_loss = 0.
-        val_criterion = 0.
+        val_raw_criterion = 0.
+        val_reduced_criterion = 0.
+        val_total_criterion = 0.
         val_syntaxscore = 0.
 
         val_accuracy = 0.
@@ -608,6 +645,14 @@ def train_autoencoder(model,
         val_start = None
         val_progress = 0
         val_progress_needed = None
+
+        # Raw/Reduced criterion weights
+
+        criterion_weights_raw = (epoch - 1) * raw_criterion_weight_inc + raw_criterion_weight
+        criterion_weights_reduced = (epoch - 1) * reduced_criterion_weight_inc + reduced_criterion_weight
+        criterion_weights_norm = criterion_weights_raw + criterion_weights_reduced
+        criterion_weights_raw /= criterion_weights_norm
+        criterion_weights_reduced /= criterion_weights_norm
 
         for is_train in (True, False):
             gradients_thrown_out = None
@@ -661,12 +706,20 @@ def train_autoencoder(model,
                     true_sequence = true_sequences[b, 0:eos_cutoff, :]
                     true_sequence_sparse = true_sequences_sparse[b, 0:eos_cutoff]
 
+                    output_reduced = reduce_sequence(output, input_is_logs=True)
+                    true_sequence_reduced = reduce_sequence(true_sequence)
+                    true_sequence_reduced_sparse = torch.argmax(true_sequence_reduced, dim=1)
+
                     if not is_train:
                         if val_example == "":
                             val_example = string_from_onehots(true_sequence)
                             val_autoencoded = string_from_onehots(output)
 
-                    loss_criterion = criterion(output, true_sequence_sparse)
+                    loss_raw_criterion = criterion(output, true_sequence_sparse)
+                    loss_reduced_criterion = reduced_criterion_scale * criterion(output_reduced, true_sequence_reduced_sparse)
+
+                    loss_criterion = criterion_weights_raw * loss_raw_criterion + loss_reduced_criterion * criterion_weights_reduced
+
                     loss_reg, sntx = regularization_term_and_syntax_score(output[0:-1, :],
                                                                           lam=regularization_coefficient)
                     loss = loss_criterion + loss_reg
@@ -675,14 +728,18 @@ def train_autoencoder(model,
                         losses.append(loss)
 
                         train_loss += loss.item()
-                        train_criterion += loss_criterion.item()
+                        train_raw_criterion += loss_raw_criterion.item()
+                        train_reduced_criterion += loss_reduced_criterion.item()
+                        train_total_criterion += loss_criterion.item()
                         train_syntaxscore += sntx.item()
 
                         if loss_criterion.item() > train_largest_criterion:
                             train_largest_criterion = loss_criterion.item()
                     else:
                         val_loss += loss.item()
-                        val_criterion += loss_criterion.item()
+                        val_raw_criterion += loss_raw_criterion.item()
+                        val_reduced_criterion += loss_reduced_criterion.item()
+                        val_total_criterion += loss_criterion.item()
                         val_syntaxscore += sntx.item()
 
                     found_mismatch = False
@@ -732,7 +789,7 @@ def train_autoencoder(model,
                         gradient_norms_text = f"{np.mean(gradients_thrown_out):.2%}" if len(
                             gradients_thrown_out) > 0 else "N/A"
                         print(
-                            f"\rEpoch {epoch}: Training... {train_progress / train_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(train_start, time.time(), train_progress, train_progress_needed))}, {dps_text} (Average criterion: {train_criterion / train_progress:.3f}, Largest criterion: {train_largest_criterion:.3f}, Gradients' norms lost due to clipping: {gradient_norms_text})",
+                            f"\rEpoch {epoch}: Training... {train_progress / train_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(train_start, time.time(), train_progress, train_progress_needed))}, {dps_text} (Average criterion: {train_total_criterion / train_progress:.3f} ({criterion_weights_raw:.2f}*{train_raw_criterion / train_progress:.3f}+{criterion_weights_reduced:.2f}*{train_reduced_criterion / train_progress:.3f}), Largest criterion: {train_largest_criterion:.3f}, Gradients' norms lost due to clipping: {gradient_norms_text})",
                             end="", flush=True)
                     else:
                         print(
@@ -740,7 +797,7 @@ def train_autoencoder(model,
                             end="", flush=True)
 
                 if is_train:
-                    torch.stack(losses).sum().backward()
+                    torch.stack(losses).mean().backward()
 
                     if clipping_is_norm:
                         grad_norm = nn.utils.clip_grad_norm_(model.parameters(),
@@ -769,31 +826,39 @@ def train_autoencoder(model,
         l_t = train_progress
         l_v = val_progress
 
-        train_loss = train_loss / l_t
-        train_criterion = train_criterion / l_t
-        train_syntaxscore = train_syntaxscore / l_t
+        train_loss /= l_t
+        train_raw_criterion /= l_t
+        train_reduced_criterion /= l_t
+        train_total_criterion /= l_t
+        train_syntaxscore /= l_t
 
-        train_accuracy = train_accuracy / l_t
-        train_valid = train_valid / l_t
-        train_perfect_matches = train_perfect_matches / l_t
+        train_accuracy /= l_t
+        train_valid /= l_t
+        train_perfect_matches /= l_t
 
-        val_loss = val_loss / l_v
-        val_criterion = val_criterion / l_v
-        val_syntaxscore = val_syntaxscore / l_v
+        val_loss /= l_v
+        val_raw_criterion /= l_v
+        val_reduced_criterion /= l_v
+        val_total_criterion /= l_v
+        val_syntaxscore /= l_v
 
-        val_accuracy = val_accuracy / l_v
-        val_valid = val_valid / l_v
-        val_perfect_matches = val_perfect_matches / l_v
+        val_accuracy /= l_v
+        val_valid /= l_v
+        val_perfect_matches /= l_v
 
         print(
-            f"\rEpoch {epoch}: Loss/Criterion/Syntax/Valid/Accuracy/Perfects: (Train: {train_loss:.4f}/{train_criterion:.4f}/{train_syntaxscore:.2%}/{train_valid:.2%}/{train_accuracy:.2%}/{train_perfect_matches:.2%}) (Val: {val_loss:.4f}/{val_criterion:.4f}/{val_syntaxscore:.2%}/{val_valid:.2%}/{val_accuracy:.2%}/{val_perfect_matches:.2%}) (Total data: {train_set.total_datapoints}, {val_set.total_datapoints}) Took {misc.timeformat(time.time() - train_start)} ({misc.timeformat(val_start - train_start)}, {misc.timeformat(time.time() - val_start)})"
+            f"\rEpoch {epoch}: Loss/Criterion/Syntax/Valid/Accuracy/Perfects: (Train: {train_loss:.4f}/{train_total_criterion:.4f}({criterion_weights_raw:.2f}*{train_raw_criterion:.3f}+{criterion_weights_reduced:.2f}*{train_reduced_criterion:.3f})/{train_syntaxscore:.2%}/{train_valid:.2%}/{train_accuracy:.2%}/{train_perfect_matches:.2%}) (Val: {val_loss:.4f}/{val_total_criterion:.4f}({criterion_weights_raw:.2f}*{val_raw_criterion:.3f}+{criterion_weights_reduced:.2f}*{val_reduced_criterion:.3f})/{val_syntaxscore:.2%}/{val_valid:.2%}/{val_accuracy:.2%}/{val_perfect_matches:.2%}) (Total data: {train_set.total_datapoints}, {val_set.total_datapoints}) Took {misc.timeformat(time.time() - train_start)} ({misc.timeformat(val_start - train_start)}, {misc.timeformat(time.time() - val_start)})"
         )
 
         new_row = dict()
         new_row["Epoch"] = epoch
+        new_row["Criterion_Weight_Raw"] = criterion_weights_raw
+        new_row["Criterion_Weight_Reduced"] = criterion_weights_reduced
         new_row["Train_TotalDatapoints"] = train_set.total_datapoints
         new_row["Train_Loss"] = train_loss
-        new_row["Train_Criterion"] = train_criterion
+        new_row["Train_Total_Criterion"] = train_total_criterion
+        new_row["Train_Raw_Criterion"] = train_raw_criterion
+        new_row["Train_Reduced_Criterion"] = train_reduced_criterion
         new_row["Train_SyntaxScore"] = train_syntaxscore
         new_row["Train_Valid"] = train_valid
         new_row["Train_Accuracy"] = train_accuracy
@@ -801,7 +866,9 @@ def train_autoencoder(model,
 
         new_row["Val_TotalDatapoints"] = val_set.total_datapoints
         new_row["Val_Loss"] = val_loss
-        new_row["Val_Criterion"] = val_criterion
+        new_row["Val_Total_Criterion"] = val_total_criterion
+        new_row["Val_Raw_Criterion"] = val_raw_criterion
+        new_row["Val_Reduced_Criterion"] = val_reduced_criterion
         new_row["Val_SyntaxScore"] = val_syntaxscore
         new_row["Val_Valid"] = val_valid
         new_row["Val_Accuracy"] = val_accuracy
