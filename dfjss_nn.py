@@ -74,21 +74,24 @@ VOCAB_REDUCTION_MATRIX[5, VOCAB_FEATURES_LOCATION[0]:VOCAB_FEATURES_LOCATION[1]]
 class EncoderHat(nn.Module):
     module: nn.Module
 
-    def __init__(self, rnn):
+    def __init__(self, rnn, embedding):
         super().__init__()
         self.rnn = rnn
+        self.embedding = embedding
         # self.layer_norm = nn.LayerNorm(rnn.hidden_size)
 
     def forward(self, x, h):
         is_batch = len(x.shape) == 3
-        if is_batch:
-            x_reduced = torch.stack([reduce_sequence(x_)[:, FIRST_NONFUNCTIONAL_REDUCED_TOKEN_INDEX:len(VOCAB_REDUCED)] for x_ in x], dim=0)
-            x_cat = torch.cat([x, x_reduced], dim=2)
-        else:
-            x_reduced = reduce_sequence(x)[:, FIRST_NONFUNCTIONAL_REDUCED_TOKEN_INDEX:len(VOCAB_REDUCED)]
-            x_cat = torch.cat([x, x_reduced], dim=1)
 
-        rnn_out = self.rnn.forward(x_cat, h)
+        if is_batch:
+            x_reduced_info = reduce_sequence(x)[:, :, FIRST_NONFUNCTIONAL_REDUCED_TOKEN_INDEX:len(VOCAB_REDUCED)]
+        else:
+            x_reduced_info = reduce_sequence(x)[:, FIRST_NONFUNCTIONAL_REDUCED_TOKEN_INDEX:len(VOCAB_REDUCED)]
+
+        argmax_dim = 2 if is_batch else 1
+        e = self.embedding(torch.argmax(x, dim=argmax_dim))
+
+        rnn_out = self.rnn.forward(torch.cat([e, x_reduced_info], dim=argmax_dim), h)
         return rnn_out[0], rnn_out[1]
 
 
@@ -136,7 +139,7 @@ def new_decoder_token(dtype):
 
 
 class IndividualAutoEncoder(nn.Module):
-    def __init__(self, input_size=None, hidden_size=512, num_layers=8, dropout=0.1, bidirectional=False, nonlinearity='relu'):
+    def __init__(self, input_size=None, hidden_size=128, num_layers=8, dropout=0.1, bidirectional=False, nonlinearity='tanh', embedding_dim=8):
         super(IndividualAutoEncoder, self).__init__()
 
         if input_size is None:
@@ -144,11 +147,13 @@ class IndividualAutoEncoder(nn.Module):
 
         self.input_size = input_size
 
-        input_size_encoder = input_size + len(VOCAB_REDUCED[FIRST_NONFUNCTIONAL_REDUCED_TOKEN_INDEX:len(VOCAB_REDUCED)])
+        input_size_encoder = embedding_dim + len(VOCAB_REDUCED[FIRST_NONFUNCTIONAL_REDUCED_TOKEN_INDEX:len(VOCAB_REDUCED)])
 
         self.d = 2 if bidirectional else 1
         self.num_layers = num_layers
         self.hidden_size = hidden_size
+
+        self.encoder_embedding = nn.Embedding(num_embeddings=input_size, embedding_dim=embedding_dim)
 
         self.encoder = EncoderHat(nn.RNN(input_size=input_size_encoder,
                                          hidden_size=hidden_size,
@@ -157,7 +162,7 @@ class IndividualAutoEncoder(nn.Module):
                                          bidirectional=bidirectional,
                                          batch_first=True,
                                          nonlinearity=nonlinearity,
-                                         device=device))
+                                         device=device), self.encoder_embedding)
 
         self.encoder_output_size = self.d * hidden_size
 
@@ -178,7 +183,7 @@ class IndividualAutoEncoder(nn.Module):
 
     def summary(self):
         longdash = '------------------------------------'
-        result = [longdash, "Individual Auto-Encoder", f"Input size: {self.input_size} (Encoder: {self.encoder.rnn.input_size})",
+        result = [longdash, "Individual Auto-Encoder", f"Vocabulary size: {self.input_size} (Embedding dimensions: {self.encoder_embedding.embedding_dim}, {self.encoder.rnn.input_size} including o/F indicators)",
                   f"Hidden size: {self.encoder.rnn.hidden_size}", f"Layers: {self.encoder.rnn.num_layers}",
                   f"Dropout: {self.encoder.rnn.dropout}", f"Bidirectional: {self.encoder.rnn.bidirectional}",
                   f"Number of parameters: (Learnable: {self.count_parameters()}, Fixed: {self.count_parameters(False)})",
@@ -190,7 +195,6 @@ class IndividualAutoEncoder(nn.Module):
         is_batch = len(x.shape) == 3
         batch_size = x.shape[0] if is_batch else None
 
-        vocab_length = self.encoder.rnn.input_size
         sequence_length = x.shape[1] if is_batch else x.shape[0]
 
         encoder_h_size = (self.d * self.num_layers, batch_size, self.encoder.rnn.hidden_size) if is_batch else (
@@ -318,7 +322,7 @@ def string_from_onehots(onehots, vocab=None, list_mode=False):
         raise ValueError(f"Too many dimensions ({len(onehots.shape)})")
 
     if len(onehots.shape) == 3:
-        return torch.cat([string_from_onehots(onehots[i, :], vocab) for i in range(onehots.shape[0])])
+        return [string_from_onehots(onehots[i, :], vocab) for i in range(onehots.shape[0])]
 
     if len(onehots.shape) != 2:
         raise ValueError(f"onehots is not 2-D, but {len(onehots.shape)}-D {onehots.shape}")
@@ -533,13 +537,13 @@ def train_autoencoder(model,
                       val_refresh_rate=0.,
                       val_seed=1337,
                       raw_criterion_weight=0.,
-                      raw_criterion_weight_inc=0.1,
+                      raw_criterion_weight_inc=0.05,
                       reduced_criterion_weight=1.,
                       reduced_criterion_weight_inc=0.,
                       regularization_coefficient=10.,
                       gradient_value_threshold=1.,
                       clipping_is_norm=True,
-                      gradient_norm_threshold=5.,
+                      gradient_norm_threshold=1.,
                       clipping_norm_type=2.):
     """
     :type model: nn.Module
@@ -725,7 +729,10 @@ def train_autoencoder(model,
                     loss = loss_criterion + loss_reg
 
                     if is_train:
-                        losses.append(loss)
+                        if torch.isfinite(loss):
+                            losses.append(loss)
+                        else:
+                            print(f"WARNING: a non-finite loss was encountered ({loss}). It will not be considered")
 
                         train_loss += loss.item()
                         train_raw_criterion += loss_raw_criterion.item()
@@ -797,7 +804,12 @@ def train_autoencoder(model,
                             end="", flush=True)
 
                 if is_train:
-                    torch.stack(losses).mean().backward()
+                    losses = torch.stack(losses)
+                    losses.mean().backward()
+
+                    # zero out NaN gradients
+                    for p in model.parameters():
+                        p.grad[torch.isnan(p.grad)] = 0
 
                     if clipping_is_norm:
                         grad_norm = nn.utils.clip_grad_norm_(model.parameters(),
@@ -847,7 +859,7 @@ def train_autoencoder(model,
         val_perfect_matches /= l_v
 
         print(
-            f"\rEpoch {epoch}: Loss/Criterion/Syntax/Valid/Accuracy/Perfects: (Train: {train_loss:.4f}/{train_total_criterion:.4f}({criterion_weights_raw:.2f}*{train_raw_criterion:.3f}+{criterion_weights_reduced:.2f}*{train_reduced_criterion:.3f})/{train_syntaxscore:.2%}/{train_valid:.2%}/{train_accuracy:.2%}/{train_perfect_matches:.2%}) (Val: {val_loss:.4f}/{val_total_criterion:.4f}({criterion_weights_raw:.2f}*{val_raw_criterion:.3f}+{criterion_weights_reduced:.2f}*{val_reduced_criterion:.3f})/{val_syntaxscore:.2%}/{val_valid:.2%}/{val_accuracy:.2%}/{val_perfect_matches:.2%}) (Total data: {train_set.total_datapoints}, {val_set.total_datapoints}) Took {misc.timeformat(time.time() - train_start)} ({misc.timeformat(val_start - train_start)}, {misc.timeformat(time.time() - val_start)})"
+            f"\rEpoch {epoch}: Loss/Criterion/Syntax/Valid/Accuracy/Perfects: (Train: {train_loss:.4f}/{train_total_criterion:.4f} ({criterion_weights_raw:.2f}*{train_raw_criterion:.3f}+{criterion_weights_reduced:.2f}*{train_reduced_criterion:.3f})/{train_syntaxscore:.2%}/{train_valid:.2%}/{train_accuracy:.2%}/{train_perfect_matches:.2%}) (Val: {val_loss:.4f}/{val_total_criterion:.4f} ({criterion_weights_raw:.2f}*{val_raw_criterion:.3f}+{criterion_weights_reduced:.2f}*{val_reduced_criterion:.3f})/{val_syntaxscore:.2%}/{val_valid:.2%}/{val_accuracy:.2%}/{val_perfect_matches:.2%}) (Total data: {train_set.total_datapoints}, {val_set.total_datapoints}) Took {misc.timeformat(time.time() - train_start)} ({misc.timeformat(val_start - train_start)}, {misc.timeformat(time.time() - val_start)})"
         )
 
         new_row = dict()
