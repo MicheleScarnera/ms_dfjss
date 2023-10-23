@@ -139,7 +139,7 @@ def new_decoder_token(dtype):
 
 
 class IndividualAutoEncoder(nn.Module):
-    def __init__(self, input_size=None, hidden_size=128, num_layers=8, dropout=0.1, bidirectional=False, nonlinearity='tanh', embedding_dim=8):
+    def __init__(self, input_size=None, hidden_size=512, num_layers=3, dropout=0.1, bidirectional=False, nonlinearity='tanh', embedding_dim=64):
         super(IndividualAutoEncoder, self).__init__()
 
         if input_size is None:
@@ -447,7 +447,7 @@ def syntax_score(x, aggregate_with_gmean=True):
 
 
 class AutoencoderDataset(data.Dataset):
-    def __init__(self, rng_seed=100, max_depth=8, size=5000, refresh_rate=0., refresh_is_random=False):
+    def __init__(self, rng_seed=100, max_depth=4, size=5000, refresh_rate=0., refresh_is_random=False):
         super().__init__()
 
         self.gen_algo = genetic.GeneticAlgorithm(rng_seed=rng_seed)
@@ -472,7 +472,7 @@ class AutoencoderDataset(data.Dataset):
         while len(self.individuals) < self.size:
             self.gen_algo.settings.tree_generation_max_depth = self.rng.choice(depths)
 
-            self.individuals.append(one_hot_sequence(repr(self.gen_algo.get_random_individual()) + "EOS"))
+            self.individuals.append(one_hot_sequence(repr(self.gen_algo.get_random_individual()) + "EOS").to(device))
 
             self.total_datapoints += 1
 
@@ -531,13 +531,13 @@ def train_autoencoder(model,
                       batch_size=16,
                       max_depth=8,
                       train_size=5000,
-                      train_refresh_rate=0.25,
+                      train_refresh_rate=0.5,
                       train_seed=100,
                       val_size=1000,
                       val_refresh_rate=0.,
                       val_seed=1337,
                       raw_criterion_weight=0.,
-                      raw_criterion_weight_inc=0.05,
+                      raw_criterion_weight_inc=0.01,
                       reduced_criterion_weight=1.,
                       reduced_criterion_weight_inc=0.,
                       regularization_coefficient=10.,
@@ -612,7 +612,7 @@ def train_autoencoder(model,
 
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, mode="max")
 
-    reduced_criterion_scale = np.log(len(VOCAB)) / np.log(len(VOCAB_REDUCED))
+    reduced_criterion_scale = 1. # np.log(len(VOCAB)) / np.log(len(VOCAB_REDUCED))
 
     for epoch in range(1, num_epochs + 1):
         # Training
