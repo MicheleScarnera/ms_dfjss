@@ -83,7 +83,7 @@ def plot_autoencoder_training(folder_name, dpi=400):
 
     ax_reduced.set_title("Reduced criterion")
 
-    plt.suptitle("Criterion")
+    plt.suptitle(f"Criterion ({folder_name})")
 
     fig.savefig(f"{folder_name}/criterion_plot", dpi=dpi)
 
@@ -135,7 +135,7 @@ def plot_autoencoder_training(folder_name, dpi=400):
 
     ax_perfects.set_title("Perfects")
 
-    plt.suptitle("[0,1] metrics")
+    plt.suptitle(f"[0,1] metrics ({folder_name})")
 
     fig.savefig(f"{folder_name}/zero_one_metrics_plot", dpi=dpi)
 
