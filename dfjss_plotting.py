@@ -52,7 +52,7 @@ def plot_autoencoder_training(folder_name, dpi=400):
     annotate_axis_with_value(ax_total, "Train_Total_Criterion")
 
     epoch_range = range(1, df["Epoch"][len(df) - 1] + 1)
-    ax_total.set_xticks(ticks=epoch_range, labels=[f"{epoch}, {misc.large_number_format(data_amount)}" for epoch, data_amount in zip(df["Epoch"], df["Train_TotalDatapoints"])])
+    ax_total.set_xticks(ticks=epoch_range, labels=[f"{epoch}\n{misc.large_number_format(data_amount)}" for epoch, data_amount in zip(df["Epoch"], df["Train_TotalDatapoints"])])
 
     ax_total.set_title("Total Criterion")
     ax_total.legend()
@@ -102,7 +102,7 @@ def plot_autoencoder_training(folder_name, dpi=400):
 
     epoch_range = range(1, df["Epoch"][len(df) - 1] + 1)
     ax_syntax.set_xticks(ticks=epoch_range,
-                        labels=[f"{epoch}, {misc.large_number_format(data_amount)}" for epoch, data_amount in
+                        labels=[f"{epoch}\n{misc.large_number_format(data_amount)}" for epoch, data_amount in
                                 zip(df["Epoch"], df["Train_TotalDatapoints"])])
 
     ax_syntax.set_title("Syntax Score")
