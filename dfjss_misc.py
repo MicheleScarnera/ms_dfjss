@@ -35,6 +35,19 @@ def constant_format(x):
     return f"{{{x}}}"
 
 
+def large_number_format(x):
+    log10 = np.log10(np.abs(x))
+
+    if log10 >= 9:
+        return f"{x / 1000000000:.1f}b"
+    elif log10 >= 6:
+        return f"{x / 1000000:.1f}m"
+    elif log10 >= 3:
+        return f"{x / 1000:.1f}k"
+    else:
+        return f"{x:.1f}"
+
+
 def timeformat(secs):
     if np.abs(secs) < 60.:
         return f"{secs:.2f}s"
