@@ -1,6 +1,6 @@
 import dfjss_nn
 
-use_transformer = True
+autoencoder_type = "FEEDFORWARD"
 
 dataset = dfjss_nn.AutoencoderDataset()
 
@@ -12,7 +12,14 @@ for datapoint in dataset:
     example = datapoint
     break
 
-autoencoder = dfjss_nn.IndividualTransformerAutoEncoder(max_length=dataset.max_length()) if use_transformer else dfjss_nn.IndividualRNNAutoEncoder()
+if autoencoder_type == "RNN":
+    autoencoder = dfjss_nn.IndividualRNNAutoEncoder()
+elif autoencoder_type == "TRANSFORMER":
+    autoencoder = dfjss_nn.IndividualTransformerAutoEncoder(max_length=dataset.max_length())
+elif autoencoder_type == "FEEDFORWARD":
+    autoencoder = dfjss_nn.IndividualFeedForwardAutoEncoder(sequence_length=dataset.max_length())
+else:
+    raise Exception("autoencoder_type unknown")
 
 autoencoder.eval()
 autoencoded = autoencoder(example).detach()
@@ -23,8 +30,9 @@ print(f"Output size: {autoencoded.size()}")
 print(autoencoder.summary())
 
 dfjss_nn.train_autoencoder(autoencoder,
-                           batch_size=32,
+                           batch_size=64,
+                           max_depth=dataset.max_depth,
                            num_epochs=200,
                            train_size=8192,
-                           val_size=1024,
+                           val_size=2048,
                            regularization_coefficient=10.)

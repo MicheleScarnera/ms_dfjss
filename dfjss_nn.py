@@ -299,6 +299,78 @@ class IndividualTransformerAutoEncoder(nn.Module):
         return "\n".join(result)
 
 
+class IndividualFeedForwardAutoEncoder(nn.Module):
+    def __init__(self, sequence_length, embedding_dim=32, hidden_size=768, encoding_size=512, dropout=0.1):
+        super(IndividualFeedForwardAutoEncoder, self).__init__()
+
+        self.embedding = nn.Embedding(num_embeddings=VOCAB_SIZE,
+                                      embedding_dim=embedding_dim,
+                                      device=device)
+
+        self.sequence_length = sequence_length
+        self.hidden_size = hidden_size
+        self.encoding_size = encoding_size
+        self.flat_in_size = sequence_length * embedding_dim
+        self.flat_out_size = sequence_length * VOCAB_SIZE
+
+        self.embed_to_flat_in = nn.Flatten(-2, -1)
+        self.flat_in_to_h_in = nn.Linear(in_features=self.flat_in_size, out_features=hidden_size, device=device)
+        self.h_in_activation = nn.PReLU()
+
+        self.h_in_to_encoder = nn.Linear(in_features=hidden_size, out_features=encoding_size, device=device)
+        self.encoder_activation = nn.Sigmoid()
+
+        self.encoder_dropout = nn.Dropout(p=dropout)
+
+        self.encoder_to_h_out = nn.Linear(in_features=encoding_size, out_features=hidden_size, device=device)
+        self.h_out_activation = nn.PReLU()
+        self.h_out_to_flat_out = nn.Linear(in_features=hidden_size, out_features=self.flat_out_size, device=device)
+        self.flat_out_activation = nn.PReLU()
+
+        self.flat_out_to_decode = nn.Unflatten(dim=-1, unflattened_size=(sequence_length, VOCAB_SIZE))
+        self.decode_activation = nn.LogSoftmax(dim=-1)
+
+    def auto_encoder(self, sequence):
+        return self.decoder(self.encoder(sequence))
+
+    def encoder(self, sequence):
+        if torch.is_floating_point(sequence):
+            indices = torch.argmax(sequence, dim=-1)
+        else:
+            indices = sequence
+
+        embed = self.embedding(indices)
+        flattened = self.embed_to_flat_in(embed)
+
+        h_in = self.h_in_activation(self.flat_in_to_h_in(flattened))
+
+        return self.encoder_dropout(self.encoder_activation(self.h_in_to_encoder(h_in)))
+
+    def decoder(self, encoding):
+        h_out = self.h_out_activation(self.encoder_to_h_out(encoding))
+        flat_out = self.flat_out_activation(self.h_out_to_flat_out(h_out))
+
+        return self.decode_activation(self.flat_out_to_decode(flat_out))
+
+    def forward(self, x):
+        return self.auto_encoder(x)
+
+    def count_parameters(self, learnable=True):
+        return sum(p.numel() for p in self.parameters() if p.requires_grad == learnable)
+
+    def summary(self):
+        longdash = '------------------------------------'
+        result = [longdash, "Individual Feed-Forward Auto-Encoder",
+                  f"Embedding size: {self.embedding.embedding_dim}",
+                  f"Max Length: {self.sequence_length}",
+                  f"Hidden Size: {self.hidden_size}", f"Encoding Size: {self.encoding_size}",
+                  f"Encoder Dropout: {self.encoder_dropout.p}",
+                  f"Number of parameters: (Learnable: {self.count_parameters()}, Fixed: {self.count_parameters(False)})",
+                  longdash]
+
+        return "\n".join(result)
+
+
 def generate_individuals_file(total_amount=20000, max_depth=8, rng_seed=100):
     gen_algo = genetic.GeneticAlgorithm(rng_seed=rng_seed)
     gen_algo.settings.features = INDIVIDUALS_FEATURES
@@ -572,6 +644,7 @@ class AutoencoderDataset(data.Dataset):
         self.gen_algo.settings.tree_generation_fill = fill_trees
 
         self.max_depth = max_depth
+        self.fill_trees = fill_trees
         self.size = size
         self.refresh_rate = refresh_rate
         self.refresh_is_random = refresh_is_random
@@ -593,10 +666,19 @@ class AutoencoderDataset(data.Dataset):
         while len(self.individuals) < self.size:
             self.gen_algo.settings.tree_generation_max_depth = self.rng.choice(depths)
 
-            representation = repr(self.gen_algo.get_random_individual()) + "EOS"
+            individual = None
+            while individual is None or individual.depth() != self.max_depth:
+                individual = self.gen_algo.get_random_individual()
+
+                if self.fill_trees:
+                    individual.fill(depth_target=self.max_depth)
+
+                representation = repr(individual) + "EOS"
+
+            del individual
 
             self.individuals.append(sparse_sequence(representation).to(device) if self.sparse else (
-                one_hot_sequence(representation).to(device)))
+                one_hot_sequence(representation).to(device, torch.float32)))
 
             self.total_datapoints += 1
 
@@ -660,7 +742,7 @@ def train_autoencoder(model,
                       val_size=1000,
                       val_refresh_rate=0.,
                       val_seed=1337,
-                      raw_criterion_weight=0.,
+                      raw_criterion_weight=0.25,
                       raw_criterion_weight_inc=0.1,
                       reduced_criterion_weight=1.,
                       reduced_criterion_weight_inc=0.,
@@ -690,12 +772,20 @@ def train_autoencoder(model,
     :return:
     """
 
-    if type(model) == IndividualRNNAutoEncoder:
+    model_type = type(model)
+
+    if model_type == IndividualRNNAutoEncoder:
         autoencoder_type = "RNN"
-    elif type(model) == IndividualTransformerAutoEncoder:
+    elif model_type == IndividualTransformerAutoEncoder:
         autoencoder_type = "TRANSFORMER"
+    elif model_type == IndividualFeedForwardAutoEncoder:
+        autoencoder_type = "FEEDFORWARD"
     else:
-        raise TypeError(f"Unknown autoencoder type ({type(model)})")
+        raise TypeError(f"Unknown autoencoder type ({model_type})")
+
+    implied_length = pf.max_length_given_depth(max_depth) + 1
+    if autoencoder_type == "FEEDFORWARD" and model.sequence_length != implied_length:
+        raise ValueError(f"The feed-forward network needs individuals whose length is exactly {model.sequence_length}, but the max_depth ({max_depth}) parameter implies a length of {implied_length}.")
 
     folder_name = datetime.datetime.now().strftime(f'AUTOENCODER {autoencoder_type} %Y-%m-%d %H-%M-%S')
 

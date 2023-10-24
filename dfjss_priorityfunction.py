@@ -188,19 +188,19 @@ class PriorityFunctionBranch:
 
         return tally
 
-    def depth(self):
+    def depth(self, min_mode=False):
         # Counts the depth of sub-branches (a branch with no further branches has depth 1).
         if isinstance(self.left_feature, PriorityFunctionBranch):
-            left_depth = self.left_feature.depth()
+            left_depth = self.left_feature.depth(min_mode=min_mode)
         else:
             left_depth = 0
 
         if isinstance(self.right_feature, PriorityFunctionBranch):
-            right_depth = self.right_feature.depth()
+            right_depth = self.right_feature.depth(min_mode=min_mode)
         else:
             right_depth = 0
 
-        return 1 + max(left_depth, right_depth)
+        return 1 + min(left_depth, right_depth) if min_mode else 1 + max(left_depth, right_depth)
 
     def fill(self, depth_target=None):
         if depth_target is None:
@@ -209,13 +209,13 @@ class PriorityFunctionBranch:
         if not isinstance(self.left_feature, PriorityFunctionBranch):
             self.left_feature = PriorityFunctionBranch(self.left_feature, "+", 0.)
 
-        if self.left_feature.depth() < depth_target - 1:
+        if self.left_feature.depth(min_mode=True) < depth_target - 1:
             self.left_feature.fill(depth_target=depth_target - 1)
 
         if not isinstance(self.right_feature, PriorityFunctionBranch):
             self.right_feature = PriorityFunctionBranch(self.right_feature, "+", 0.)
 
-        if self.right_feature.depth() < depth_target - 1:
+        if self.right_feature.depth(min_mode=True) < depth_target - 1:
             self.right_feature.fill(depth_target=depth_target - 1)
 
     def depth_of(self, inner_branch, current_depth=1):
@@ -391,6 +391,9 @@ class PriorityFunctionTree:
             features=self.features,
             operations=self.operations)
 
+
+def max_length_given_depth(depth):
+    return 2 ** (depth + 2) - 3
 
 def assert_features_and_operations_validity(features, operations):
     for c in FORBIDDEN_CHARACTERS:
