@@ -71,7 +71,7 @@ VOCAB_REDUCTION_MATRIX[4, VOCAB_OPERATIONS_LOCATION[0]:VOCAB_OPERATIONS_LOCATION
 VOCAB_REDUCTION_MATRIX[5, VOCAB_FEATURES_LOCATION[0]:VOCAB_FEATURES_LOCATION[1]] = 1.
 
 
-class EncoderHat(nn.Module):
+class RNNEncoderHat(nn.Module):
     module: nn.Module
 
     def __init__(self, rnn, embedding):
@@ -95,7 +95,7 @@ class EncoderHat(nn.Module):
         return rnn_out[0], rnn_out[1]
 
 
-class DecoderHat(nn.Module):
+class RNNDecoderHat(nn.Module):
     rnn: nn.RNN
 
     def __init__(self, rnn, actual_input_size):
@@ -103,7 +103,7 @@ class DecoderHat(nn.Module):
         self.rnn = rnn
         self.actual_input_size = actual_input_size
         self.proj = nn.Linear(in_features=rnn.hidden_size, out_features=actual_input_size, bias=False)
-        self.layer_norm = nn.LayerNorm(rnn.hidden_size)
+        # self.layer_norm = nn.LayerNorm(rnn.hidden_size)
 
     def forward(self, x, h, reverse_input_h=True):
         if reverse_input_h:
@@ -116,12 +116,12 @@ class DecoderHat(nn.Module):
         # return self.proj(rnn_out[0]), rnn_out[1]
 
         if len(x.shape) == 2:
-            decoder_y = self.layer_norm(rnn_out[0])
+            decoder_y = rnn_out[0]  # self.layer_norm(rnn_out[0])
             output = nn.functional.log_softmax(self.proj(decoder_y), dim=1)
 
             return decoder_y, rnn_out[1], output
         elif len(x.shape) == 3:
-            decoder_y = self.layer_norm(rnn_out[0])
+            decoder_y = rnn_out[0]  # self.layer_norm(rnn_out[0])
             output = nn.functional.log_softmax(self.proj(decoder_y), dim=2)
 
             return decoder_y, rnn_out[1], output
@@ -129,25 +129,24 @@ class DecoderHat(nn.Module):
             raise ValueError(f"Expected either 2-D or 3-D, got {len(x.shape)}-D")
 
 
-first_decoder_token = np.full(shape=VOCAB_SIZE, fill_value=0)
-first_decoder_token[VOCAB.index("(")] = 1
-first_decoder_token = first_decoder_token  # / np.sum(first_decoder_token)
+def new_first_decoder_token(confidence=1, dtype=torch.float32):
+    result = np.full(shape=VOCAB_SIZE, fill_value=0)
+    result[VOCAB.index("(")] = confidence
+    return torch.tensor(result, dtype=dtype)
 
 
-def new_decoder_token(dtype):
-    return torch.tensor(first_decoder_token, dtype=dtype).unsqueeze_(0)
-
-
-class IndividualAutoEncoder(nn.Module):
-    def __init__(self, input_size=None, hidden_size=512, num_layers=3, dropout=0.1, bidirectional=False, nonlinearity='tanh', embedding_dim=64):
-        super(IndividualAutoEncoder, self).__init__()
+class IndividualRNNAutoEncoder(nn.Module):
+    def __init__(self, input_size=None, hidden_size=512, num_layers=3, dropout=0.1, bidirectional=False,
+                 nonlinearity='tanh', embedding_dim=64):
+        super(IndividualRNNAutoEncoder, self).__init__()
 
         if input_size is None:
             input_size = len(VOCAB)
 
         self.input_size = input_size
 
-        input_size_encoder = embedding_dim + len(VOCAB_REDUCED[FIRST_NONFUNCTIONAL_REDUCED_TOKEN_INDEX:len(VOCAB_REDUCED)])
+        input_size_encoder = embedding_dim + len(
+            VOCAB_REDUCED[FIRST_NONFUNCTIONAL_REDUCED_TOKEN_INDEX:len(VOCAB_REDUCED)])
 
         self.d = 2 if bidirectional else 1
         self.num_layers = num_layers
@@ -155,25 +154,25 @@ class IndividualAutoEncoder(nn.Module):
 
         self.encoder_embedding = nn.Embedding(num_embeddings=input_size, embedding_dim=embedding_dim)
 
-        self.encoder = EncoderHat(nn.RNN(input_size=input_size_encoder,
-                                         hidden_size=hidden_size,
-                                         num_layers=num_layers,
-                                         dropout=dropout,
-                                         bidirectional=bidirectional,
-                                         batch_first=True,
-                                         nonlinearity=nonlinearity,
-                                         device=device), self.encoder_embedding)
+        self.encoder = RNNEncoderHat(nn.RNN(input_size=input_size_encoder,
+                                            hidden_size=hidden_size,
+                                            num_layers=num_layers,
+                                            dropout=dropout,
+                                            bidirectional=bidirectional,
+                                            batch_first=True,
+                                            nonlinearity=nonlinearity,
+                                            device=device), self.encoder_embedding)
 
         self.encoder_output_size = self.d * hidden_size
 
-        self.decoder = DecoderHat(nn.RNN(input_size=hidden_size,
-                                         hidden_size=hidden_size,
-                                         num_layers=num_layers,
-                                         dropout=dropout,
-                                         bidirectional=False,
-                                         batch_first=False,
-                                         nonlinearity=nonlinearity,
-                                         device=device), input_size)
+        self.decoder = RNNDecoderHat(nn.RNN(input_size=hidden_size,
+                                            hidden_size=hidden_size,
+                                            num_layers=num_layers,
+                                            dropout=dropout,
+                                            bidirectional=False,
+                                            batch_first=False,
+                                            nonlinearity=nonlinearity,
+                                            device=device), input_size)
 
         # for p in self.parameters():
         #     p.register_hook(lambda grad: torch.clamp(grad, -gradient_clip_value, gradient_clip_value))
@@ -183,7 +182,8 @@ class IndividualAutoEncoder(nn.Module):
 
     def summary(self):
         longdash = '------------------------------------'
-        result = [longdash, "Individual Auto-Encoder", f"Vocabulary size: {self.input_size} (Embedding dimensions: {self.encoder_embedding.embedding_dim}, {self.encoder.rnn.input_size} including o/F indicators)",
+        result = [longdash, "Individual RNN Auto-Encoder",
+                  f"Vocabulary size: {self.input_size} (Embedding dimensions: {self.encoder_embedding.embedding_dim}, {self.encoder.rnn.input_size} including o/F indicators)",
                   f"Hidden size: {self.encoder.rnn.hidden_size}", f"Layers: {self.encoder.rnn.num_layers}",
                   f"Dropout: {self.encoder.rnn.dropout}", f"Bidirectional: {self.encoder.rnn.bidirectional}",
                   f"Number of parameters: (Learnable: {self.count_parameters()}, Fixed: {self.count_parameters(False)})",
@@ -218,6 +218,85 @@ class IndividualAutoEncoder(nn.Module):
             decodes.append(d)
 
         return torch.transpose(torch.cat(decodes, dim=0), 0, 1) if is_batch else torch.cat(decodes, dim=0)
+
+
+class IndividualTransformerAutoEncoder(nn.Module):
+    def __init__(self, nhead=9, num_encoder_layers=2, num_decoder_layers=2, dim_feedforward=512,
+                 dropout=0.1, max_length=34):
+        super(IndividualTransformerAutoEncoder, self).__init__()
+
+        # self.embedding = nn.Embedding(VOCAB_SIZE, d_model)
+
+        self.transformer = nn.Transformer(d_model=VOCAB_SIZE,
+                                          nhead=nhead,
+                                          num_encoder_layers=num_encoder_layers,
+                                          num_decoder_layers=num_decoder_layers,
+                                          dim_feedforward=dim_feedforward,
+                                          dropout=dropout,
+                                          batch_first=True,
+                                          device=device)
+
+        self.dropout = dropout
+        self.max_length = max_length
+
+    def auto_encode(self, sequence):
+        # embedded = self.embedding(index_sequence)
+        return nn.functional.log_softmax(self.transformer(sequence, sequence), dim=-1)
+
+    def encode(self, sequence):
+        return self.transformer.encoder(sequence)
+
+    def decode(self, encoded, target):
+        return nn.functional.log_softmax(self.transformer(target, encoded), dim=-1)
+
+    def blind_decode(self, encoded):
+        if encoded.dim() == 3:
+            return [self.blind_decode(e) for e in encoded]
+
+        # Initialize the generated sequence with the start token
+        generated_sequence_sparse = [VOCAB.index("(")]
+        generated_sequence = [nn.functional.log_softmax(new_first_decoder_token(8), dim=0)]
+        end_token = VOCAB.index("EOS")
+
+        with torch.no_grad():
+            for _ in range(self.max_length - 1):
+                current_decode = torch.stack(generated_sequence, dim=0).to(device)
+
+                output = self.transformer.decoder(current_decode, encoded)
+
+                generated_sequence.append(nn.functional.log_softmax(output[-1, :], dim=-1))
+
+                predicted_token_sparse = output[-1, :].argmax().item()
+                generated_sequence_sparse.append(predicted_token_sparse)
+
+                # If the end token is predicted, stop decoding
+                if predicted_token_sparse == end_token:
+                    break
+
+        result_decode = torch.stack(generated_sequence, dim=0).to(device)
+
+        return result_decode, torch.tensor(generated_sequence_sparse)
+
+    def blind_auto_encode(self, sequence):
+        return self.blind_decode(self.encode(sequence))
+
+    def forward(self, x):
+        return self.auto_encode(x)
+
+    def count_parameters(self, learnable=True):
+        return sum(p.numel() for p in self.parameters() if p.requires_grad == learnable)
+
+    def summary(self):
+        longdash = '------------------------------------'
+        result = [longdash, "Individual Transformer Auto-Encoder",
+                  f"Vocabulary size: {self.transformer.d_model}",
+                  f"Max Length: {self.max_length}",
+                  f"Heads: {self.transformer.nhead}", f"Layers: {self.transformer.encoder.num_layers} (Encoder), {self.transformer.decoder.num_layers} (Decoder)",
+                  f"Dropout: {self.dropout}",
+                  f"Number of parameters: (Learnable: {self.count_parameters()}, Fixed: {self.count_parameters(False)})",
+                  longdash]
+
+        return "\n".join(result)
 
 
 def generate_individuals_file(total_amount=20000, max_depth=8, rng_seed=100):
@@ -258,6 +337,10 @@ def one_hot_sequence(individual, vocab=None):
     return torch.stack([token_to_one_hot(s, vocab=vocab) for s in tokenize_with_vocab(individual, vocab=vocab)])
 
 
+def sparse_sequence(individual, vocab=None):
+    return torch.stack([token_to_sparse(s, vocab=vocab) for s in tokenize_with_vocab(individual, vocab=vocab)])
+
+
 def reduce_sequence(sequence, input_is_logs=False):
     if len(sequence.shape) == 3:
         return torch.stack([reduce_sequence(x_) for x_ in sequence], dim=0)
@@ -287,6 +370,19 @@ def token_to_one_hot(s, vocab=None):
     else:
         return token_to_one_hot("NULL")
     return one_hot
+
+
+def token_to_sparse(s, vocab=None):
+    if vocab is None:
+        vocab = VOCAB
+
+    # Convert a token to a one-hot tensor
+    one_hot = torch.zeros(len(vocab))
+    if s in vocab:
+        index = vocab.index(s)
+    else:
+        index = vocab.index("NULL")
+    return torch.tensor(index)
 
 
 def tokenize_with_vocab(input_string, vocab=None):
@@ -336,6 +432,26 @@ def string_from_onehots(onehots, vocab=None, list_mode=False):
             result.append(vocab[torch.argmax(onehot).item()])
         else:
             result += vocab[torch.argmax(onehot).item()]
+
+    return result
+
+
+def string_from_sparse(sparses, vocab=None, list_mode=False):
+    if len(sparses.shape) > 2:
+        raise ValueError(f"Too many dimensions ({len(sparses.shape)})")
+
+    if len(sparses.shape) == 2:
+        return [string_from_onehots(sparses[i, :], vocab) for i in range(sparses.shape[0])]
+
+    if vocab is None:
+        vocab = VOCAB
+
+    result = [] if list_mode else ""
+    for index in sparses:
+        if list_mode:
+            result.append(vocab[index])
+        else:
+            result += vocab[index]
 
     return result
 
@@ -447,17 +563,19 @@ def syntax_score(x, aggregate_with_gmean=True):
 
 
 class AutoencoderDataset(data.Dataset):
-    def __init__(self, rng_seed=100, max_depth=4, size=5000, refresh_rate=0., refresh_is_random=False):
+    def __init__(self, rng_seed=100, max_depth=4, size=5000, refresh_rate=0., fill_trees=True, sparse=False, refresh_is_random=False):
         super().__init__()
 
         self.gen_algo = genetic.GeneticAlgorithm(rng_seed=rng_seed)
         self.gen_algo.settings.features = INDIVIDUALS_FEATURES
         self.gen_algo.settings.tree_generation_max_depth = max_depth
+        self.gen_algo.settings.tree_generation_fill = fill_trees
 
         self.max_depth = max_depth
         self.size = size
         self.refresh_rate = refresh_rate
         self.refresh_is_random = refresh_is_random
+        self.sparse = sparse
 
         self.individuals = []
         self.times_refreshed = 0
@@ -467,12 +585,18 @@ class AutoencoderDataset(data.Dataset):
 
         self.fill_individuals()
 
+    def max_length(self):
+        return 2 ** (self.max_depth + 2) - 2  # without EOS, it would be 2 ** (self.max_depth + 2) - 3
+
     def fill_individuals(self):
         depths = [d for d in range(2, self.max_depth + 1)]
         while len(self.individuals) < self.size:
             self.gen_algo.settings.tree_generation_max_depth = self.rng.choice(depths)
 
-            self.individuals.append(one_hot_sequence(repr(self.gen_algo.get_random_individual()) + "EOS").to(device))
+            representation = repr(self.gen_algo.get_random_individual()) + "EOS"
+
+            self.individuals.append(sparse_sequence(representation).to(device) if self.sparse else (
+                one_hot_sequence(representation).to(device)))
 
             self.total_datapoints += 1
 
@@ -531,13 +655,13 @@ def train_autoencoder(model,
                       batch_size=16,
                       max_depth=8,
                       train_size=5000,
-                      train_refresh_rate=0.5,
+                      train_refresh_rate=1.,
                       train_seed=100,
                       val_size=1000,
                       val_refresh_rate=0.,
                       val_seed=1337,
                       raw_criterion_weight=0.,
-                      raw_criterion_weight_inc=0.01,
+                      raw_criterion_weight_inc=0.1,
                       reduced_criterion_weight=1.,
                       reduced_criterion_weight_inc=0.,
                       regularization_coefficient=10.,
@@ -565,7 +689,15 @@ def train_autoencoder(model,
     :param clipping_norm_type:
     :return:
     """
-    folder_name = datetime.datetime.now().strftime('AUTOENCODER %Y-%m-%d %H-%M-%S')
+
+    if type(model) == IndividualRNNAutoEncoder:
+        autoencoder_type = "RNN"
+    elif type(model) == IndividualTransformerAutoEncoder:
+        autoencoder_type = "TRANSFORMER"
+    else:
+        raise TypeError(f"Unknown autoencoder type ({type(model)})")
+
+    folder_name = datetime.datetime.now().strftime(f'AUTOENCODER {autoencoder_type} %Y-%m-%d %H-%M-%S')
 
     if not os.path.exists(folder_name):
         os.makedirs(folder_name)
@@ -575,10 +707,15 @@ def train_autoencoder(model,
     df_cols = ["Epoch", "Criterion_Weight_Raw", "Criterion_Weight_Reduced"]
 
     for tv in ("Train", "Val"):
-        for q in ("TotalDatapoints", "Loss", "Total_Criterion", "Raw_Criterion", "Reduced_Criterion", "SyntaxScore", "Valid", "Accuracy", "Perfects"):
+        for q in (
+        "TotalDatapoints", "Loss", "Total_Criterion", "Raw_Criterion", "Reduced_Criterion", "SyntaxScore", "Valid",
+        "Accuracy", "Perfects"):
             df_cols.append(f"{tv}_{q}")
 
     df_cols.extend(("Example", "AutoencodedExample"))
+
+    if autoencoder_type == "TRANSFORMER":
+        df_cols.append("BlindAutoencodedExample")
 
     df = pd.DataFrame(columns=df_cols)
 
@@ -612,7 +749,7 @@ def train_autoencoder(model,
 
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, mode="max")
 
-    reduced_criterion_scale = 1. # np.log(len(VOCAB)) / np.log(len(VOCAB_REDUCED))
+    reduced_criterion_scale = 1.  # np.log(len(VOCAB)) / np.log(len(VOCAB_REDUCED))
 
     for epoch in range(1, num_epochs + 1):
         # Training
@@ -645,6 +782,7 @@ def train_autoencoder(model,
 
         val_example = ""
         val_autoencoded = ""
+        val_blind_autoencoded = ""
 
         val_start = None
         val_progress = 0
@@ -719,8 +857,12 @@ def train_autoencoder(model,
                             val_example = string_from_onehots(true_sequence)
                             val_autoencoded = string_from_onehots(output)
 
+                            if autoencoder_type == "TRANSFORMER":
+                                val_blind_autoencoded = string_from_sparse(model.blind_auto_encode(true_sequence)[1])
+
                     loss_raw_criterion = criterion(output, true_sequence_sparse)
-                    loss_reduced_criterion = reduced_criterion_scale * criterion(output_reduced, true_sequence_reduced_sparse)
+                    loss_reduced_criterion = reduced_criterion_scale * criterion(output_reduced,
+                                                                                 true_sequence_reduced_sparse)
 
                     loss_criterion = criterion_weights_raw * loss_raw_criterion + loss_reduced_criterion * criterion_weights_reduced
 

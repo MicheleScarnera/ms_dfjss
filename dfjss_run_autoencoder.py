@@ -1,5 +1,7 @@
 import dfjss_nn
 
+use_transformer = True
+
 dataset = dfjss_nn.AutoencoderDataset()
 
 for datapoint in dataset:
@@ -10,7 +12,7 @@ for datapoint in dataset:
     example = datapoint
     break
 
-autoencoder = dfjss_nn.IndividualAutoEncoder()
+autoencoder = dfjss_nn.IndividualTransformerAutoEncoder(max_length=dataset.max_length()) if use_transformer else dfjss_nn.IndividualRNNAutoEncoder()
 
 autoencoder.eval()
 autoencoded = autoencoder(example).detach()
@@ -21,7 +23,7 @@ print(f"Output size: {autoencoded.size()}")
 print(autoencoder.summary())
 
 dfjss_nn.train_autoencoder(autoencoder,
-                           batch_size=256,
+                           batch_size=32,
                            num_epochs=200,
                            train_size=8192,
                            val_size=1024,

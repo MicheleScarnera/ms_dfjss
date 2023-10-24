@@ -66,6 +66,8 @@ class GeneticAlgorithmSettings:
         self.tree_generation_max_depth = 2
         self.tree_generation_mode = "half_and_half"
 
+        self.tree_generation_fill = False
+
         self.tree_transformation_max_depth = 8
 
         self.priority_function_random_number_range = (-15, 15)
@@ -251,8 +253,13 @@ class GeneticAlgorithm:
         else:
             gen = self.settings.tree_generation_mode
 
-        return pf.PriorityFunctionTree(features=self.settings.features,
+        tree = pf.PriorityFunctionTree(features=self.settings.features,
                                        root_branch=self.get_random_branch(generation_mode=gen))
+
+        if self.settings.tree_generation_fill:
+            tree.fill(depth_target=self.settings.tree_generation_max_depth)
+
+        return tree
 
     def combine_individuals(self, individual_1, individual_2, verbose=0):
         repr_1 = repr(individual_1)

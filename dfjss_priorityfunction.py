@@ -202,6 +202,22 @@ class PriorityFunctionBranch:
 
         return 1 + max(left_depth, right_depth)
 
+    def fill(self, depth_target=None):
+        if depth_target is None:
+            depth_target = self.depth()
+
+        if not isinstance(self.left_feature, PriorityFunctionBranch):
+            self.left_feature = PriorityFunctionBranch(self.left_feature, "+", 0.)
+
+        if self.left_feature.depth() < depth_target - 1:
+            self.left_feature.fill(depth_target=depth_target - 1)
+
+        if not isinstance(self.right_feature, PriorityFunctionBranch):
+            self.right_feature = PriorityFunctionBranch(self.right_feature, "+", 0.)
+
+        if self.right_feature.depth() < depth_target - 1:
+            self.right_feature.fill(depth_target=depth_target - 1)
+
     def depth_of(self, inner_branch, current_depth=1):
         """
         Returns the depth at which the specified inner_branch is located.
@@ -365,6 +381,9 @@ class PriorityFunctionTree:
 
     def run(self, features):
         return self.root_branch.run(self.operations, features)
+
+    def fill(self, depth_target=None):
+        self.root_branch.fill(depth_target=depth_target)
 
     def get_copy(self):
         return representation_to_priority_function_tree(
@@ -691,3 +710,8 @@ ut_actual_result = ut_priority_function.run(ut_features_values)
 
 assert ut_actual_result == ut_true_result, \
     f"Unit Test failed: evaluating the reference priority function with some reference values should have yielded {ut_true_result} as a result, but yielded {ut_actual_result} instead"
+
+ut_priority_function.fill()
+ut_actual_result = ut_priority_function.run(ut_features_values)
+assert ut_actual_result == ut_true_result, \
+f"Unit Test failed: after filling the tree, evaluating the reference priority function with some reference values should have yielded {ut_true_result} as a result, but yielded {ut_actual_result} instead"
