@@ -638,7 +638,7 @@ def syntax_score(x, aggregate_with_gmean=True):
 
 
 class AutoencoderDataset(data.Dataset):
-    def __init__(self, rng_seed=100, max_depth=4, size=5000, refresh_rate=0., fill_trees=True, sparse=False,
+    def __init__(self, rng_seed=100, max_depth=4, size=5000, refresh_rate=0., fill_trees=True, flatten_trees=True, sparse=False,
                  refresh_is_random=False):
         super().__init__()
 
@@ -649,6 +649,7 @@ class AutoencoderDataset(data.Dataset):
 
         self.max_depth = max_depth
         self.fill_trees = fill_trees
+        self.flatten_trees = flatten_trees
         self.size = size
         self.refresh_rate = refresh_rate
         self.refresh_is_random = refresh_is_random
@@ -663,7 +664,10 @@ class AutoencoderDataset(data.Dataset):
         self.fill_individuals()
 
     def max_length(self):
-        return 2 ** (self.max_depth + 2) - 2  # without EOS, it would be 2 ** (self.max_depth + 2) - 3
+        if self.flatten_trees:
+            return 2 ** (self.max_depth + 1) - 1 + 1  # no. of parentheses: 2 ** (self.max_depth + 1) - 2. +1 is EOS
+        else:
+            return 2 ** (self.max_depth + 2) - 2  # without EOS, it would be 2 ** (self.max_depth + 2) - 3
 
     def random_full_individual(self):
         tree = pf.representation_to_priority_function_tree("({0.0}+{0.0})")
@@ -694,7 +698,10 @@ class AutoencoderDataset(data.Dataset):
                 else:
                     individual = self.gen_algo.get_random_individual()
 
-                representation = repr(individual) + "EOS"
+                if self.flatten_trees:
+                    representation = "".join(individual.flatten()) + "EOS"
+                else:
+                    representation = repr(individual) + "EOS"
 
             del individual
 
@@ -807,11 +814,6 @@ def train_autoencoder(model,
     else:
         raise TypeError(f"Unknown autoencoder type ({model_type})")
 
-    implied_length = pf.max_length_given_depth(max_depth) + 1
-    if autoencoder_type == "FEEDFORWARD" and model.sequence_length != implied_length:
-        raise ValueError(
-            f"The feed-forward network needs individuals whose length is exactly {model.sequence_length}, but the max_depth ({max_depth}) parameter implies a length of {implied_length}.")
-
     folder_name = datetime.datetime.now().strftime(f'AUTOENCODER {autoencoder_type} %Y-%m-%d %H-%M-%S')
 
     if not os.path.exists(folder_name):
@@ -848,6 +850,11 @@ def train_autoencoder(model,
                                  size=val_size,
                                  refresh_rate=val_refresh_rate,
                                  rng_seed=val_seed)
+
+    implied_length = train_set.max_length()
+    if autoencoder_type == "FEEDFORWARD" and model.sequence_length != implied_length:
+        raise ValueError(
+            f"The feed-forward network needs individuals whose length is exactly {model.sequence_length}, but the max_depth ({max_depth}) parameter implies a length of {implied_length}.")
 
     train_loader = data.DataLoader(
         train_set,

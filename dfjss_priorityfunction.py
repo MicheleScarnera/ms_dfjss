@@ -392,8 +392,12 @@ class PriorityFunctionTree:
             operations=self.operations)
 
 
-def max_length_given_depth(depth):
-    return 2 ** (depth + 2) - 3
+def max_length_given_depth(depth, flat):
+    if flat:
+        return 2 ** (depth + 1) - 1
+    else:
+        return 2 ** (depth + 2) - 3
+
 
 def assert_features_and_operations_validity(features, operations):
     for c in FORBIDDEN_CHARACTERS:

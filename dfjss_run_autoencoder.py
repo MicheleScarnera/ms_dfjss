@@ -21,13 +21,14 @@ elif autoencoder_type == "FEEDFORWARD":
 else:
     raise Exception("autoencoder_type unknown")
 
-autoencoder.eval()
-autoencoded = autoencoder(example).detach()
-print(f"Autoencoded (Untrained): {dfjss_nn.string_from_onehots(autoencoded)}")
-#print(autoencoded)
-print(f"Output size: {autoencoded.size()}")
-
-print(autoencoder.summary())
+try:
+    autoencoder.eval()
+    autoencoded = autoencoder(example).detach()
+    print(f"Autoencoded (Untrained): {dfjss_nn.string_from_onehots(autoencoded)}")
+    #print(autoencoded)
+    print(f"Output size: {autoencoded.size()}")
+finally:
+    print(autoencoder.summary())
 
 dfjss_nn.train_autoencoder(autoencoder,
                            batch_size=64,
