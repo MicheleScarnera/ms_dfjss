@@ -33,6 +33,6 @@ dfjss_nn.train_autoencoder(autoencoder,
                            batch_size=64,
                            max_depth=dataset.max_depth,
                            num_epochs=200,
-                           train_size=8192,
+                           train_size=4096,
                            val_size=2048,
                            regularization_coefficient=10.)

@@ -46,6 +46,8 @@ gp_settings = genetic.GeneticAlgorithmSettings()
 OPERATIONS = ["+", "-", "*", "/", "<", ">"]
 CONSTANTS = [misc.constant_format(num) for num in gp_settings.random_numbers_set()]
 
+FEATURES_AND_CONSTANTS = INDIVIDUALS_FEATURES + CONSTANTS
+
 VOCAB = ["NULL", "EOS", "(", ")"]  # , *OPERATIONS, *INDIVIDUALS_FEATURES, *CONSTANTS
 VOCAB_REDUCED = VOCAB.copy()
 
@@ -291,7 +293,8 @@ class IndividualTransformerAutoEncoder(nn.Module):
         result = [longdash, "Individual Transformer Auto-Encoder",
                   f"Vocabulary size: {self.transformer.d_model}",
                   f"Max Length: {self.max_length}",
-                  f"Heads: {self.transformer.nhead}", f"Layers: {self.transformer.encoder.num_layers} (Encoder), {self.transformer.decoder.num_layers} (Decoder)",
+                  f"Heads: {self.transformer.nhead}",
+                  f"Layers: {self.transformer.encoder.num_layers} (Encoder), {self.transformer.decoder.num_layers} (Decoder)",
                   f"Dropout: {self.dropout}",
                   f"Number of parameters: (Learnable: {self.count_parameters()}, Fixed: {self.count_parameters(False)})",
                   longdash]
@@ -300,7 +303,7 @@ class IndividualTransformerAutoEncoder(nn.Module):
 
 
 class IndividualFeedForwardAutoEncoder(nn.Module):
-    def __init__(self, sequence_length, embedding_dim=32, hidden_size=768, encoding_size=512, dropout=0.1):
+    def __init__(self, sequence_length, embedding_dim=48, hidden_size=1536, encoding_size=768, dropout=0.1):
         super(IndividualFeedForwardAutoEncoder, self).__init__()
 
         self.embedding = nn.Embedding(num_embeddings=VOCAB_SIZE,
@@ -635,7 +638,8 @@ def syntax_score(x, aggregate_with_gmean=True):
 
 
 class AutoencoderDataset(data.Dataset):
-    def __init__(self, rng_seed=100, max_depth=4, size=5000, refresh_rate=0., fill_trees=True, sparse=False, refresh_is_random=False):
+    def __init__(self, rng_seed=100, max_depth=4, size=5000, refresh_rate=0., fill_trees=True, sparse=False,
+                 refresh_is_random=False):
         super().__init__()
 
         self.gen_algo = genetic.GeneticAlgorithm(rng_seed=rng_seed)
@@ -661,6 +665,23 @@ class AutoencoderDataset(data.Dataset):
     def max_length(self):
         return 2 ** (self.max_depth + 2) - 2  # without EOS, it would be 2 ** (self.max_depth + 2) - 3
 
+    def random_full_individual(self):
+        tree = pf.representation_to_priority_function_tree("({0.0}+{0.0})")
+
+        tree.fill(self.max_depth)
+
+        flat = tree.flatten()
+
+        for i, f in enumerate(flat):
+            if f in OPERATIONS:
+                flat[i] = self.rng.choice(a=OPERATIONS)
+            elif f in FEATURES_AND_CONSTANTS or misc.is_number(f):
+                flat[i] = self.rng.choice(a=FEATURES_AND_CONSTANTS)
+
+        tree.set_from_flattened(flat)
+
+        return tree
+
     def fill_individuals(self):
         depths = [d for d in range(2, self.max_depth + 1)]
         while len(self.individuals) < self.size:
@@ -668,10 +689,10 @@ class AutoencoderDataset(data.Dataset):
 
             individual = None
             while individual is None or individual.depth() != self.max_depth:
-                individual = self.gen_algo.get_random_individual()
-
                 if self.fill_trees:
-                    individual.fill(depth_target=self.max_depth)
+                    individual = self.random_full_individual()
+                else:
+                    individual = self.gen_algo.get_random_individual()
 
                 representation = repr(individual) + "EOS"
 
@@ -742,10 +763,13 @@ def train_autoencoder(model,
                       val_size=1000,
                       val_refresh_rate=0.,
                       val_seed=1337,
-                      raw_criterion_weight=0.25,
+                      raw_criterion_weight=0.7,
                       raw_criterion_weight_inc=0.1,
-                      reduced_criterion_weight=1.,
+                      reduced_criterion_weight=0.3,
                       reduced_criterion_weight_inc=0.,
+                      feature_classes_weight=4,
+                      operation_classes_weight=2,
+                      other_classes_weight=1,
                       regularization_coefficient=10.,
                       gradient_value_threshold=1.,
                       clipping_is_norm=True,
@@ -785,7 +809,8 @@ def train_autoencoder(model,
 
     implied_length = pf.max_length_given_depth(max_depth) + 1
     if autoencoder_type == "FEEDFORWARD" and model.sequence_length != implied_length:
-        raise ValueError(f"The feed-forward network needs individuals whose length is exactly {model.sequence_length}, but the max_depth ({max_depth}) parameter implies a length of {implied_length}.")
+        raise ValueError(
+            f"The feed-forward network needs individuals whose length is exactly {model.sequence_length}, but the max_depth ({max_depth}) parameter implies a length of {implied_length}.")
 
     folder_name = datetime.datetime.now().strftime(f'AUTOENCODER {autoencoder_type} %Y-%m-%d %H-%M-%S')
 
@@ -798,16 +823,21 @@ def train_autoencoder(model,
 
     for tv in ("Train", "Val"):
         for q in (
-        "TotalDatapoints", "Loss", "Total_Criterion", "Raw_Criterion", "Reduced_Criterion", "SyntaxScore", "Valid",
-        "Accuracy", "Perfects"):
+                "TotalDatapoints", "Loss", "Total_Criterion", "Raw_Criterion", "Reduced_Criterion", "SyntaxScore",
+                "Valid",
+                "Accuracy", "Perfects"):
             df_cols.append(f"{tv}_{q}")
 
     df_cols.extend(("Example", "AutoencodedExample"))
+
+    df_examples_cols = ["Epoch", "Example", "AutoencodedExample"]
 
     if autoencoder_type == "TRANSFORMER":
         df_cols.append("BlindAutoencodedExample")
 
     df = pd.DataFrame(columns=df_cols)
+
+    df_examples = pd.DataFrame(columns=df_examples_cols)
 
     train_set = AutoencoderDataset(max_depth=max_depth,
                                    size=train_size,
@@ -834,7 +864,18 @@ def train_autoencoder(model,
     )
 
     # train_set, val_set = data.random_split(dataset=dataset, lengths=[1. - val_split, val_split])
-    criterion = nn.NLLLoss()  # nn.CrossEntropyLoss()
+
+    def class_weight(token):
+        if token in INDIVIDUALS_FEATURES:
+            return feature_classes_weight
+        elif token in OPERATIONS:
+            return operation_classes_weight
+        else:
+            return other_classes_weight
+
+    raw_criterion_class_weights = torch.tensor([class_weight(token) for token in VOCAB], dtype=torch.float32)
+    criterion_raw = nn.NLLLoss(weight=raw_criterion_class_weights)
+    criterion_reduced = nn.NLLLoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)  # optim.SGD(model.parameters(), lr=0.001, momentum=0.25)
 
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, mode="max")
@@ -950,9 +991,20 @@ def train_autoencoder(model,
                             if autoencoder_type == "TRANSFORMER":
                                 val_blind_autoencoded = string_from_sparse(model.blind_auto_encode(true_sequence)[1])
 
-                    loss_raw_criterion = criterion(output, true_sequence_sparse)
-                    loss_reduced_criterion = reduced_criterion_scale * criterion(output_reduced,
-                                                                                 true_sequence_reduced_sparse)
+                        new_example = dict()
+                        new_example["Epoch"] = epoch
+                        new_example["Example"] = string_from_onehots(true_sequence)
+                        new_example["AutoencodedExample"] = string_from_onehots(output)
+
+                        if len(df_examples) > 0:
+                            df_examples = pd.concat([df_examples, pd.DataFrame(new_example, index=[0])],
+                                                    ignore_index=True)
+                        else:
+                            df_examples = pd.DataFrame(new_example, index=[0])
+
+                    loss_raw_criterion = criterion_raw(output, true_sequence_sparse)
+                    loss_reduced_criterion = reduced_criterion_scale * criterion_reduced(output_reduced,
+                                                                                         true_sequence_reduced_sparse)
 
                     loss_criterion = criterion_weights_raw * loss_raw_criterion + loss_reduced_criterion * criterion_weights_reduced
 
@@ -1127,5 +1179,9 @@ def train_autoencoder(model,
             df = pd.DataFrame(new_row, index=[0])
 
         df.to_csv(path_or_buf=f"{folder_name}/log.csv", index=False)
+
+        df_examples.sort_values(by=["Example", "Epoch"], inplace=True)
+
+        df_examples.to_csv(path_or_buf=f"{folder_name}/examples.csv", index=False)
 
         torch.save(model.state_dict(), f"{folder_name}/model_epoch{epoch}.pth")

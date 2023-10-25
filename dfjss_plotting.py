@@ -54,7 +54,9 @@ def plot_autoencoder_training(folder_name, dpi=400, show_plots=False):
     annotate_axis_with_value(ax_total, "Train_Total_Criterion")
 
     epoch_range = range(1, df["Epoch"][len(df) - 1] + 1)
-    ax_total.set_xticks(ticks=epoch_range, labels=[f"{epoch}\n{misc.large_number_format(data_amount)}" for epoch, data_amount in zip(df["Epoch"], df["Train_TotalDatapoints"])])
+    ax_total.set_xticks(ticks=epoch_range, labels=[
+        f"{epoch}\nT: {misc.large_number_format(data_train)}\n V: {misc.large_number_format(data_val)}" for
+        epoch, data_train, data_val in zip(df["Epoch"], df["Train_TotalDatapoints"], df["Val_TotalDatapoints"])])
 
     ax_total.set_title("Total Criterion")
     ax_total.legend()
@@ -104,9 +106,9 @@ def plot_autoencoder_training(folder_name, dpi=400, show_plots=False):
     annotate_axis_with_value(ax_syntax, "Train_SyntaxScore")
 
     epoch_range = range(1, df["Epoch"][len(df) - 1] + 1)
-    ax_syntax.set_xticks(ticks=epoch_range,
-                        labels=[f"{epoch}\n{misc.large_number_format(data_amount)}" for epoch, data_amount in
-                                zip(df["Epoch"], df["Train_TotalDatapoints"])])
+    ax_syntax.set_xticks(ticks=epoch_range, labels=[
+        f"{epoch}\nT: {misc.large_number_format(data_train)}\n V: {misc.large_number_format(data_val)}" for
+        epoch, data_train, data_val in zip(df["Epoch"], df["Train_TotalDatapoints"], df["Val_TotalDatapoints"])])
 
     ax_syntax.set_title("Syntax Score")
     ax_syntax.legend()
