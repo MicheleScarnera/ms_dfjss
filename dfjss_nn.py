@@ -303,17 +303,20 @@ class IndividualTransformerAutoEncoder(nn.Module):
 
 
 class IndividualFeedForwardAutoEncoder(nn.Module):
-    def __init__(self, sequence_length, embedding_dim=48, hidden_size=1536, encoding_size=768, dropout=0.1):
+    def __init__(self, sequence_length, embedding_dim=-1, hidden_size=1600, encoding_size=800, dropout=0.1):
         super(IndividualFeedForwardAutoEncoder, self).__init__()
 
-        self.embedding = nn.Embedding(num_embeddings=VOCAB_SIZE,
-                                      embedding_dim=embedding_dim,
-                                      device=device)
+        if embedding_dim > 0:
+            self.embedding = nn.Embedding(num_embeddings=VOCAB_SIZE,
+                                          embedding_dim=embedding_dim,
+                                          device=device)
+        else:
+            self.embedding = None
 
         self.sequence_length = sequence_length
         self.hidden_size = hidden_size
         self.encoding_size = encoding_size
-        self.flat_in_size = sequence_length * embedding_dim
+        self.flat_in_size = sequence_length * (embedding_dim if embedding_dim > 0 else VOCAB_SIZE)
         self.flat_out_size = sequence_length * VOCAB_SIZE
 
         self.embed_to_flat_in = nn.Flatten(-2, -1)
@@ -342,7 +345,7 @@ class IndividualFeedForwardAutoEncoder(nn.Module):
         else:
             indices = sequence
 
-        embed = self.embedding(indices)
+        embed = self.embedding(indices) if self.embedding is not None else sequence
         flattened = self.embed_to_flat_in(embed)
 
         h_in = self.h_in_activation(self.flat_in_to_h_in(flattened))
@@ -364,11 +367,12 @@ class IndividualFeedForwardAutoEncoder(nn.Module):
     def summary(self):
         longdash = '------------------------------------'
         result = [longdash, "Individual Feed-Forward Auto-Encoder",
-                  f"Embedding size: {self.embedding.embedding_dim}",
+                  f"Embedding size: {self.embedding.embedding_dim if self.embedding is not None else 'N/A (using one-hot)'}",
                   f"Max Length: {self.sequence_length}",
+                  f"Flat size: {self.flat_in_size} (In), {self.flat_out_size} (Out)",
                   f"Hidden Size: {self.hidden_size}", f"Encoding Size: {self.encoding_size}",
                   f"Encoder Dropout: {self.encoder_dropout.p}",
-                  f"Number of parameters: (Learnable: {self.count_parameters()}, Fixed: {self.count_parameters(False)})",
+                  f"Number of parameters: {self.count_parameters()} (Learnable), {self.count_parameters(False)} (Fixed)",
                   longdash]
 
         return "\n".join(result)
@@ -638,7 +642,8 @@ def syntax_score(x, aggregate_with_gmean=True):
 
 
 class AutoencoderDataset(data.Dataset):
-    def __init__(self, rng_seed=100, max_depth=4, size=5000, refresh_rate=0., fill_trees=True, flatten_trees=True, sparse=False,
+    def __init__(self, rng_seed=100, max_depth=4, size=5000, refresh_rate=0., fill_trees=True, flatten_trees=True,
+                 sparse=False,
                  refresh_is_random=False):
         super().__init__()
 
@@ -771,7 +776,7 @@ def train_autoencoder(model,
                       val_refresh_rate=0.,
                       val_seed=1337,
                       raw_criterion_weight=0.7,
-                      raw_criterion_weight_inc=0.1,
+                      raw_criterion_weight_inc=0.15,
                       reduced_criterion_weight=0.3,
                       reduced_criterion_weight_inc=0.,
                       feature_classes_weight=4,
@@ -928,6 +933,8 @@ def train_autoencoder(model,
 
         # Raw/Reduced criterion weights
 
+        ignore_reduced_criterion = False
+
         criterion_weights_raw = (epoch - 1) * raw_criterion_weight_inc + raw_criterion_weight
         criterion_weights_reduced = (epoch - 1) * reduced_criterion_weight_inc + reduced_criterion_weight
         criterion_weights_norm = criterion_weights_raw + criterion_weights_reduced
@@ -1013,10 +1020,21 @@ def train_autoencoder(model,
                     loss_reduced_criterion = reduced_criterion_scale * criterion_reduced(output_reduced,
                                                                                          true_sequence_reduced_sparse)
 
-                    loss_criterion = criterion_weights_raw * loss_raw_criterion + loss_reduced_criterion * criterion_weights_reduced
+                    ignore_reduced_criterion = loss_reduced_criterion < 0.0001
 
-                    loss_reg, sntx = regularization_term_and_syntax_score(output[0:-1, :],
-                                                                          lam=regularization_coefficient)
+                    if ignore_reduced_criterion:
+                        loss_criterion = loss_raw_criterion
+                        criterion_weights_raw = 1.
+                        criterion_weights_reduced = 0.
+                    else:
+                        loss_criterion = criterion_weights_raw * loss_raw_criterion + loss_reduced_criterion * criterion_weights_reduced
+
+                    if train_set.flatten_trees or regularization_coefficient <= 0.:
+                        loss_reg = torch.tensor([0.])
+                        sntx = torch.tensor([0.])
+                    else:
+                        loss_reg, sntx = regularization_term_and_syntax_score(output[0:-1, :],
+                                                                              lam=regularization_coefficient)
                     loss = loss_criterion + loss_reg
 
                     if is_train:
@@ -1066,11 +1084,12 @@ def train_autoencoder(model,
                         else:
                             val_perfect_matches += 1
 
-                    if pf.is_representation_valid("".join(output_tokens[0:-1]), features=INDIVIDUALS_FEATURES):
-                        if is_train:
-                            train_valid += 1. / B
-                        else:
-                            val_valid += 1. / B
+                    if train_set.flatten_trees:
+                        if pf.is_representation_valid("".join(output_tokens[0:-1]), features=INDIVIDUALS_FEATURES):
+                            if is_train:
+                                train_valid += 1. / B
+                            else:
+                                val_valid += 1. / B
 
                     if is_train:
                         train_progress += 1
