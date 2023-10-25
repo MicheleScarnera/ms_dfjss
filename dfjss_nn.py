@@ -321,7 +321,7 @@ class IndividualFeedForwardAutoEncoder(nn.Module):
         self.h_in_activation = nn.PReLU()
 
         self.h_in_to_encoder = nn.Linear(in_features=hidden_size, out_features=encoding_size, device=device)
-        self.encoder_activation = nn.Sigmoid()
+        self.encoder_activation = nn.Softsign()
 
         self.encoder_dropout = nn.Dropout(p=dropout)
 
