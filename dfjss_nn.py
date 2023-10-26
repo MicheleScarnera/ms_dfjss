@@ -350,10 +350,10 @@ class IndividualFeedForwardAutoEncoder(nn.Module):
 
         h_in = self.h_in_activation(self.flat_in_to_h_in(flattened))
 
-        return self.encoder_dropout(self.encoder_activation(self.h_in_to_encoder(h_in)))
+        return self.encoder_activation(self.h_in_to_encoder(h_in))
 
     def decoder(self, encoding):
-        h_out = self.h_out_activation(self.encoder_to_h_out(encoding))
+        h_out = self.h_out_activation(self.encoder_to_h_out(self.encoder_dropout(encoding)))
         flat_out = self.flat_out_activation(self.h_out_to_flat_out(h_out))
 
         return self.decode_activation(self.flat_out_to_decode(flat_out))
@@ -1163,9 +1163,6 @@ def train_autoencoder(model,
 
                     optimizer.step()
 
-        if val_perfect_matches > 0.:
-            scheduler.step(val_perfect_matches)
-
         l_t = train_progress
         l_v = val_progress
 
@@ -1192,6 +1189,9 @@ def train_autoencoder(model,
         val_accuracy /= l_v
         val_valid /= l_v
         val_perfect_matches /= l_v
+        
+        if val_perfect_matches > 0.:
+            scheduler.step(val_perfect_matches)
 
         print(
             f"\rEpoch {epoch}: Loss/Criterion/Syntax/Valid/Accuracy/Perfects: (Train: {train_loss:.4f}/{train_total_criterion:.4f} ({de_facto_raw_weight:.2f}*{train_raw_criterion:.3f}+{de_facto_reduced_weight:.2f}*{train_reduced_criterion:.3f})/{train_syntaxscore:.2%}/{train_valid:.2%}/{train_accuracy:.2%}/{train_perfect_matches:.2%}) (Val: {val_loss:.4f}/{val_total_criterion:.4f} ({de_facto_raw_weight:.2f}*{val_raw_criterion:.3f}+{de_facto_reduced_weight:.2f}*{val_reduced_criterion:.3f})/{val_syntaxscore:.2%}/{val_valid:.2%}/{val_accuracy:.2%}/{val_perfect_matches:.2%}) (Total data: {train_set.total_datapoints}, {val_set.total_datapoints}) Took {misc.timeformat(time.time() - train_start)} ({misc.timeformat(val_start - train_start)}, {misc.timeformat(time.time() - val_start)})"
