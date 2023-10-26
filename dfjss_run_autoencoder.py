@@ -2,7 +2,16 @@ import dfjss_nn
 
 autoencoder_type = "FEEDFORWARD"
 
-dataset = dfjss_nn.AutoencoderDataset()
+flatten_trees = False
+fill_trees = False
+
+# some architectures can only work with specific settings
+if autoencoder_type == "FEEDFORWARD":
+    flatten_trees = True
+    fill_trees = True
+
+# creating a dataset to print one example, and get some parameters needed for later
+dataset = dfjss_nn.AutoencoderDataset(size=1, flatten_trees=flatten_trees, fill_trees=fill_trees)
 
 for datapoint in dataset:
     print(f"Original: {dfjss_nn.string_from_onehots(datapoint)}")
@@ -12,12 +21,13 @@ for datapoint in dataset:
     example = datapoint
     break
 
+# create the untrained model
 if autoencoder_type == "RNN":
     autoencoder = dfjss_nn.IndividualRNNAutoEncoder()
 elif autoencoder_type == "TRANSFORMER":
-    autoencoder = dfjss_nn.IndividualTransformerAutoEncoder(max_length=dataset.max_length())
+    autoencoder = dfjss_nn.IndividualTransformerAutoEncoder(max_length=dataset.max_sequence_length())
 elif autoencoder_type == "FEEDFORWARD":
-    autoencoder = dfjss_nn.IndividualFeedForwardAutoEncoder(sequence_length=dataset.max_length())
+    autoencoder = dfjss_nn.IndividualFeedForwardAutoEncoder(sequence_length=dataset.max_sequence_length())
 else:
     raise Exception("autoencoder_type unknown")
 
@@ -35,5 +45,6 @@ dfjss_nn.train_autoencoder(autoencoder,
                            max_depth=dataset.max_depth,
                            num_epochs=200,
                            train_size=16384,
-                           val_size=8192,
-                           regularization_coefficient=10.)
+                           val_size=16384,
+                           flatten_trees=flatten_trees,
+                           fill_trees=fill_trees)

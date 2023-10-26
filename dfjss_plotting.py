@@ -27,20 +27,27 @@ def plot_evolution(folder_name):
     plt.show()
 
 
-def plot_autoencoder_training(folder_name, dpi=400, show_plots=False):
+def plot_autoencoder_training(folder_name, epoch_step_size=4, text_box_step_size=4, dpi=400, show_plots=False):
     filename = f"{folder_name}/log.csv"
+    plot_title = folder_name.split("\\")[-1]
 
     train_color = "blue"
     val_color = "orange"
 
     df = pd.read_csv(filename)
 
-    fig_size_h = 13 + len(df)
+    fig_size_h = 18 + 0.3 * len(df)
 
     def annotate_axis_with_value(axis, y_name):
         bbox_props = dict(boxstyle="round", fc="w", ec="0.5", alpha=0.7, edgecolor=None)
-        for x, y in zip(df["Epoch"], df[y_name]):
+        for i, (x, y) in enumerate(zip(df["Epoch"], df[y_name])):
+            if i % text_box_step_size != 0:
+                continue
+
             axis.annotate(f"{y:.2f}", xy=(x, y), fontsize="small", bbox=bbox_props)
+
+    def epoch_label(epoch):
+        return f"{epoch}\nT: {misc.large_number_format(df['Train_TotalDatapoints'][epoch-1])}\n V: {misc.large_number_format(df['Val_TotalDatapoints'][epoch-1])}"
 
     # Losses
 
@@ -53,10 +60,8 @@ def plot_autoencoder_training(folder_name, dpi=400, show_plots=False):
 
     annotate_axis_with_value(ax_total, "Train_Total_Criterion")
 
-    epoch_range = range(1, df["Epoch"][len(df) - 1] + 1)
-    ax_total.set_xticks(ticks=epoch_range, labels=[
-        f"{epoch}\nT: {misc.large_number_format(data_train)}\n V: {misc.large_number_format(data_val)}" for
-        epoch, data_train, data_val in zip(df["Epoch"], df["Train_TotalDatapoints"], df["Val_TotalDatapoints"])])
+    epoch_range = range(1, df["Epoch"][len(df) - 1] + 1, epoch_step_size)
+    ax_total.set_xticks(ticks=epoch_range, labels=[epoch_label(epoch) for epoch in epoch_range])
 
     ax_total.set_title("Total Criterion")
     ax_total.legend()
@@ -69,7 +74,7 @@ def plot_autoencoder_training(folder_name, dpi=400, show_plots=False):
 
     annotate_axis_with_value(ax_weight, "Criterion_Weight_Raw")
 
-    ax_weight.set_title("Raw weights")
+    ax_weight.set_title("Raw weights (de facto)")
 
     # Raw Criterion
     ax_raw.plot(df["Epoch"], df["Train_Raw_Criterion"], color=train_color)
@@ -87,7 +92,7 @@ def plot_autoencoder_training(folder_name, dpi=400, show_plots=False):
 
     ax_reduced.set_title("Reduced criterion")
 
-    plt.suptitle(f"Criterion ({folder_name})")
+    plt.suptitle(f"Criterion ({plot_title})")
 
     fig.savefig(f"{folder_name}/criterion_plot", dpi=dpi)
 
@@ -105,10 +110,7 @@ def plot_autoencoder_training(folder_name, dpi=400, show_plots=False):
 
     annotate_axis_with_value(ax_syntax, "Train_SyntaxScore")
 
-    epoch_range = range(1, df["Epoch"][len(df) - 1] + 1)
-    ax_syntax.set_xticks(ticks=epoch_range, labels=[
-        f"{epoch}\nT: {misc.large_number_format(data_train)}\n V: {misc.large_number_format(data_val)}" for
-        epoch, data_train, data_val in zip(df["Epoch"], df["Train_TotalDatapoints"], df["Val_TotalDatapoints"])])
+    ax_syntax.set_xticks(ticks=epoch_range, labels=[epoch_label(epoch) for epoch in epoch_range])
 
     ax_syntax.set_title("Syntax Score")
     ax_syntax.legend()
@@ -138,7 +140,7 @@ def plot_autoencoder_training(folder_name, dpi=400, show_plots=False):
 
     ax_perfects.set_title("Perfects")
 
-    plt.suptitle(f"[0,1] metrics ({folder_name})")
+    plt.suptitle(f"[0,1] metrics ({plot_title})")
 
     fig.savefig(f"{folder_name}/zero_one_metrics_plot", dpi=dpi)
 

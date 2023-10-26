@@ -303,7 +303,7 @@ class IndividualTransformerAutoEncoder(nn.Module):
 
 
 class IndividualFeedForwardAutoEncoder(nn.Module):
-    def __init__(self, sequence_length, embedding_dim=-1, hidden_size=1600, encoding_size=800, dropout=0.1):
+    def __init__(self, sequence_length, embedding_dim=-1, hidden_size=2400, encoding_size=1200, dropout=0.1):
         super(IndividualFeedForwardAutoEncoder, self).__init__()
 
         if embedding_dim > 0:
@@ -668,7 +668,7 @@ class AutoencoderDataset(data.Dataset):
 
         self.fill_individuals()
 
-    def max_length(self):
+    def max_sequence_length(self):
         if self.flatten_trees:
             return 2 ** (self.max_depth + 1) - 1 + 1  # no. of parentheses: 2 ** (self.max_depth + 1) - 2. +1 is EOS
         else:
@@ -759,7 +759,7 @@ def sequence_collate(batch):
     return torch.stack(collated_batch)
 
 
-def regularization_term_and_syntax_score(sequence, lam=10., eps=0.01):
+def syntax_penalty_term_and_syntax_score(sequence, lam=10., eps=0.01):
     score = syntax_score(torch.softmax(sequence, dim=1))
 
     return lam / np.log(eps) * torch.log(score + eps), score
@@ -769,6 +769,8 @@ def train_autoencoder(model,
                       num_epochs=10,
                       batch_size=16,
                       max_depth=8,
+                      flatten_trees=True,
+                      fill_trees=True,
                       train_size=5000,
                       train_refresh_rate=1.,
                       train_seed=100,
@@ -782,31 +784,45 @@ def train_autoencoder(model,
                       feature_classes_weight=4,
                       operation_classes_weight=2,
                       other_classes_weight=1,
-                      regularization_coefficient=10.,
+                      syntax_score_coefficient=0.,
                       gradient_value_threshold=1.,
                       clipping_is_norm=True,
                       gradient_norm_threshold=1.,
                       clipping_norm_type=2.):
     """
+    Train an autoencoder.
+
     :type model: nn.Module
 
-    :param model:
-    :param max_depth:
-    :param num_epochs:
-    :param train_size:
-    :param train_refresh_rate:
-    :param train_seed:
-    :param val_size:
-    :param val_refresh_rate:
-    :param val_seed:
-    :param batch_size:
-    :param regularization_coefficient:
-    :param gradient_value_threshold:
-    :param clipping_is_norm:
-    :param gradient_norm_threshold:
-    :param clipping_norm_type:
+    :param model: The autocoder model.
+    :param max_depth: Individuals will not exceed this depth.
+    :param flatten_trees: Whether data should be of flat individuals or not. You cannot have flat individuals if they are not also full.
+    :param fill_trees: Whether individuals should be full. You cannot have flat individuals if they are not also full.
+    :param num_epochs: The maximum number of epochs to train on.
+    :param train_size: The size of the training set each epoch.
+    :param train_refresh_rate: How much, in percentage, the training set is replaced with new data each epoch.
+    :param train_seed: The seed for the training data.
+    :param val_size: The size of the validation set each epoch. If the training set has non-zero refresh rate, it makes sense for this to be large, even larger than train_size.
+    :param val_refresh_rate: How much, in percentage, the validation set is replaced with new data each epoch. It is recommended to keep this to 0 for consistency of evaluation.
+    :param val_seed: The seed for the validation data.
+    :param raw_criterion_weight: The relative weight of the raw criterion at epoch 1.
+    :param raw_criterion_weight_inc: Every epoch, the relative weight of the raw criterion is increased by this amount.
+    :param reduced_criterion_weight: The relative weight of the reduced criterion at epoch 1.
+    :param reduced_criterion_weight_inc: Every epoch, the relative weight of the reduced criterion is increased by this amount.
+    :param feature_classes_weight: In the raw criterion, the relative weight of features.
+    :param operation_classes_weight: In the raw criterion, the relative weight of operations.
+    :param other_classes_weight: In the raw criterion, the relative weight of characters that are neither features or operations.
+    :param batch_size: The size of batches.
+    :param syntax_score_coefficient: If >0, syntax score is explicitely optimized. NOT RECOMMENDED
+    :param gradient_value_threshold: If gradient clipping is done by value, this is the farther each individual gradient can be from 0.
+    :param clipping_is_norm: Whether the clipping is done by norm (True) or by value (False)
+    :param gradient_norm_threshold: If gradient clipping is done by norm, this is the largest the norm of the gradients can be.
+    :param clipping_norm_type: The type of norm.
     :return:
     """
+
+    if flatten_trees and not fill_trees:
+        raise ValueError("You cannot have flat individuals if they are not also full. Change the flatten_trees and fill_trees arguments")
 
     model_type = type(model)
 
@@ -818,6 +834,9 @@ def train_autoencoder(model,
         autoencoder_type = "FEEDFORWARD"
     else:
         raise TypeError(f"Unknown autoencoder type ({model_type})")
+
+    if autoencoder_type == "FEEDFORWARD" and not fill_trees:
+        raise ValueError("Feed-Forward auto-encoders can only be trained with full trees, as they require the input to be of constant length. Set fill_trees to True")
 
     folder_name = datetime.datetime.now().strftime(f'AUTOENCODER {autoencoder_type} %Y-%m-%d %H-%M-%S')
 
@@ -837,7 +856,7 @@ def train_autoencoder(model,
 
     df_cols.extend(("Example", "AutoencodedExample"))
 
-    df_examples_cols = ["Epoch", "Example", "AutoencodedExample"]
+    df_examples_cols = ["Epoch", "Example", "AutoencodedExample", "Accuracy"]
 
     if autoencoder_type == "TRANSFORMER":
         df_cols.append("BlindAutoencodedExample")
@@ -849,14 +868,18 @@ def train_autoencoder(model,
     train_set = AutoencoderDataset(max_depth=max_depth,
                                    size=train_size,
                                    refresh_rate=train_refresh_rate,
+                                   flatten_trees=flatten_trees,
+                                   fill_trees=fill_trees,
                                    rng_seed=train_seed)
 
     val_set = AutoencoderDataset(max_depth=max_depth,
                                  size=val_size,
                                  refresh_rate=val_refresh_rate,
+                                 flatten_trees=flatten_trees,
+                                 fill_trees=fill_trees,
                                  rng_seed=val_seed)
 
-    implied_length = train_set.max_length()
+    implied_length = train_set.max_sequence_length()
     if autoencoder_type == "FEEDFORWARD" and model.sequence_length != implied_length:
         raise ValueError(
             f"The feed-forward network needs individuals whose length is exactly {model.sequence_length}, but the max_depth ({max_depth}) parameter implies a length of {implied_length}.")
@@ -890,7 +913,7 @@ def train_autoencoder(model,
     criterion_reduced = nn.NLLLoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)  # optim.SGD(model.parameters(), lr=0.001, momentum=0.25)
 
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, mode="max")
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, mode="max", patience=2)
 
     reduced_criterion_scale = 1.  # np.log(len(VOCAB)) / np.log(len(VOCAB_REDUCED))
 
@@ -932,9 +955,6 @@ def train_autoencoder(model,
         val_progress_needed = None
 
         # Raw/Reduced criterion weights
-
-        ignore_reduced_criterion = False
-
         criterion_weights_raw = (epoch - 1) * raw_criterion_weight_inc + raw_criterion_weight
         criterion_weights_reduced = (epoch - 1) * reduced_criterion_weight_inc + reduced_criterion_weight
         criterion_weights_norm = criterion_weights_raw + criterion_weights_reduced
@@ -944,7 +964,7 @@ def train_autoencoder(model,
         for is_train in (True, False):
             gradients_thrown_out = None
             if is_train:
-                print(f"Epoch {epoch}: Training...", end="")
+                print(f"\rEpoch {epoch}: Training...", end="")
                 model.train()
 
                 train_start = time.time()
@@ -998,17 +1018,23 @@ def train_autoencoder(model,
                     true_sequence_reduced_sparse = torch.argmax(true_sequence_reduced, dim=1)
 
                     if not is_train:
+                        list_true = string_from_onehots(true_sequence, list_mode=True)
+                        list_output = string_from_onehots(output, list_mode=True)
+                        str_true = "".join(list_true)
+                        str_output = "".join(list_output)
+
                         if val_example == "":
-                            val_example = string_from_onehots(true_sequence)
-                            val_autoencoded = string_from_onehots(output)
+                            val_example = str_true
+                            val_autoencoded = str_output
 
                             if autoencoder_type == "TRANSFORMER":
                                 val_blind_autoencoded = string_from_sparse(model.blind_auto_encode(true_sequence)[1])
 
                         new_example = dict()
                         new_example["Epoch"] = epoch
-                        new_example["Example"] = string_from_onehots(true_sequence)
-                        new_example["AutoencodedExample"] = string_from_onehots(output)
+                        new_example["Example"] = str_true
+                        new_example["AutoencodedExample"] = str_output
+                        new_example["Accuracy"] = np.mean([t == o for t, o in zip(list_true, list_output)])
 
                         if len(df_examples) > 0:
                             df_examples = pd.concat([df_examples, pd.DataFrame(new_example, index=[0])],
@@ -1020,22 +1046,19 @@ def train_autoencoder(model,
                     loss_reduced_criterion = reduced_criterion_scale * criterion_reduced(output_reduced,
                                                                                          true_sequence_reduced_sparse)
 
-                    ignore_reduced_criterion = loss_reduced_criterion < 0.0001
-
-                    if ignore_reduced_criterion:
+                    if loss_reduced_criterion < 0.0005:
                         loss_criterion = loss_raw_criterion
-                        criterion_weights_raw = 1.
-                        criterion_weights_reduced = 0.
                     else:
-                        loss_criterion = criterion_weights_raw * loss_raw_criterion + loss_reduced_criterion * criterion_weights_reduced
+                        loss_criterion = criterion_weights_raw * loss_raw_criterion + (
+                                criterion_weights_reduced * loss_reduced_criterion)
 
-                    if train_set.flatten_trees or regularization_coefficient <= 0.:
-                        loss_reg = torch.tensor([0.])
+                    if flatten_trees or syntax_score_coefficient <= 0.:
+                        loss_syntax_penalty = torch.tensor([0.])
                         sntx = torch.tensor([0.])
                     else:
-                        loss_reg, sntx = regularization_term_and_syntax_score(output[0:-1, :],
-                                                                              lam=regularization_coefficient)
-                    loss = loss_criterion + loss_reg
+                        loss_syntax_penalty, sntx = syntax_penalty_term_and_syntax_score(output[0:-1, :],
+                                                                                         lam=syntax_score_coefficient)
+                    loss = loss_criterion + loss_syntax_penalty
 
                     if is_train:
                         if torch.isfinite(loss):
@@ -1084,7 +1107,7 @@ def train_autoencoder(model,
                         else:
                             val_perfect_matches += 1
 
-                    if train_set.flatten_trees:
+                    if not flatten_trees:
                         if pf.is_representation_valid("".join(output_tokens[0:-1]), features=INDIVIDUALS_FEATURES):
                             if is_train:
                                 train_valid += 1. / B
@@ -1140,10 +1163,8 @@ def train_autoencoder(model,
 
                     optimizer.step()
 
-        scheduler.step(val_accuracy)
-
-        train_set.refresh_data()
-        val_set.refresh_data()
+        if val_perfect_matches > 0.:
+            scheduler.step(val_perfect_matches)
 
         l_t = train_progress
         l_v = val_progress
@@ -1158,10 +1179,14 @@ def train_autoencoder(model,
         train_valid /= l_t
         train_perfect_matches /= l_t
 
+        de_facto_raw_weight = (train_total_criterion - train_reduced_criterion) / (
+                train_raw_criterion - train_reduced_criterion) if train_raw_criterion > train_reduced_criterion else 1.
+        de_facto_reduced_weight = 1. - de_facto_raw_weight
+
         val_loss /= l_v
         val_raw_criterion /= l_v
         val_reduced_criterion /= l_v
-        val_total_criterion /= l_v
+        val_total_criterion = de_facto_raw_weight * val_raw_criterion + de_facto_reduced_weight * val_reduced_criterion
         val_syntaxscore /= l_v
 
         val_accuracy /= l_v
@@ -1169,13 +1194,18 @@ def train_autoencoder(model,
         val_perfect_matches /= l_v
 
         print(
-            f"\rEpoch {epoch}: Loss/Criterion/Syntax/Valid/Accuracy/Perfects: (Train: {train_loss:.4f}/{train_total_criterion:.4f} ({criterion_weights_raw:.2f}*{train_raw_criterion:.3f}+{criterion_weights_reduced:.2f}*{train_reduced_criterion:.3f})/{train_syntaxscore:.2%}/{train_valid:.2%}/{train_accuracy:.2%}/{train_perfect_matches:.2%}) (Val: {val_loss:.4f}/{val_total_criterion:.4f} ({criterion_weights_raw:.2f}*{val_raw_criterion:.3f}+{criterion_weights_reduced:.2f}*{val_reduced_criterion:.3f})/{val_syntaxscore:.2%}/{val_valid:.2%}/{val_accuracy:.2%}/{val_perfect_matches:.2%}) (Total data: {train_set.total_datapoints}, {val_set.total_datapoints}) Took {misc.timeformat(time.time() - train_start)} ({misc.timeformat(val_start - train_start)}, {misc.timeformat(time.time() - val_start)})"
+            f"\rEpoch {epoch}: Loss/Criterion/Syntax/Valid/Accuracy/Perfects: (Train: {train_loss:.4f}/{train_total_criterion:.4f} ({de_facto_raw_weight:.2f}*{train_raw_criterion:.3f}+{de_facto_reduced_weight:.2f}*{train_reduced_criterion:.3f})/{train_syntaxscore:.2%}/{train_valid:.2%}/{train_accuracy:.2%}/{train_perfect_matches:.2%}) (Val: {val_loss:.4f}/{val_total_criterion:.4f} ({de_facto_raw_weight:.2f}*{val_raw_criterion:.3f}+{de_facto_reduced_weight:.2f}*{val_reduced_criterion:.3f})/{val_syntaxscore:.2%}/{val_valid:.2%}/{val_accuracy:.2%}/{val_perfect_matches:.2%}) (Total data: {train_set.total_datapoints}, {val_set.total_datapoints}) Took {misc.timeformat(time.time() - train_start)} ({misc.timeformat(val_start - train_start)}, {misc.timeformat(time.time() - val_start)})"
         )
+
+        if epoch < num_epochs:
+            print(f"Refreshing training and validation set for Epoch {epoch+1}...", end="")
+            train_set.refresh_data()
+            val_set.refresh_data()
 
         new_row = dict()
         new_row["Epoch"] = epoch
-        new_row["Criterion_Weight_Raw"] = criterion_weights_raw
-        new_row["Criterion_Weight_Reduced"] = criterion_weights_reduced
+        new_row["Criterion_Weight_Raw"] = de_facto_raw_weight
+        new_row["Criterion_Weight_Reduced"] = de_facto_reduced_weight
         new_row["Train_TotalDatapoints"] = train_set.total_datapoints
         new_row["Train_Loss"] = train_loss
         new_row["Train_Total_Criterion"] = train_total_criterion
