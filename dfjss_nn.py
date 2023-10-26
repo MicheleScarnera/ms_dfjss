@@ -777,9 +777,9 @@ def train_autoencoder(model,
                       val_size=1000,
                       val_refresh_rate=0.,
                       val_seed=1337,
-                      raw_criterion_weight=0.7,
+                      raw_criterion_weight=0.3,
                       raw_criterion_weight_inc=0.15,
-                      reduced_criterion_weight=0.3,
+                      reduced_criterion_weight=0.7,
                       reduced_criterion_weight_inc=0.,
                       feature_classes_weight=4,
                       operation_classes_weight=2,
@@ -794,7 +794,7 @@ def train_autoencoder(model,
 
     :type model: nn.Module
 
-    :param model: The autocoder model.
+    :param model: The autoencoder model.
     :param max_depth: Individuals will not exceed this depth.
     :param flatten_trees: Whether data should be of flat individuals or not. You cannot have flat individuals if they are not also full.
     :param fill_trees: Whether individuals should be full. You cannot have flat individuals if they are not also full.
@@ -950,6 +950,8 @@ def train_autoencoder(model,
         val_autoencoded = ""
         val_blind_autoencoded = ""
 
+        val_examples = []
+
         val_start = None
         val_progress = 0
         val_progress_needed = None
@@ -1036,11 +1038,7 @@ def train_autoencoder(model,
                         new_example["AutoencodedExample"] = str_output
                         new_example["Accuracy"] = np.mean([t == o for t, o in zip(list_true, list_output)])
 
-                        if len(df_examples) > 0:
-                            df_examples = pd.concat([df_examples, pd.DataFrame(new_example, index=[0])],
-                                                    ignore_index=True)
-                        else:
-                            df_examples = pd.DataFrame(new_example, index=[0])
+                        val_examples.append(new_example)
 
                     loss_raw_criterion = criterion_raw(output, true_sequence_sparse)
                     loss_reduced_criterion = reduced_criterion_scale * criterion_reduced(output_reduced,
@@ -1231,6 +1229,12 @@ def train_autoencoder(model,
 
         df.to_csv(path_or_buf=f"{folder_name}/log.csv", index=False)
 
+        if len(df_examples) > 0:
+            df_examples = pd.concat([df_examples, pd.DataFrame(val_examples, index=range(len(val_examples)))],
+                                    ignore_index=True)
+        else:
+            df_examples = pd.DataFrame(val_examples, index=range(len(val_examples)))
+
         df_examples.sort_values(by=["Example", "Epoch"], inplace=True)
 
         df_examples.to_csv(path_or_buf=f"{folder_name}/examples.csv", index=False)
@@ -1241,4 +1245,4 @@ def train_autoencoder(model,
             print(f"Refreshing training and validation set for Epoch {epoch+1}...", end="")
             train_set.refresh_data()
             val_set.refresh_data()
-            
+
