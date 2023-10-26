@@ -1197,11 +1197,6 @@ def train_autoencoder(model,
             f"\rEpoch {epoch}: Loss/Criterion/Syntax/Valid/Accuracy/Perfects: (Train: {train_loss:.4f}/{train_total_criterion:.4f} ({de_facto_raw_weight:.2f}*{train_raw_criterion:.3f}+{de_facto_reduced_weight:.2f}*{train_reduced_criterion:.3f})/{train_syntaxscore:.2%}/{train_valid:.2%}/{train_accuracy:.2%}/{train_perfect_matches:.2%}) (Val: {val_loss:.4f}/{val_total_criterion:.4f} ({de_facto_raw_weight:.2f}*{val_raw_criterion:.3f}+{de_facto_reduced_weight:.2f}*{val_reduced_criterion:.3f})/{val_syntaxscore:.2%}/{val_valid:.2%}/{val_accuracy:.2%}/{val_perfect_matches:.2%}) (Total data: {train_set.total_datapoints}, {val_set.total_datapoints}) Took {misc.timeformat(time.time() - train_start)} ({misc.timeformat(val_start - train_start)}, {misc.timeformat(time.time() - val_start)})"
         )
 
-        if epoch < num_epochs:
-            print(f"Refreshing training and validation set for Epoch {epoch+1}...", end="")
-            train_set.refresh_data()
-            val_set.refresh_data()
-
         new_row = dict()
         new_row["Epoch"] = epoch
         new_row["Criterion_Weight_Raw"] = de_facto_raw_weight
@@ -1241,3 +1236,9 @@ def train_autoencoder(model,
         df_examples.to_csv(path_or_buf=f"{folder_name}/examples.csv", index=False)
 
         torch.save(model.state_dict(), f"{folder_name}/model_epoch{epoch}.pth")
+
+        if epoch < num_epochs:
+            print(f"Refreshing training and validation set for Epoch {epoch+1}...", end="")
+            train_set.refresh_data()
+            val_set.refresh_data()
+            
