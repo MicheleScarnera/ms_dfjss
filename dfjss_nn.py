@@ -884,6 +884,8 @@ def train_autoencoder(model,
         raise ValueError(
             f"The feed-forward network needs individuals whose length is exactly {model.sequence_length}, but the max_depth ({max_depth}) parameter implies a length of {implied_length}.")
 
+    print(f"Creating training and validation set for Epoch 1...", end="")
+    
     train_loader = data.DataLoader(
         train_set,
         batch_size=batch_size,
