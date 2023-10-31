@@ -717,7 +717,7 @@ class AutoencoderDataset(data.Dataset):
 
     def refresh_data(self):
         # permanence rate
-        if self.refresh_rate > 0. and self.times_refreshed > 0:
+        if self.refresh_rate > 0.:
             for _ in range(int(self.size * self.refresh_rate)):
                 index = self.rng.choice(len(self.individuals)) if self.refresh_is_random else 0
 
@@ -778,7 +778,7 @@ def train_autoencoder(model,
                       val_refresh_rate=0.,
                       val_seed=1337,
                       raw_criterion_weight=0.3,
-                      raw_criterion_weight_inc=0.15,
+                      raw_criterion_weight_inc=0.05,
                       reduced_criterion_weight=0.7,
                       reduced_criterion_weight_inc=0.,
                       feature_classes_weight=4,
@@ -854,6 +854,9 @@ def train_autoencoder(model,
                 "Accuracy", "Perfects"):
             df_cols.append(f"{tv}_{q}")
 
+        if tv == "Train":
+            df_cols.append("Train_LR")
+
     df_cols.extend(("Example", "AutoencodedExample"))
 
     df_examples_cols = ["Epoch", "Example", "AutoencodedExample", "Accuracy"]
@@ -915,7 +918,7 @@ def train_autoencoder(model,
     criterion_reduced = nn.NLLLoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)  # optim.SGD(model.parameters(), lr=0.001, momentum=0.25)
 
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, mode="max", patience=2)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, mode="max", threshold=0.005, patience=2, verbose=False)
 
     reduced_criterion_scale = 1.  # np.log(len(VOCAB)) / np.log(len(VOCAB_REDUCED))
 
@@ -1189,12 +1192,14 @@ def train_autoencoder(model,
         val_accuracy /= l_v
         val_valid /= l_v
         val_perfect_matches /= l_v
-        
+
+        current_lr = optimizer.param_groups[0]['lr']
+
         if val_perfect_matches > 0.:
             scheduler.step(val_perfect_matches)
 
         print(
-            f"\rEpoch {epoch}: Loss/Criterion/Syntax/Valid/Accuracy/Perfects: (Train: {train_loss:.4f}/{train_total_criterion:.4f} ({de_facto_raw_weight:.2f}*{train_raw_criterion:.3f}+{de_facto_reduced_weight:.2f}*{train_reduced_criterion:.3f})/{train_syntaxscore:.2%}/{train_valid:.2%}/{train_accuracy:.2%}/{train_perfect_matches:.2%}) (Val: {val_loss:.4f}/{val_total_criterion:.4f} ({de_facto_raw_weight:.2f}*{val_raw_criterion:.3f}+{de_facto_reduced_weight:.2f}*{val_reduced_criterion:.3f})/{val_syntaxscore:.2%}/{val_valid:.2%}/{val_accuracy:.2%}/{val_perfect_matches:.2%}) (Total data: {train_set.total_datapoints}, {val_set.total_datapoints}) Took {misc.timeformat(time.time() - train_start)} ({misc.timeformat(val_start - train_start)}, {misc.timeformat(time.time() - val_start)})"
+            f"\rEpoch {epoch}: Loss/Criterion/Syntax/Valid/Accuracy/Perfects: (Train: {train_loss:.4f}/{train_total_criterion:.4f} ({de_facto_raw_weight:.2f}*{train_raw_criterion:.3f}+{de_facto_reduced_weight:.2f}*{train_reduced_criterion:.3f})/{train_syntaxscore:.2%}/{train_valid:.2%}/{train_accuracy:.2%}/{train_perfect_matches:.2%}) (Val: {val_loss:.4f}/{val_total_criterion:.4f} ({de_facto_raw_weight:.2f}*{val_raw_criterion:.3f}+{de_facto_reduced_weight:.2f}*{val_reduced_criterion:.3f})/{val_syntaxscore:.2%}/{val_valid:.2%}/{val_accuracy:.2%}/{val_perfect_matches:.2%}) (Total data: {train_set.total_datapoints}, {val_set.total_datapoints}) LR: {current_lr:.0e} Took {misc.timeformat(time.time() - train_start)} ({misc.timeformat(val_start - train_start)}, {misc.timeformat(time.time() - val_start)})"
         )
 
         new_row = dict()
@@ -1210,6 +1215,7 @@ def train_autoencoder(model,
         new_row["Train_Valid"] = train_valid
         new_row["Train_Accuracy"] = train_accuracy
         new_row["Train_Perfects"] = train_perfect_matches
+        new_row["Train_LR"] = current_lr
 
         new_row["Val_TotalDatapoints"] = val_set.total_datapoints
         new_row["Val_Loss"] = val_loss
@@ -1242,6 +1248,10 @@ def train_autoencoder(model,
         df_examples.to_csv(path_or_buf=f"{folder_name}/examples.csv", index=False)
 
         torch.save(model.state_dict(), f"{folder_name}/model_epoch{epoch}.pth")
+
+        if val_perfect_matches >= 1.:
+            print("The model has reached 100% perfect matches in the validation set, and has stopped training")
+            break
 
         if epoch < num_epochs:
             print(f"Refreshing training and validation set for Epoch {epoch+1}...", end="")

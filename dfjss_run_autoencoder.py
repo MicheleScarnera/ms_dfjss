@@ -43,7 +43,7 @@ finally:
 dfjss_nn.train_autoencoder(autoencoder,
                            batch_size=64,
                            max_depth=dataset.max_depth,
-                           num_epochs=200,
+                           num_epochs=500,
                            train_size=16384,
                            val_size=16384,
                            flatten_trees=flatten_trees,

@@ -27,12 +27,13 @@ def plot_evolution(folder_name):
     plt.show()
 
 
-def plot_autoencoder_training(folder_name, epoch_step_size=4, text_box_step_size=4, dpi=400, show_plots=False):
+def plot_autoencoder_training(folder_name, epoch_step_size=5, text_box_step_size=5, dpi=400, show_plots=False):
     filename = f"{folder_name}/log.csv"
     plot_title = folder_name.split("\\")[-1]
 
     train_color = "blue"
     val_color = "orange"
+    lr_color = "darkred"
 
     df = pd.read_csv(filename)
 
@@ -133,6 +134,14 @@ def plot_autoencoder_training(folder_name, epoch_step_size=4, text_box_step_size
     ax_valid.set_title("Valid")
 
     # Perfects
+    if "Train_LR" in df.columns:
+        ax_perfects_lr = ax_perfects.twinx()
+        ax_perfects_lr.semilogy(df["Epoch"], df["Train_LR"],
+                                color=lr_color, alpha=0.5,
+                                label="Learning Rate", drawstyle="steps-mid")
+
+        ax_perfects_lr.legend()
+
     ax_perfects.plot(df["Epoch"], df["Train_Perfects"], color=train_color)
     ax_perfects.plot(df["Epoch"], df["Val_Perfects"], color=val_color)
 
