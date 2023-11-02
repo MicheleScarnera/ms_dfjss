@@ -652,9 +652,24 @@ def syntax_score(x, aggregate_with_gmean=True):
 
 
 class AutoencoderDataset(data.Dataset):
-    def __init__(self, rng_seed=100, max_depth=4, size=5000, refresh_rate=0., fill_trees=True, flatten_trees=True,
-                 sparse=False,
-                 refresh_is_random=False):
+    def __init__(self, rng_seed=100, max_depth=4, size=5000,
+                 refresh_rate=0., inflate=False, inflate_is_multiplicative=False, refresh_is_random=False,
+                 fill_trees=True, flatten_trees=False,
+                 sparse=False):
+        """
+        Creates a dataset for the autoencoders, made of randomly generated individuals. It has options to "refresh", replacing a proportion of the datapoints.
+
+        :param rng_seed: The seed of the dataset.
+        :param max_depth: The maximum depth of individuals.
+        :param size: The size of the dataset.
+        :param refresh_rate: On a refresh, the proportion of datapoints that is replaced.
+        :param inflate: If True, old datapoints are not removed, and the dataset grows in size at every refresh.
+        :param inflate_is_multiplicative: If True, inflation is multiplicative. If False, inflation is additive.
+        :param refresh_is_random: If True, the replaced datapoints are chosen randomly, and the new ones are placed randomly. If False, it's from the beginning and end of the dataset, respectively.
+        :param fill_trees: If True, the individuals are always full trees.
+        :param flatten_trees: If True, individuals are "flattened", getting rid of parentheses. It is not recommended to flatten trees if they are NOT full.
+        :param sparse: If True, the datapoints are sparse encodings rather than one-hot.
+        """
         super().__init__()
 
         self.gen_algo = genetic.GeneticAlgorithm(rng_seed=rng_seed)
@@ -666,7 +681,10 @@ class AutoencoderDataset(data.Dataset):
         self.fill_trees = fill_trees
         self.flatten_trees = flatten_trees
         self.size = size
+        self.initial_size = size
         self.refresh_rate = refresh_rate
+        self.inflate = inflate
+        self.inflate_is_multiplicative = inflate_is_multiplicative
         self.refresh_is_random = refresh_is_random
         self.sparse = sparse
 
@@ -720,18 +738,26 @@ class AutoencoderDataset(data.Dataset):
 
             del individual
 
-            self.individuals.append(sparse_sequence(representation).to(device) if self.sparse else (
-                one_hot_sequence(representation).to(device, torch.float32)))
+            individual_tensor = sparse_sequence(representation).to(device) if self.sparse else (
+                one_hot_sequence(representation).to(device, torch.float32))
+
+            if self.refresh_is_random:
+                self.individuals.insert(self.rng.choice(len(self.individuals)+1), individual_tensor)
+            else:
+                self.individuals.append(individual_tensor)
 
             self.total_datapoints += 1
 
     def refresh_data(self):
         # permanence rate
         if self.refresh_rate > 0.:
-            for _ in range(int(self.size * self.refresh_rate)):
-                index = self.rng.choice(len(self.individuals)) if self.refresh_is_random else 0
+            if self.inflate:
+                self.size += int((self.size if self.inflate_is_multiplicative else self.initial_size) * self.refresh_rate)
+            else:
+                for _ in range(int(self.size * self.refresh_rate)):
+                    index = self.rng.choice(len(self.individuals)) if self.refresh_is_random else 0
 
-                self.individuals.pop(index)
+                    self.individuals.pop(index)
 
         # if length less than size, generate individuals
         self.fill_individuals()
