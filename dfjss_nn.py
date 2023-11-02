@@ -653,7 +653,8 @@ def syntax_score(x, aggregate_with_gmean=True):
 
 class AutoencoderDataset(data.Dataset):
     def __init__(self, rng_seed=100, max_depth=4, size=5000,
-                 refresh_rate=0., inflate=False, inflate_is_multiplicative=False, refresh_is_random=False,
+                 refresh_rate=0., refresh_is_random=False,
+                 inflate=False, inflate_is_multiplicative=False, inflate_max_size=None,
                  fill_trees=True, flatten_trees=False,
                  sparse=False):
         """
@@ -665,6 +666,7 @@ class AutoencoderDataset(data.Dataset):
         :param refresh_rate: On a refresh, the proportion of datapoints that is replaced.
         :param inflate: If True, old datapoints are not removed, and the dataset grows in size at every refresh.
         :param inflate_is_multiplicative: If True, inflation is multiplicative. If False, inflation is additive.
+        :param inflate_max_size: If not None, the dataset won't grow past this amount.
         :param refresh_is_random: If True, the replaced datapoints are chosen randomly, and the new ones are placed randomly. If False, it's from the beginning and end of the dataset, respectively.
         :param fill_trees: If True, the individuals are always full trees.
         :param flatten_trees: If True, individuals are "flattened", getting rid of parentheses. It is not recommended to flatten trees if they are NOT full.
@@ -685,6 +687,7 @@ class AutoencoderDataset(data.Dataset):
         self.refresh_rate = refresh_rate
         self.inflate = inflate
         self.inflate_is_multiplicative = inflate_is_multiplicative
+        self.inflate_max_size = inflate_max_size
         self.refresh_is_random = refresh_is_random
         self.sparse = sparse
 
@@ -752,7 +755,11 @@ class AutoencoderDataset(data.Dataset):
         # permanence rate
         if self.refresh_rate > 0.:
             if self.inflate:
-                self.size += int((self.size if self.inflate_is_multiplicative else self.initial_size) * self.refresh_rate)
+                increment = int(
+                    (self.size if self.inflate_is_multiplicative else self.initial_size) * self.refresh_rate)
+                
+                self.size = self.size + increment if self.inflate_max_size is None else (
+                    min(self.size + increment, self.inflate_max_size))
             else:
                 for _ in range(int(self.size * self.refresh_rate)):
                     index = self.rng.choice(len(self.individuals)) if self.refresh_is_random else 0
