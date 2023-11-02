@@ -336,6 +336,16 @@ class IndividualFeedForwardAutoEncoder(nn.Module):
         self.flat_out_to_decode = nn.Unflatten(dim=-1, unflattened_size=(sequence_length, VOCAB_SIZE))
         self.decode_activation = nn.LogSoftmax(dim=-1)
 
+    def import_state(self, path):
+
+        self.load_state_dict(torch.load(path))
+
+        self.sequence_length = self.flat_out_to_decode.unflattened_size[0]
+        self.hidden_size = self.flat_in_to_h_in.out_features
+        self.encoding_size = self.h_in_to_encoder.out_features
+        self.flat_in_size = self.sequence_length * VOCAB_SIZE  # (embedding_dim if embedding_dim > 0 else VOCAB_SIZE)
+        self.flat_out_size = self.sequence_length * VOCAB_SIZE
+
     def auto_encoder(self, sequence):
         return self.decoder(self.encoder(sequence))
 
@@ -777,6 +787,7 @@ def train_autoencoder(model,
                       val_size=1000,
                       val_refresh_rate=0.,
                       val_seed=1337,
+                      val_perfects_100_patience=5,
                       raw_criterion_weight=0.3,
                       raw_criterion_weight_inc=0.05,
                       reduced_criterion_weight=0.7,
@@ -805,6 +816,7 @@ def train_autoencoder(model,
     :param val_size: The size of the validation set each epoch. If the training set has non-zero refresh rate, it makes sense for this to be large, even larger than train_size.
     :param val_refresh_rate: How much, in percentage, the validation set is replaced with new data each epoch. It is recommended to keep this to 0 for consistency of evaluation.
     :param val_seed: The seed for the validation data.
+    :param val_perfects_100_patience: If the 'Perfects' metric in the validation set reaches 100%, training is stopped if it's kept at 100% for 'val_perfects_100_patience' epochs in a row.
     :param raw_criterion_weight: The relative weight of the raw criterion at epoch 1.
     :param raw_criterion_weight_inc: Every epoch, the relative weight of the raw criterion is increased by this amount.
     :param reduced_criterion_weight: The relative weight of the reduced criterion at epoch 1.
@@ -918,9 +930,13 @@ def train_autoencoder(model,
     criterion_reduced = nn.NLLLoss()
     optimizer = optim.Adam(model.parameters(), lr=0.001)  # optim.SGD(model.parameters(), lr=0.001, momentum=0.25)
 
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, mode="max", threshold=0.005, patience=2, verbose=False)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, mode="max",
+                                                     threshold=0.005, patience=8, cooldown=5, factor=np.sqrt(0.1),
+                                                     verbose=False)
 
     reduced_criterion_scale = 1.  # np.log(len(VOCAB)) / np.log(len(VOCAB_REDUCED))
+
+    perfect_epochs_in_a_row = 0
 
     for epoch in range(1, num_epochs + 1):
         # Training
@@ -1250,8 +1266,13 @@ def train_autoencoder(model,
         torch.save(model.state_dict(), f"{folder_name}/model_epoch{epoch}.pth")
 
         if val_perfect_matches >= 1.:
-            print("The model has reached 100% perfect matches in the validation set, and has stopped training")
-            break
+            if perfect_epochs_in_a_row >= val_perfects_100_patience:
+                print(f"The model has reached 100% perfect matches in the validation set for {val_perfects_100_patience} epoch(s) in a row, and has stopped training")
+                break
+
+            perfect_epochs_in_a_row += 1
+        else:
+            perfect_epochs_in_a_row = 0
 
         if epoch < num_epochs:
             print(f"Refreshing training and validation set for Epoch {epoch+1}...", end="")
