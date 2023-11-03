@@ -757,7 +757,7 @@ class AutoencoderDataset(data.Dataset):
             if self.inflate:
                 increment = int(
                     (self.size if self.inflate_is_multiplicative else self.initial_size) * self.refresh_rate)
-                
+
                 self.size = self.size + increment if self.inflate_max_size is None else (
                     min(self.size + increment, self.inflate_max_size))
             else:
@@ -964,7 +964,7 @@ def train_autoencoder(model,
     optimizer = optim.Adam(model.parameters(), lr=0.001)  # optim.SGD(model.parameters(), lr=0.001, momentum=0.25)
 
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, mode="max",
-                                                     threshold=0.005, patience=8, cooldown=5, factor=np.sqrt(0.1),
+                                                     threshold=0.005, patience=8, cooldown=5, factor=0.1 ** 0.25,
                                                      verbose=False)
 
     reduced_criterion_scale = 1.  # np.log(len(VOCAB)) / np.log(len(VOCAB_REDUCED))
