@@ -10,7 +10,7 @@ flatten_trees = True
 fill_trees = True
 
 test_set_N = 16384
-generated_N = 16384
+generated_N = 32768
 
 # test set
 dataset = dfjss_nn.AutoencoderDataset(size=test_set_N, flatten_trees=flatten_trees, fill_trees=fill_trees, rng_seed=55338)
@@ -28,7 +28,7 @@ for datapoint in dataset:
 example_reduced = dfjss_nn.reduce_sequence(example)
 example_reduced_target = torch.argmax(example_reduced, dim=-1)
 
-state_path = r"C:\Users\micsc\Documents\GitHub\ms_dfjss\AUTOENCODER FEEDFORWARD 2400 1200 200 epochs\model_epoch200.pth"
+state_path = r"C:\Users\micsc\Documents\GitHub\ms_dfjss\AUTOENCODER FEEDFORWARD 2023-11-01 17-04-22\model_epoch376.pth"
 
 autoencoder = dfjss_nn.IndividualFeedForwardAutoEncoder(sequence_length=dataset.max_sequence_length())
 
@@ -71,6 +71,8 @@ gen_start = time.time()
 
 rng = np.random.default_rng(7245)
 
+unique_generations = set()
+
 losses_generated = []
 
 for m in range(1, generated_N + 1):
@@ -79,12 +81,13 @@ for m in range(1, generated_N + 1):
     decoded = autoencoder.decoder(random_encode)
     decoded_reduced = dfjss_nn.reduce_sequence(decoded, input_is_logs=True)
 
+    unique_generations.add(dfjss_nn.string_from_onehots(decoded))
     losses_generated.append(criterion(decoded_reduced, example_reduced_target))
 
     print(f"\rComputing criterions of \"generated\" individuals... {misc.timeformat(misc.timeleft(gen_start, time.time(), m, generated_N))}", end="")
 
 losses_generated = torch.stack(losses_generated)
 
-print(f"\nAverage Criterion: N/A (Raw) {losses_generated.mean().item():.7f} (Reduced, Generated)")
+print(f"\nAverage Criterion: N/A (Raw) {losses_generated.mean().item():.7f} (Reduced, Generated) {len(unique_generations)} unique out of {generated_N}")
 
 # input("Return to exit")

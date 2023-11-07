@@ -368,6 +368,48 @@ class IndividualFeedForwardAutoEncoder(nn.Module):
 
         return self.decode_activation(self.flat_out_to_decode(flat_out))
 
+    def anti_decoder(self, desired_output, start_encode, gradient_max_norm=0.1, verbose=0, return_iterations=False):
+        current_encode = start_encode.detach().requires_grad_()
+        current_encode.retain_grad()
+
+        criterion = nn.NLLLoss()
+        optimizer = optim.Adam(params=[current_encode], lr=0.001)
+        scheduler = optim.lr_scheduler.LambdaLR(optimizer, lambda epoch: 1. / (1. + 0.01 * epoch))
+
+        iterations = 0
+        while True:
+            optimizer.zero_grad()
+
+            current_output_logits = self.decoder(current_encode)
+            current_output = current_output_logits.argmax(dim=-1)
+
+            if verbose > 0:
+                print(
+                    f"Iteration {iterations}: \n\tCurrent = {string_from_sparse(current_output)}\n\tDesired = {string_from_sparse(desired_output)}")
+
+            if torch.equal(current_output, desired_output):
+                break
+
+            loss = criterion(current_output_logits, desired_output)
+            loss.backward()
+
+            grad_norm = nn.utils.clip_grad_norm_(current_encode,
+                                                 max_norm=gradient_max_norm,
+                                                 error_if_nonfinite=True)
+
+            optimizer.step()
+            scheduler.step()
+
+            with torch.no_grad():
+                current_encode.clamp_(min=-1, max=1)
+
+            iterations += 1
+
+        if return_iterations:
+            return current_encode, iterations
+        else:
+            return current_encode
+
     def forward(self, x):
         return self.auto_encoder(x)
 
@@ -428,6 +470,17 @@ def one_hot_sequence(individual, vocab=None):
 
 def sparse_sequence(individual, vocab=None):
     return torch.stack([token_to_sparse(s, vocab=vocab) for s in tokenize_with_vocab(individual, vocab=vocab)])
+
+
+def one_hot_to_sparse(sequence):
+    return sequence.argmax(dim=-1)
+
+
+def sparse_to_one_hot(sequence, vocab=None):
+    if vocab is None:
+        vocab = VOCAB
+
+    return torch.nn.functional.one_hot(sequence, num_classes=len(vocab))
 
 
 def reduce_sequence(sequence, input_is_logs=False):
