@@ -10,6 +10,7 @@ import time
 import datetime
 import os
 
+import dfjss_objects as dfjss
 import dfjss_priorityfunction as pf
 import dfjss_genetic as genetic
 import dfjss_misc as misc
@@ -20,7 +21,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 
 print(f"Device: {device.upper()}")
 
-INDIVIDUALS_FILENAME = "individuals.csv"
+REWARDMODEL_FILENAME = "reward_model_dataset.csv"
 INDIVIDUALS_FEATURES = ["operation_work_required",
                         "operation_windup",
                         "operation_cooldown",
@@ -430,40 +431,6 @@ class IndividualFeedForwardAutoEncoder(nn.Module):
         return "\n".join(result)
 
 
-def generate_individuals_file(total_amount=20000, max_depth=8, rng_seed=100):
-    gen_algo = genetic.GeneticAlgorithm(rng_seed=rng_seed)
-    gen_algo.settings.features = INDIVIDUALS_FEATURES
-
-    D = (max_depth - 2 + 1)
-
-    amount_per_depth = [total_amount // D for _ in range(2, max_depth + 1)]
-
-    for j in range(total_amount - sum(amount_per_depth)):
-        amount_per_depth[j % (max_depth - 2 + 1)] += 1
-
-    df = pd.DataFrame(columns=["Individual"])
-    start = time.time()
-
-    current_amount = 1
-    for d_ in range(D):
-        d = d_ + 2
-        gen_algo.settings.tree_generation_max_depth = d
-        for _ in range(amount_per_depth[d_]):
-            df.loc[len(df)] = {"Individual": repr(gen_algo.get_random_individual())}
-
-            print(
-                f"\rGenerating individuals... {current_amount / total_amount:.1%} {misc.timeformat(misc.timeleft(start, time.time(), current_amount, total_amount))}",
-                end="", flush=True)
-
-            current_amount += 1
-
-    df.to_csv(path_or_buf=INDIVIDUALS_FILENAME, index=False)
-
-    print(f"\rTook {misc.timeformat(time.time() - start)}", flush=True)
-
-    return df
-
-
 def one_hot_sequence(individual, vocab=None):
     return torch.stack([token_to_one_hot(s, vocab=vocab) for s in tokenize_with_vocab(individual, vocab=vocab)])
 
@@ -708,7 +675,7 @@ class AutoencoderDataset(data.Dataset):
     def __init__(self, rng_seed=100, max_depth=4, size=5000,
                  refresh_rate=0., refresh_is_random=False,
                  inflate=False, inflate_is_multiplicative=False, inflate_max_size=None,
-                 fill_trees=True, flatten_trees=False,
+                 fill_trees=True, flatten_trees=False, features_weight_in_full_trees=None,
                  sparse=False):
         """
         Creates a dataset for the autoencoders, made of randomly generated individuals. It has options to "refresh", replacing a proportion of the datapoints.
@@ -723,6 +690,7 @@ class AutoencoderDataset(data.Dataset):
         :param refresh_is_random: If True, the replaced datapoints are chosen randomly, and the new ones are placed randomly. If False, it's from the beginning and end of the dataset, respectively.
         :param fill_trees: If True, the individuals are always full trees.
         :param flatten_trees: If True, individuals are "flattened", getting rid of parentheses. It is not recommended to flatten trees if they are NOT full.
+        :param features_weight_in_full_trees: If not None, it makes features X times more likely than constants, if fill_trees is True. If None, they are not particularly weighted.
         :param sparse: If True, the datapoints are sparse encodings rather than one-hot.
         """
         super().__init__()
@@ -735,6 +703,7 @@ class AutoencoderDataset(data.Dataset):
         self.max_depth = max_depth
         self.fill_trees = fill_trees
         self.flatten_trees = flatten_trees
+        self.features_weight_in_full_trees = features_weight_in_full_trees
         self.size = size
         self.initial_size = size
         self.refresh_rate = refresh_rate
@@ -769,7 +738,15 @@ class AutoencoderDataset(data.Dataset):
             if f in OPERATIONS:
                 flat[i] = self.rng.choice(a=OPERATIONS)
             elif f in FEATURES_AND_CONSTANTS or misc.is_number(f):
-                flat[i] = self.rng.choice(a=FEATURES_AND_CONSTANTS)
+                if self.features_weight_in_full_trees is None:
+                    flat[i] = self.rng.choice(a=FEATURES_AND_CONSTANTS)
+                else:
+                    if self.rng.uniform() < 1. / (1. + self.features_weight_in_full_trees):
+                        flat[i] = self.rng.choice(a=CONSTANTS)
+                    else:
+                        flat[i] = self.rng.choice(a=INDIVIDUALS_FEATURES)
+            else:
+                raise ValueError(f"Unexpected token {f}")
 
         tree.set_from_flattened(flat)
 
@@ -792,13 +769,13 @@ class AutoencoderDataset(data.Dataset):
                 else:
                     representation = repr(individual) + "EOS"
 
-            del individual
+            # del individual
 
             individual_tensor = sparse_sequence(representation).to(device) if self.sparse else (
                 one_hot_sequence(representation).to(device, torch.float32))
 
             if self.refresh_is_random:
-                self.individuals.insert(self.rng.choice(len(self.individuals)+1), individual_tensor)
+                self.individuals.insert(self.rng.choice(len(self.individuals) + 1), individual_tensor)
             else:
                 self.individuals.append(individual_tensor)
 
@@ -836,6 +813,82 @@ class AutoencoderDataset(data.Dataset):
     def data_iterator(self):
         for individual in self.individuals:
             yield individual
+
+
+def generate_reward_model_file(size=32768,
+                               simulation_seeds_amount=50,
+                               max_depth=8,
+                               flatten_trees=True,
+                               fill_trees=True,
+                               features_weight_in_full_trees=5,
+                               individuals_seed=4358,
+                               num_workers=5,
+                               vocab=None,
+                               warehouse_settings=None,
+                               verbose=2):
+    if flatten_trees and not fill_trees:
+        raise ValueError("flatten_trees=True and fill_trees=False is not implemented")
+
+    if warehouse_settings is None:
+        warehouse_settings = dfjss.WarehouseSettings()
+
+    autoencoder_dataset = AutoencoderDataset(size=size,
+                                             max_depth=max_depth,
+                                             flatten_trees=flatten_trees,
+                                             fill_trees=fill_trees,
+                                             features_weight_in_full_trees=features_weight_in_full_trees,
+                                             rng_seed=individuals_seed)
+
+    inc = 25
+    simulation_seeds = [seed for seed in range(0, inc * simulation_seeds_amount, inc)]
+
+    start = time.time()
+
+    individuals = []
+
+    for i in range(size):
+        if flatten_trees:
+            tree = pf.representation_to_priority_function_tree("({0.0}+{0.0})", features=INDIVIDUALS_FEATURES)
+            tree.fill(max_depth)
+
+            tree.set_from_flattened(string_from_onehots(autoencoder_dataset[i], vocab=vocab, list_mode=True))
+        else:
+            tree = pf.representation_to_priority_function_tree(autoencoder_dataset[i],
+                                                               features=INDIVIDUALS_FEATURES)
+
+        individuals.append(tree)
+
+    gen_algo_settings = genetic.GeneticAlgorithmSettings()
+    gen_algo_settings.features = INDIVIDUALS_FEATURES
+    gen_algo_settings.warehouse_settings = warehouse_settings
+    gen_algo_settings.multiprocessing_processes = num_workers
+    gen_algo_settings.population_size = size
+    gen_algo_settings.total_steps = 1
+    gen_algo_settings.number_of_possible_seeds = simulation_seeds_amount
+    gen_algo_settings.number_of_simulations_per_individual = simulation_seeds_amount
+    gen_algo_settings.simulations_seeds = simulation_seeds
+    gen_algo_settings.save_logs_csv = False
+
+    gen_algo = genetic.GeneticAlgorithm(settings=gen_algo_settings)
+    gen_algo.population = individuals
+
+    gen_algo_result = gen_algo.run_genetic_algorithm(sort_fitness_log=False, verbose=verbose)
+
+    fitness_log = gen_algo_result.fitness_log
+
+    if flatten_trees:
+        fitness_log["Individual"] = [ind.replace("(", "").replace(")", "") for ind in fitness_log["Individual"]]
+
+    fitness_log.drop(columns=["Fitness", "Phenotype"], inplace=True)
+
+    if len(fitness_log) != size:
+        raise Exception(f"Length of fitness log {len(fitness_log)} does not match size {size}")
+
+    fitness_log.to_csv(path_or_buf=REWARDMODEL_FILENAME, index=False)
+
+    print(f"\rTook {misc.timeformat(time.time() - start)}", flush=True)
+
+    return fitness_log
 
 
 def sequence_collate(batch):
@@ -920,7 +973,8 @@ def train_autoencoder(model,
     """
 
     if flatten_trees and not fill_trees:
-        raise ValueError("You cannot have flat individuals if they are not also full. Change the flatten_trees and fill_trees arguments")
+        raise ValueError(
+            "You cannot have flat individuals if they are not also full. Change the flatten_trees and fill_trees arguments")
 
     model_type = type(model)
 
@@ -934,7 +988,8 @@ def train_autoencoder(model,
         raise TypeError(f"Unknown autoencoder type ({model_type})")
 
     if autoencoder_type == "FEEDFORWARD" and not fill_trees:
-        raise ValueError("Feed-Forward auto-encoders can only be trained with full trees, as they require the input to be of constant length. Set fill_trees to True")
+        raise ValueError(
+            "Feed-Forward auto-encoders can only be trained with full trees, as they require the input to be of constant length. Set fill_trees to True")
 
     folder_name = datetime.datetime.now().strftime(f'AUTOENCODER {autoencoder_type} %Y-%m-%d %H-%M-%S')
 
@@ -986,7 +1041,7 @@ def train_autoencoder(model,
             f"The feed-forward network needs individuals whose length is exactly {model.sequence_length}, but the max_depth ({max_depth}) parameter implies a length of {implied_length}.")
 
     print(f"Creating training and validation set for Epoch 1...", end="")
-    
+
     train_loader = data.DataLoader(
         train_set,
         batch_size=batch_size,
@@ -1353,7 +1408,8 @@ def train_autoencoder(model,
 
         if val_perfect_matches >= 1.:
             if perfect_epochs_in_a_row >= val_perfects_100_patience:
-                print(f"The model has reached 100% perfect matches in the validation set for {val_perfects_100_patience} epoch(s) in a row, and has stopped training")
+                print(
+                    f"The model has reached 100% perfect matches in the validation set for {val_perfects_100_patience} epoch(s) in a row, and has stopped training")
                 break
 
             perfect_epochs_in_a_row += 1
@@ -1361,7 +1417,6 @@ def train_autoencoder(model,
             perfect_epochs_in_a_row = 0
 
         if epoch < num_epochs:
-            print(f"Refreshing training and validation set for Epoch {epoch+1}...", end="")
+            print(f"Refreshing training and validation set for Epoch {epoch + 1}...", end="")
             train_set.refresh_data()
             val_set.refresh_data()
-

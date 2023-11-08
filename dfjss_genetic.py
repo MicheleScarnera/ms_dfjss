@@ -100,7 +100,8 @@ class GeneticAlgorithmSettings:
 
         self.warehouse_settings = dfjss.WarehouseSettings()
 
-        self.save_logs = True
+        self.annotate_logs = True
+        self.save_logs_csv = True
         self.fitness_log_is_phenotype_mapper = False
         self.phenotype_mapper_scenarios_amount = 16
         self.phenotype_exploration_attempts_during_crossover = 3
@@ -135,6 +136,12 @@ class GeneticAlgorithmRoutineOutput:
         self.population_data = population_data if population_data is not None else dict()
 
         self.individuals_evaluated = 0
+
+
+class GeneticAlgorithmResult:
+    def __init__(self, fitness_log, genalgo_log):
+        self.fitness_log = fitness_log
+        self.genalgo_log = genalgo_log
 
 
 class GeneticAlgorithm:
@@ -710,150 +717,154 @@ class GeneticAlgorithm:
             print(
                 f"\tMean fitness: {np.mean(fitness_values):.2f} (Interquartile range: [{np.quantile(fitness_values, q=0.25):.2f}, {np.quantile(fitness_values, q=0.75):.2f}])")
 
-        cutoff_index_sorted = -1
+        if current_step < max_steps:
+            cutoff_index_sorted = -1
 
-        if self.settings.reproduction_rate == "knee-point":
-            F = fitness_values[fitness_order[-1]]
-            f = fitness_values[fitness_order[0]]
-            I = len(self.population)
+            if self.settings.reproduction_rate == "knee-point":
+                F = fitness_values[fitness_order[-1]]
+                f = fitness_values[fitness_order[0]]
+                I = len(self.population)
 
-            a = - (F - f) / (I - 1)
-            b = 1
-            c = - f
+                a = - (F - f) / (I - 1)
+                b = 1
+                c = - f
 
-            distances_from_funny_line = np.array(
-                [np.abs(a * i + b * fitness + c) / np.sqrt(a ** 2 + b ** 2) for i, fitness in
-                 enumerate(fitness_values[fitness_order])])
-            distances_from_funny_line_order = np.argsort(distances_from_funny_line)
-            cutoff_index_sorted = distances_from_funny_line_order[-1]
+                distances_from_funny_line = np.array(
+                    [np.abs(a * i + b * fitness + c) / np.sqrt(a ** 2 + b ** 2) for i, fitness in
+                     enumerate(fitness_values[fitness_order])])
+                distances_from_funny_line_order = np.argsort(distances_from_funny_line)
+                cutoff_index_sorted = distances_from_funny_line_order[-1]
 
-        elif misc.is_number(self.settings.reproduction_rate) and 0. < self.settings.reproduction_rate < 1.:
-            cutoff_index_sorted = int(np.round(len(self.population) * self.settings.reproduction_rate))
-        else:
-            raise ValueError(f"self.settings.reproduction_rate has unexpected value {self.settings.reproduction_rate}")
+            elif misc.is_number(self.settings.reproduction_rate) and 0. < self.settings.reproduction_rate < 1.:
+                cutoff_index_sorted = int(np.round(len(self.population) * self.settings.reproduction_rate))
+            else:
+                raise ValueError(f"self.settings.reproduction_rate has unexpected value {self.settings.reproduction_rate}")
 
-        # wipe current population
-        old_population = self.population
-        old_population_sorted = [self.population[fitness_order[i]] for i in range(len(fitness_order))]
-        self.population = []
+            # wipe current population
+            old_population = self.population
+            old_population_sorted = [self.population[fitness_order[i]] for i in range(len(fitness_order))]
+            self.population = []
 
-        # fitness weights (to be used in "lower fitness is better" random draws
-        fitness_weights = np.array([1. / (i + 1) for i in range(population_amount_before)])
-        fitness_weights = fitness_weights / np.sum(fitness_weights)
+            # fitness weights (to be used in "lower fitness is better" random draws
+            fitness_weights = np.array([1. / (i + 1) for i in range(population_amount_before)])
+            fitness_weights = fitness_weights / np.sum(fitness_weights)
 
-        # reproduction, crossover, mutation
-        reproducing_individuals_amount = cutoff_index_sorted
+            # reproduction, crossover, mutation
+            reproducing_individuals_amount = cutoff_index_sorted
 
-        current_reproduction_rate = max(0.01,
-                                        reproducing_individuals_amount / population_amount_before + self.settings.reproduction_rate_increment * (
+            current_reproduction_rate = max(0.01,
+                                            reproducing_individuals_amount / population_amount_before + self.settings.reproduction_rate_increment * (
+                                                    current_step - 1))
+            current_crossover_rate = max(0.01,
+                                         self.settings.crossover_rate + self.settings.crossover_rate_increment * (
+                                                 current_step - 1))
+            current_mutation_rate = max(0.01,
+                                        self.settings.mutation_rate + self.settings.mutation_rate_increment * (
                                                 current_step - 1))
-        current_crossover_rate = max(0.01,
-                                     self.settings.crossover_rate + self.settings.crossover_rate_increment * (
-                                             current_step - 1))
-        current_mutation_rate = max(0.01,
-                                    self.settings.mutation_rate + self.settings.mutation_rate_increment * (
-                                            current_step - 1))
 
-        rates_norm = current_reproduction_rate + current_crossover_rate + current_mutation_rate
+            rates_norm = current_reproduction_rate + current_crossover_rate + current_mutation_rate
 
-        current_reproduction_rate, current_crossover_rate, current_mutation_rate = current_reproduction_rate / rates_norm, current_crossover_rate / rates_norm, current_mutation_rate / rates_norm
+            current_reproduction_rate, current_crossover_rate, current_mutation_rate = current_reproduction_rate / rates_norm, current_crossover_rate / rates_norm, current_mutation_rate / rates_norm
 
-        reproducing_individuals_amount = int(np.round(current_reproduction_rate * population_amount_before))
+            reproducing_individuals_amount = int(np.round(current_reproduction_rate * population_amount_before))
 
-        # reproduction
-        # the best individual is always reproduced, the rest are drawn randomly
-        if verbose > 1:
-            print(f"\r\tDoing reproduction...", end="")
-
-        if reproducing_individuals_amount > 0:
-            self.population.append(old_population_sorted[0])
-
-            if reproducing_individuals_amount > 1:
-                self.population.extend(
-                    self.rng.choice(a=old_population_sorted[1:],
-                                    size=reproducing_individuals_amount - 1,
-                                    p=fitness_weights[1:] / np.sum(fitness_weights[1:]),
-                                    replace=False)
-                )
-
-        if current_reproduction_rate < 1.:
-            # crossover
-            crossovers_to_do = int(len(old_population) * current_crossover_rate)
-            tournament_size = int(self.settings.population_size * self.settings.tournament_percent_size)
-
-            # make tournament size even (and not bigger)
-            tournament_size -= tournament_size % 2
-            tournament_size = max(2, tournament_size)
-
-            crossover_start = time.time()
-
+            # reproduction
+            # the best individual is always reproduced, the rest are drawn randomly
             if verbose > 1:
-                print(f"\r                                           ", end="")
-                print(f"\r\tDoing crossover...", end="")
+                print(f"\r\tDoing reproduction...", end="")
 
-            for i in range(crossovers_to_do):
-                ph_e_attempts = max(self.settings.phenotype_exploration_attempts_during_crossover,
-                                    1) if self.settings.fitness_log_is_phenotype_mapper else 1
-                depth_attempts = max(self.settings.depth_attempts_during_crossover, 1)
+            if reproducing_individuals_amount > 0:
+                self.population.append(old_population_sorted[0])
 
-                new_individual = None
+                if reproducing_individuals_amount > 1:
+                    self.population.extend(
+                        self.rng.choice(a=old_population_sorted[1:],
+                                        size=reproducing_individuals_amount - 1,
+                                        p=fitness_weights[1:] / np.sum(fitness_weights[1:]),
+                                        replace=False)
+                    )
 
-                for _ in range(depth_attempts):
-                    for _ in range(ph_e_attempts):
-                        participants = self.rng.choice(a=len(old_population), size=tournament_size, replace=False)
-                        participants_1 = participants[0:tournament_size // 2]
-                        participants_2 = participants[tournament_size // 2:tournament_size]
+            if current_reproduction_rate < 1.:
+                # crossover
+                crossovers_to_do = int(len(old_population) * current_crossover_rate)
+                tournament_size = int(self.settings.population_size * self.settings.tournament_percent_size)
 
-                        assert len(participants_1) == len(participants_2)
+                # make tournament size even (and not bigger)
+                tournament_size -= tournament_size % 2
+                tournament_size = max(2, tournament_size)
 
-                        best_participant_i_1 = np.argmin(
-                            [fitness_values[participant] for participant in participants_1])
-                        best_participant_i_2 = np.argmin(
-                            [fitness_values[participant] for participant in participants_2])
-
-                        new_individual = self.combine_individuals(individual_1=old_population[best_participant_i_1],
-                                                                  individual_2=old_population[best_participant_i_2],
-                                                                  verbose=verbose)
-
-                        if not self.in_any_fitness_log(repr(new_individual)):
-                            break
-
-                    if new_individual.depth() <= self.settings.tree_transformation_max_depth:
-                        break
-
-                self.population.append(new_individual)
+                crossover_start = time.time()
 
                 if verbose > 1:
-                    print(
-                        f"\r\tDoing crossover... ETA {misc.timeformat_hhmmss(misc.timeleft(crossover_start, time.time(), i + 1, crossovers_to_do))}",
-                        end="")
+                    print(f"\r                                           ", end="")
+                    print(f"\r\tDoing crossover...", end="")
 
-            # mutation
+                for i in range(crossovers_to_do):
+                    ph_e_attempts = max(self.settings.phenotype_exploration_attempts_during_crossover,
+                                        1) if self.settings.fitness_log_is_phenotype_mapper else 1
+                    depth_attempts = max(self.settings.depth_attempts_during_crossover, 1)
+
+                    new_individual = None
+
+                    for _ in range(depth_attempts):
+                        for _ in range(ph_e_attempts):
+                            participants = self.rng.choice(a=len(old_population), size=tournament_size, replace=False)
+                            participants_1 = participants[0:tournament_size // 2]
+                            participants_2 = participants[tournament_size // 2:tournament_size]
+
+                            assert len(participants_1) == len(participants_2)
+
+                            best_participant_i_1 = np.argmin(
+                                [fitness_values[participant] for participant in participants_1])
+                            best_participant_i_2 = np.argmin(
+                                [fitness_values[participant] for participant in participants_2])
+
+                            new_individual = self.combine_individuals(individual_1=old_population[best_participant_i_1],
+                                                                      individual_2=old_population[best_participant_i_2],
+                                                                      verbose=verbose)
+
+                            if not self.in_any_fitness_log(repr(new_individual)):
+                                break
+
+                        if new_individual.depth() <= self.settings.tree_transformation_max_depth:
+                            break
+
+                    self.population.append(new_individual)
+
+                    if verbose > 1:
+                        print(
+                            f"\r\tDoing crossover... ETA {misc.timeformat_hhmmss(misc.timeleft(crossover_start, time.time(), i + 1, crossovers_to_do))}",
+                            end="")
+
+                # mutation
+                if verbose > 1:
+                    print(f"\r                                           ", end="")
+                    print(f"\r\tDoing mutation...", end="\r")
+
+                mutated_individuals_added = 0
+                while len(self.population) < population_amount_before:
+                    individual_to_mutate = self.rng.choice(a=old_population_sorted, p=fitness_weights)
+
+                    new_individual = self.mutate_individual(
+                        individual=individual_to_mutate,
+                        inplace=False)
+
+                    self.population.append(new_individual)
+
+                    mutated_individuals_added += 1
+            else:
+                current_crossover_rate, crossovers_to_do, current_mutation_rate, mutated_individuals_added = 0., 0, 0., 0
+
             if verbose > 1:
-                print(f"\r                                           ", end="")
-                print(f"\r\tDoing mutation...", end="\r")
-
-            mutated_individuals_added = 0
-            while len(self.population) < population_amount_before:
-                individual_to_mutate = self.rng.choice(a=old_population_sorted, p=fitness_weights)
-
-                new_individual = self.mutate_individual(
-                    individual=individual_to_mutate,
-                    inplace=False)
-
-                self.population.append(new_individual)
-
-                mutated_individuals_added += 1
+                print(
+                    f"\t{current_reproduction_rate:.1%} ({reproducing_individuals_amount}) reproduction, {current_crossover_rate:.1%} ({crossovers_to_do}) crossover, {current_mutation_rate:.1%} ({mutated_individuals_added}) mutation")
         else:
-            current_crossover_rate, crossovers_to_do, current_mutation_rate, mutated_individuals_added = 0., 0, 0., 0
-
-        if verbose > 1:
-            print(
-                f"\t{current_reproduction_rate:.1%} ({reproducing_individuals_amount}) reproduction, {current_crossover_rate:.1%} ({crossovers_to_do}) crossover, {current_mutation_rate:.1%} ({mutated_individuals_added}) mutation")
+            if verbose > 1:
+                print("This is the last step, no change to the population has occurred")
 
         return result
 
-    def run_genetic_algorithm(self, max_individuals_to_evaluate=-1, verbose=0):
+    def run_genetic_algorithm(self, max_individuals_to_evaluate=-1, sort_fitness_log=True, verbose=0):
         start = time.time()
 
         if verbose > 0:
@@ -867,8 +878,9 @@ class GeneticAlgorithm:
         individuals_evaluated_total = 0
 
         genalgo_log = None
+        fitness_log_dataframe = None
         folder_name = None
-        if self.settings.save_logs:
+        if self.settings.annotate_logs and self.settings.save_logs_csv:
             genalgo_log = pd.DataFrame(columns=["Step", "Individual", "Fitness"])
 
             folder_name = datetime.datetime.now().strftime('GP %Y-%m-%d %H-%M-%S')
@@ -896,7 +908,7 @@ class GeneticAlgorithm:
 
                 individuals_evaluated_total += routine_output.individuals_evaluated
 
-                if self.settings.save_logs:
+                if self.settings.annotate_logs:
                     # update genetic algorithm log
                     genalgo_log = pd.concat(objs=[genalgo_log,
                                                   pd.DataFrame({
@@ -945,37 +957,39 @@ class GeneticAlgorithm:
 
                     fitness_log_dataframe = pd.DataFrame(data=fitness_log_data)
 
-                    fitness_log_dataframe["string_length"] = fitness_log_dataframe.apply(
-                        lambda row: len(row["Individual"]),
-                        axis=1)
+                    if sort_fitness_log:
+                        fitness_log_dataframe["string_length"] = fitness_log_dataframe.apply(
+                            lambda row: len(row["Individual"]),
+                            axis=1)
 
-                    fitness_log_dataframe.sort_values(by=["Fitness", "string_length"], inplace=True)
+                        fitness_log_dataframe.sort_values(by=["Fitness", "string_length"], inplace=True)
 
-                    fitness_log_dataframe.drop(columns="string_length", inplace=True)
+                        fitness_log_dataframe.drop(columns="string_length", inplace=True)
 
                     filepath_fitnesslog_str = f"{folder_name}/{FITNESSLOG_CSV_NAME}.csv"
                     filepath_fitnesslog = Path(filepath_fitnesslog_str)
                     filepath_fitnesslog.parent.mkdir(parents=True, exist_ok=True)
 
-                    try:
-                        fitness_log_dataframe.to_csv(path_or_buf=filepath_fitnesslog, index=False, mode="w")
+                    if self.settings.save_logs_csv:
+                        try:
+                            fitness_log_dataframe.to_csv(path_or_buf=filepath_fitnesslog, index=False, mode="w")
 
-                        if verbose > 0:
-                            print("\tFitness log saved successfully")
-                    except Exception as error:
-                        if verbose > 0:
-                            print(f"\tCould not save fitness log ({error})")
+                            if verbose > 0:
+                                print("\tFitness log saved successfully")
+                        except Exception as error:
+                            if verbose > 0:
+                                print(f"\tCould not save fitness log ({error})")
 
-                    try:
-                        genalgo_log_path = f"{folder_name}/{GENALGOLOG_CSV_NAME}.csv"
+                        try:
+                            genalgo_log_path = f"{folder_name}/{GENALGOLOG_CSV_NAME}.csv"
 
-                        genalgo_log.to_csv(path_or_buf=genalgo_log_path, index=False)
+                            genalgo_log.to_csv(path_or_buf=genalgo_log_path, index=False)
 
-                        if verbose > 0:
-                            print("\tGenetic algorithm log saved successfully")
-                    except Exception as error:
-                        if verbose > 0:
-                            print(f"\tCould not save genetic algorithm log ({error})")
+                            if verbose > 0:
+                                print("\tGenetic algorithm log saved successfully")
+                        except Exception as error:
+                            if verbose > 0:
+                                print(f"\tCould not save genetic algorithm log ({error})")
 
                     try:
                         laststate_json_path = f"{folder_name}/{LASTSTATE_JSON_NAME}.json"
@@ -1019,3 +1033,5 @@ class GeneticAlgorithm:
 
         if error_to_raise_later is not None:
             raise error_to_raise_later
+
+        return GeneticAlgorithmResult(fitness_log=fitness_log_dataframe, genalgo_log=genalgo_log)

@@ -16,6 +16,17 @@ def is_number(s):
         return False
 
 
+def try_get_number_in_brackets(s):
+    if isinstance(s, str) and s[0] == "{" and s[-1] == "}":
+        num = float(s[1:-2])
+        if num == -0.:
+            num = 0.
+
+        return True, num
+    else:
+        return False, s
+
+
 DEFAULT_FEATURES = alphabet
 
 
@@ -248,7 +259,7 @@ class PriorityFunctionBranch:
 
         return -1  # If the branch is not found in the entire tree, return -1.
 
-    def flatten(self):
+    def flatten(self, numbers_in_brackets=True):
         """
         Returns a list of all features and operations in the tree,
         depth-first, from left to right.
@@ -258,16 +269,24 @@ class PriorityFunctionBranch:
         result = []
 
         if isinstance(self.left_feature, PriorityFunctionBranch):
-            result.extend(self.left_feature.flatten())
+            result.extend(self.left_feature.flatten(numbers_in_brackets=numbers_in_brackets))
         else:
-            result.append(self.left_feature)
+            to_append = self.left_feature
+            if numbers_in_brackets and isinstance(self.left_feature, numbers.Number):
+                to_append = f"{{{self.left_feature}}}"
+
+            result.append(to_append)
 
         result.append(self.operation_character)
 
         if isinstance(self.right_feature, PriorityFunctionBranch):
-            result.extend(self.right_feature.flatten())
+            result.extend(self.right_feature.flatten(numbers_in_brackets=numbers_in_brackets))
         else:
-            result.append(self.right_feature)
+            to_append = self.right_feature
+            if numbers_in_brackets and isinstance(self.right_feature, numbers.Number):
+                to_append = f"{{{self.right_feature}}}"
+
+            result.append(to_append)
 
         return result
 
@@ -288,7 +307,7 @@ class PriorityFunctionBranch:
             self.left_feature.set_from_flattened(flattened_list=flattened_list, old_flattened=old_flattened)
         else:
             old_flattened.append(self.left_feature)
-            self.left_feature = flattened_list[len(old_flattened) - 1]
+            self.left_feature = try_get_number_in_brackets(flattened_list[len(old_flattened) - 1])[1]
 
         old_flattened.append(self.operation_character)
         self.operation_character = flattened_list[len(old_flattened) - 1]
@@ -297,7 +316,7 @@ class PriorityFunctionBranch:
             self.right_feature.set_from_flattened(flattened_list=flattened_list, old_flattened=old_flattened)
         else:
             old_flattened.append(self.right_feature)
-            self.right_feature = flattened_list[len(old_flattened) - 1]
+            self.right_feature = try_get_number_in_brackets(flattened_list[len(old_flattened) - 1])[1]
 
         return old_flattened
 
@@ -373,8 +392,8 @@ class PriorityFunctionTree:
     def depth_of(self, inner_branch):
         return self.root_branch.depth_of(inner_branch=inner_branch)
 
-    def flatten(self):
-        return self.root_branch.flatten()
+    def flatten(self, numbers_in_brackets=True):
+        return self.root_branch.flatten(numbers_in_brackets=numbers_in_brackets)
 
     def set_from_flattened(self, flattened_list):
         return self.root_branch.set_from_flattened(flattened_list=flattened_list)
@@ -430,6 +449,15 @@ def assert_root_branch_validity(root_branch, features, operations):
 
 
 def representation_to_priority_function_tree(representation, features=None, operations=None, max_iter=500, verbose=0):
+    """
+
+    :param representation:
+    :param features:
+    :param operations:
+    :param max_iter:
+    :param verbose:
+    :return: PriorityFunctionTree
+    """
     return PriorityFunctionTree(
         root_branch=representation_to_root_branch(representation=representation,
                                                   features=features,
@@ -624,12 +652,6 @@ def crumbs_to_root_branch(crumbs, max_iter=500, verbose=0):
 
 
 def representation_to_root_branch(representation, features=None, operations=None, max_iter=500, verbose=0):
-    if features is None:
-        features = alphabet
-
-    if operations is None:
-        operations = DEFAULT_OPERATIONS
-
     crumbs = representation_to_crumbs(representation=representation,
                                       features=features,
                                       operations=operations)
