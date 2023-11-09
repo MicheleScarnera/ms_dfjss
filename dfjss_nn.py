@@ -1522,7 +1522,7 @@ class RewardModelDataset(data.Dataset):
 class RewardModel(nn.Module):
     autoencoder: IndividualFeedForwardAutoEncoder
 
-    def __init__(self, input_size, num_rewards, num_layers=2, layer_widths=(1024,), activation="exp"):
+    def __init__(self, input_size, num_rewards, num_layers=2, layer_widths=(1024,), activation="elu"):
         super().__init__()
 
         if not isinstance(layer_widths, tuple):
@@ -1560,6 +1560,8 @@ class RewardModel(nn.Module):
 
         if self.activation == "exp":
             y = torch.exp(y)
+        if self.activation == "elu":
+            y = torch.nn.functional.elu(y) + 1.
 
         return y
 
