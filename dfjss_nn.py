@@ -1,3 +1,5 @@
+import numbers
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -370,6 +372,13 @@ class IndividualFeedForwardAutoEncoder(nn.Module):
         return self.decode_activation(self.flat_out_to_decode(flat_out))
 
     def anti_decoder(self, desired_output, start_encode, gradient_max_norm=0.1, verbose=0, return_iterations=False):
+        if desired_output.dim() > 1 and start_encode.dim() > 1:
+            return torch.stack([self.anti_decoder(desired_output[i],
+                                                  start_encode[i],
+                                                  gradient_max_norm=gradient_max_norm,
+                                                  verbose=verbose,
+                                                  return_iterations=False) for i in range(desired_output.shape[0])])
+
         current_encode = start_encode.detach().requires_grad_()
         current_encode.retain_grad()
 
@@ -815,83 +824,7 @@ class AutoencoderDataset(data.Dataset):
             yield individual
 
 
-def generate_reward_model_file(size=32768,
-                               simulation_seeds_amount=50,
-                               max_depth=8,
-                               flatten_trees=True,
-                               fill_trees=True,
-                               features_weight_in_full_trees=5,
-                               individuals_seed=4358,
-                               num_workers=5,
-                               vocab=None,
-                               warehouse_settings=None,
-                               verbose=2):
-    if flatten_trees and not fill_trees:
-        raise ValueError("flatten_trees=True and fill_trees=False is not implemented")
-
-    if warehouse_settings is None:
-        warehouse_settings = dfjss.WarehouseSettings()
-
-    autoencoder_dataset = AutoencoderDataset(size=size,
-                                             max_depth=max_depth,
-                                             flatten_trees=flatten_trees,
-                                             fill_trees=fill_trees,
-                                             features_weight_in_full_trees=features_weight_in_full_trees,
-                                             rng_seed=individuals_seed)
-
-    inc = 25
-    simulation_seeds = [seed for seed in range(0, inc * simulation_seeds_amount, inc)]
-
-    start = time.time()
-
-    individuals = []
-
-    for i in range(size):
-        if flatten_trees:
-            tree = pf.representation_to_priority_function_tree("({0.0}+{0.0})", features=INDIVIDUALS_FEATURES)
-            tree.fill(max_depth)
-
-            tree.set_from_flattened(string_from_onehots(autoencoder_dataset[i], vocab=vocab, list_mode=True))
-        else:
-            tree = pf.representation_to_priority_function_tree(autoencoder_dataset[i],
-                                                               features=INDIVIDUALS_FEATURES)
-
-        individuals.append(tree)
-
-    gen_algo_settings = genetic.GeneticAlgorithmSettings()
-    gen_algo_settings.features = INDIVIDUALS_FEATURES
-    gen_algo_settings.warehouse_settings = warehouse_settings
-    gen_algo_settings.multiprocessing_processes = num_workers
-    gen_algo_settings.population_size = size
-    gen_algo_settings.total_steps = 1
-    gen_algo_settings.number_of_possible_seeds = simulation_seeds_amount
-    gen_algo_settings.number_of_simulations_per_individual = simulation_seeds_amount
-    gen_algo_settings.simulations_seeds = simulation_seeds
-    gen_algo_settings.save_logs_csv = False
-
-    gen_algo = genetic.GeneticAlgorithm(settings=gen_algo_settings)
-    gen_algo.population = individuals
-
-    gen_algo_result = gen_algo.run_genetic_algorithm(sort_fitness_log=False, verbose=verbose)
-
-    fitness_log = gen_algo_result.fitness_log
-
-    if flatten_trees:
-        fitness_log["Individual"] = [ind.replace("(", "").replace(")", "") for ind in fitness_log["Individual"]]
-
-    fitness_log.drop(columns=["Fitness", "Phenotype"], inplace=True)
-
-    if len(fitness_log) != size:
-        raise Exception(f"Length of fitness log {len(fitness_log)} does not match size {size}")
-
-    fitness_log.to_csv(path_or_buf=REWARDMODEL_FILENAME, index=False)
-
-    print(f"\rTook {misc.timeformat(time.time() - start)}", flush=True)
-
-    return fitness_log
-
-
-def sequence_collate(batch):
+def individual_sequence_collate(batch):
     longest_sequence_length = max([sample.shape[0] for sample in batch])
 
     collated_batch = []
@@ -1045,14 +978,14 @@ def train_autoencoder(model,
     train_loader = data.DataLoader(
         train_set,
         batch_size=batch_size,
-        collate_fn=sequence_collate,
+        collate_fn=individual_sequence_collate,
         shuffle=True
     )
 
     val_loader = data.DataLoader(
         val_set,
         batch_size=batch_size,
-        collate_fn=sequence_collate,
+        collate_fn=individual_sequence_collate,
         shuffle=True
     )
 
@@ -1420,3 +1353,447 @@ def train_autoencoder(model,
             print(f"Refreshing training and validation set for Epoch {epoch + 1}...", end="")
             train_set.refresh_data()
             val_set.refresh_data()
+
+
+def generate_reward_model_file(batch_size=32768,
+                               num_batches=None,
+                               simulation_seeds_amount=50,
+                               max_depth=8,
+                               flatten_trees=True,
+                               fill_trees=True,
+                               features_weight_in_full_trees=5,
+                               individuals_seed=4358,
+                               num_workers=5,
+                               vocab=None,
+                               warehouse_settings=None,
+                               verbose=2):
+    if flatten_trees and not fill_trees:
+        raise ValueError("flatten_trees=True and fill_trees=False is not implemented")
+
+    if warehouse_settings is None:
+        warehouse_settings = dfjss.WarehouseSettings()
+
+    autoencoder_dataset = AutoencoderDataset(size=batch_size,
+                                             max_depth=max_depth,
+                                             flatten_trees=flatten_trees,
+                                             fill_trees=fill_trees,
+                                             features_weight_in_full_trees=features_weight_in_full_trees,
+                                             rng_seed=individuals_seed)
+
+    fitness_log = None
+
+    inc = 25
+    simulation_seeds = [seed for seed in range(0, inc * simulation_seeds_amount, inc)]
+
+    batch_n = 1
+    while num_batches is None or (num_batches is not None and batch_n <= num_batches):
+        try:
+            print(f"Batch {batch_n}")
+
+            start = time.time()
+
+            individuals = []
+
+            for i in range(batch_size):
+                if flatten_trees:
+                    tree = pf.representation_to_priority_function_tree("({0.0}+{0.0})", features=INDIVIDUALS_FEATURES)
+                    tree.fill(max_depth)
+
+                    tree.set_from_flattened(string_from_onehots(autoencoder_dataset[i], vocab=vocab, list_mode=True))
+                else:
+                    tree = pf.representation_to_priority_function_tree(autoencoder_dataset[i],
+                                                                       features=INDIVIDUALS_FEATURES)
+
+                individuals.append(tree)
+
+            gen_algo_settings = genetic.GeneticAlgorithmSettings()
+            gen_algo_settings.features = INDIVIDUALS_FEATURES
+            gen_algo_settings.warehouse_settings = warehouse_settings
+            gen_algo_settings.multiprocessing_processes = num_workers
+            gen_algo_settings.population_size = batch_size
+            gen_algo_settings.total_steps = 1
+            gen_algo_settings.number_of_possible_seeds = simulation_seeds_amount
+            gen_algo_settings.number_of_simulations_per_individual = simulation_seeds_amount
+            gen_algo_settings.simulations_seeds = simulation_seeds
+            gen_algo_settings.save_logs_csv = False
+
+            gen_algo = genetic.GeneticAlgorithm(settings=gen_algo_settings)
+            gen_algo.population = individuals
+
+            gen_algo_result = gen_algo.run_genetic_algorithm(sort_fitness_log=False, verbose=verbose)
+
+            fitness_log = gen_algo_result.fitness_log
+
+            if flatten_trees:
+                fitness_log["Individual"] = [ind.replace("(", "").replace(")", "") for ind in fitness_log["Individual"]]
+
+            fitness_log.drop(columns=["Fitness", "Phenotype"], inplace=True)
+
+            if len(fitness_log) != batch_size:
+                raise Exception(f"Length of fitness log {len(fitness_log)} does not match size {batch_size}")
+
+            if os.path.exists(REWARDMODEL_FILENAME):
+                old_fitness_log = pd.read_csv(REWARDMODEL_FILENAME)
+
+                columns_old = set(old_fitness_log.columns)
+                columns_current = set(fitness_log.columns)
+
+                if columns_old != columns_current:
+                    print("Dataset on disk's columns and the computed dataset have different columns")
+
+                    if columns_old.issubset(columns_current):
+                        print(
+                            f"Computed dataset has these additional columns: {columns_current.difference(columns_old)}")
+                    else:
+                        print(
+                            f"Dataset on disk has these additional columns: {columns_old.difference(columns_current)}")
+
+                    print("Datasets will be merged anyway")
+
+                fitness_log = pd.concat([old_fitness_log, fitness_log])
+
+            fitness_log.to_csv(path_or_buf=REWARDMODEL_FILENAME, index=False, mode='w')
+
+            print(f"\rTook {misc.timeformat(time.time() - start)}", flush=True)
+
+            print("Refreshing dataset...")
+            autoencoder_dataset.refresh_data()
+
+            batch_n += 1
+
+        except KeyboardInterrupt:
+            print("\nData generation was manually interrupted")
+
+            if fitness_log is None:
+                print("Fitness log is None")
+            break
+
+    return fitness_log
+
+
+class RewardModelDataset(data.Dataset):
+    def __init__(self):
+        super().__init__()
+
+        try:
+            self.df = pd.read_csv(REWARDMODEL_FILENAME)
+        except OSError as os_error:
+            raise OSError(f"Could not read {REWARDMODEL_FILENAME}. Error given: {os_error}")
+
+        def begins_with(string, prefix):
+            """
+
+            :type string: str
+            :type prefix: str
+            :return: bool
+            """
+            return string[::-1].endswith(prefix[::-1])
+
+        self.N = len(self.df)
+
+        def end_with_eos(string):
+            return string if string.endswith("EOS") else string + "EOS"
+
+        self.individuals_data = individual_sequence_collate([one_hot_sequence(end_with_eos(ind)) for ind in self.df["Individual"]])
+
+        self.individual_sequence_length = self.individuals_data.shape[1]
+
+        self.rewards_columns = [column for column in self.df.columns if begins_with(column, "Fitness_")]
+
+        self.num_rewards = len(self.rewards_columns)
+
+        self.rewards_data = torch.tensor(self.df.loc[:,
+                                         self.rewards_columns].to_numpy(dtype="float32"))  # torch.full(size=(len(self.df), self.num_rewards), fill_value=torch.nan)
+
+    def __iter__(self):
+        return self.data_iterator()
+
+    def __getitem__(self, idx):
+        return self.individuals_data[idx], self.rewards_data[idx]
+
+    def __len__(self):
+        return self.N
+
+    def data_iterator(self):
+        for i in range(self.N):
+            yield self[i]
+
+
+class RewardModel(nn.Module):
+    autoencoder: IndividualFeedForwardAutoEncoder
+
+    def __init__(self, input_size, num_rewards, num_layers=2, layer_widths=(1024,), activation="exp"):
+        super().__init__()
+
+        if not isinstance(layer_widths, tuple):
+            layer_widths = (layer_widths,)
+
+        num_widths = len(layer_widths)
+
+        self.input_size = input_size
+
+        self.num_rewards = num_rewards
+
+        self.activation = activation
+
+        self.layers = nn.ModuleList()
+
+        for i in range(num_layers):
+            if i == 0:
+                in_width = input_size
+                out_width = layer_widths[0]
+            else:
+                in_width = layer_widths[(i - 1) % num_widths]
+                out_width = layer_widths[i % num_widths]
+
+            self.layers.append(nn.Linear(in_features=in_width, out_features=out_width))
+
+        self.last_layer_to_rewards = nn.Linear(in_features=self.layers[-1].out_features, out_features=num_rewards)
+
+    def forward(self, x):
+        y = x
+
+        for layer in self.layers:
+            y = layer(y)
+
+        y = self.last_layer_to_rewards(y)
+
+        if self.activation == "exp":
+            y = torch.exp(y)
+
+        return y
+
+    def count_parameters(self, learnable=True):
+        return sum(p.numel() for p in self.parameters() if p.requires_grad == learnable)
+
+    def summary(self):
+        longdash = '------------------------------------'
+        result = [longdash, "Reward Model",
+                  f"Input size: {self.input_size}",
+                  f"Number of Rewards: {self.num_rewards}",
+                  f"Hidden Layers: {len(self.layers)} ({', '.join([str(layer.in_features) + '->' + str(layer.out_features) for layer in self.layers])})",
+                  f"Activation: {self.activation}",
+                  f"Number of parameters: (Learnable: {self.count_parameters()}, Fixed: {self.count_parameters(False)})",
+                  longdash]
+
+        return "\n".join(result)
+
+
+def train_reward_model(model,
+                       autoencoder,
+                       dataset,
+                       num_epochs=50,
+                       batch_size=64,
+                       val_split=0.2,
+                       per_reward_loss_weight=0.3,
+                       per_reward_loss_weight_inc=0.3,
+                       mean_reward_loss_weight=0.7,
+                       mean_reward_loss_weight_inc=0.,
+                       gradient_clipping=1.):
+    """
+    :type autoencoder: IndividualFeedForwardAutoEncoder
+
+    :param model:
+    :param autoencoder:
+    :param dataset:
+    :param num_epochs:
+    :param batch_size:
+    :param val_split:
+    :param per_reward_loss_weight:
+    :param per_reward_loss_weight_inc:
+    :param mean_reward_loss_weight:
+    :param mean_reward_loss_weight_inc:
+    :param gradient_clipping:
+    :return:
+    """
+    folder_name = datetime.datetime.now().strftime(f'REWARD MODEL %Y-%m-%d %H-%M-%S')
+
+    if not os.path.exists(folder_name):
+        os.makedirs(folder_name)
+
+    print(f"Model(s) will be saved in \"{folder_name}\"")
+
+    df_cols = ["Epoch", "Loss_Weight_PerReward", "Loss_Weight_MeanReward"]
+
+    for tv in ("Train", "Val"):
+        for q in ("Loss", "PerReward_Loss", "MeanReward_Loss"):
+            df_cols.append(f"{tv}_{q}")
+
+        if tv == "Train":
+            df_cols.append("Train_LR")
+
+    df = pd.DataFrame(columns=df_cols)
+
+    train_set, val_set = data.random_split(dataset=dataset, lengths=[1. - val_split, val_split])
+
+    train_loader = data.DataLoader(
+        train_set,
+        batch_size=batch_size,
+        shuffle=True
+    )
+
+    val_loader = data.DataLoader(
+        val_set,
+        batch_size=batch_size,
+        shuffle=True
+    )
+
+    criterion_per_reward = nn.MSELoss()
+    criterion_mean_reward = nn.MSELoss()
+    optimizer = optim.Adam(model.parameters(), lr=0.001)
+
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, mode="min",
+                                                     threshold=0.005, patience=8, cooldown=5, factor=0.1 ** 0.25,
+                                                     verbose=False)
+
+    for epoch in range(1, num_epochs + 1):
+        # Training
+        train_loss = 0.
+        train_per_reward_criterion = 0.
+        train_mean_reward_criterion = 0.
+
+        train_start = None
+        train_progress = 0
+        train_progress_needed = None
+
+        # Validation
+        val_loss = 0.
+        val_per_reward_criterion = 0.
+        val_mean_reward_criterion = 0.
+
+        val_start = None
+        val_progress = 0
+        val_progress_needed = None
+
+        # Per reward/Mean reward criterion weights
+        criterion_weights_per_reward = (epoch - 1) * per_reward_loss_weight_inc + per_reward_loss_weight
+        criterion_weights_mean_reward = (epoch - 1) * mean_reward_loss_weight_inc + mean_reward_loss_weight
+        criterion_weights_norm = criterion_weights_per_reward + criterion_weights_mean_reward
+        criterion_weights_per_reward /= criterion_weights_norm
+        criterion_weights_mean_reward /= criterion_weights_norm
+
+        for is_train in (True, False):
+            if is_train:
+                print(f"\rEpoch {epoch}: Training...", end="")
+                model.train()
+
+                train_start = time.time()
+            else:
+                print(f"\rEpoch {epoch}: Validating...", end="", flush=True)
+                model.eval()
+
+                val_start = time.time()
+
+            loader = train_loader if is_train else val_loader
+
+            for individual_batch, reward_batch in loader:
+                B = individual_batch.shape[0]
+
+                losses = None
+
+                if is_train:
+                    if train_progress_needed is None:
+                        train_progress_needed = len(train_loader) * B
+
+                    losses = []
+                else:
+                    if val_progress_needed is None:
+                        val_progress_needed = len(val_loader) * B
+
+                if is_train:
+                    optimizer.zero_grad()
+
+                for b in range(B):
+                    individual = individual_batch[b]
+
+                    encoding = autoencoder.encoder(individual)
+
+                    predicted_rewards = model(encoding)
+                    true_rewards = reward_batch[b]
+
+                    predicted_mean_reward = predicted_rewards.mean(dim=-1)
+                    true_reward_mean = true_rewards.mean(dim=-1)
+
+                    loss_per_reward = criterion_per_reward(predicted_rewards, true_rewards)
+                    loss_mean_reward = criterion_mean_reward(predicted_mean_reward, true_reward_mean)
+
+                    loss = criterion_weights_per_reward * loss_per_reward + criterion_weights_mean_reward * loss_mean_reward
+
+                    if is_train:
+                        losses.append(loss)
+
+                        train_progress += 1
+
+                        datapoints_per_second = train_progress / (time.time() - train_start)
+
+                        train_loss += loss.item()
+                        train_per_reward_criterion += loss_per_reward.item()
+                        train_mean_reward_criterion += loss_mean_reward.item()
+                    else:
+                        val_progress += 1
+
+                        datapoints_per_second = val_progress / (time.time() - val_start)
+
+                        val_loss += loss.item()
+                        val_per_reward_criterion += loss_per_reward.item()
+                        val_mean_reward_criterion += loss_mean_reward.item()
+
+                    dps_text = f"{datapoints_per_second:.2f} datapoints per second" if datapoints_per_second > 1. else f"{misc.timeformat(1. / datapoints_per_second)} per datapoint"
+
+                    if is_train:
+                        print(
+                            f"\rEpoch {epoch}: Training... {train_progress / train_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(train_start, time.time(), train_progress, train_progress_needed))}, {dps_text}, Average criterion: {train_loss / train_progress:.4f} ({criterion_weights_per_reward:.2f}*{train_per_reward_criterion / train_progress:.3f}+{criterion_weights_mean_reward:.2f}*{train_mean_reward_criterion / train_progress:.3f}))",
+                            end="", flush=True)
+                    else:
+                        print(
+                            f"\rEpoch {epoch}: Validating... {val_progress / train_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(val_start, time.time(), val_progress, val_progress_needed))}, {dps_text}, Average criterion: {val_loss / val_progress:.4f} ({criterion_weights_per_reward:.2f}*{val_per_reward_criterion / val_progress:.3f}+{criterion_weights_mean_reward:.2f}*{val_mean_reward_criterion / val_progress:.3f}))",
+                            end="", flush=True)
+
+                if is_train:
+                    losses = torch.stack(losses)
+                    losses.mean().backward()
+
+                    grad_norm = nn.utils.clip_grad_norm_(model.parameters(),
+                                                         max_norm=gradient_clipping,
+                                                         error_if_nonfinite=True)
+
+                    optimizer.step()
+
+        train_loss /= train_progress
+        train_per_reward_criterion /= train_progress
+        train_mean_reward_criterion /= train_progress
+
+        val_loss /= val_progress
+        val_per_reward_criterion /= val_progress
+        val_mean_reward_criterion /= val_progress
+
+        current_lr = optimizer.param_groups[0]['lr']
+
+        print(
+            f"\rEpoch {epoch}: Loss(PerReward+MeanReward): (Train: {train_loss:.4f} ({criterion_weights_per_reward:.2f}*{train_per_reward_criterion:.3f}+{criterion_weights_mean_reward:.2f}*{train_mean_reward_criterion:.3f})) (Val: {val_loss:.4f} ({criterion_weights_per_reward:.2f}*{val_per_reward_criterion:.3f}+{criterion_weights_mean_reward:.2f}*{val_mean_reward_criterion:.3f})) LR: {current_lr:.0e} Took {misc.timeformat(time.time() - train_start)} ({misc.timeformat(val_start - train_start)}, {misc.timeformat(time.time() - val_start)})"
+        )
+
+        if not is_train:
+            scheduler.step(val_loss)
+
+        new_row = dict()
+        new_row["Epoch"] = epoch
+        new_row["Loss_Weight_PerReward"] = criterion_weights_per_reward
+        new_row["Loss_Weight_MeanReward"] = criterion_weights_mean_reward
+        new_row["Train_Loss"] = train_loss
+        new_row["Train_PerReward_Loss"] = train_per_reward_criterion
+        new_row["Train_MeanReward_Loss"] = train_mean_reward_criterion
+        new_row["Train_LR"] = current_lr
+
+        new_row["Val_Loss"] = val_loss
+        new_row["Val_PerReward_Loss"] = val_per_reward_criterion
+        new_row["Val_MeanReward_Loss"] = val_mean_reward_criterion
+
+        if len(df) > 0:
+            df = pd.concat([df, pd.DataFrame(new_row, index=[0])], ignore_index=True)
+        else:
+            df = pd.DataFrame(new_row, index=[0])
+
+        df.to_csv(path_or_buf=f"{folder_name}/log.csv", index=False)
+
+        torch.save(model.state_dict(), f"{folder_name}/model_epoch{epoch}.pth")
