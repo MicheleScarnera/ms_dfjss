@@ -682,7 +682,7 @@ def syntax_score(x, aggregate_with_gmean=True):
 
 class AutoencoderDataset(data.Dataset):
     def __init__(self, rng_seed=100, max_depth=4, size=5000,
-                 refresh_rate=0., refresh_is_random=False,
+                 refresh_rate=1., refresh_is_random=False,
                  inflate=False, inflate_is_multiplicative=False, inflate_max_size=None,
                  fill_trees=True, flatten_trees=False, features_weight_in_full_trees=None,
                  sparse=False):
@@ -1362,7 +1362,7 @@ def generate_reward_model_file(batch_size=32768,
                                flatten_trees=True,
                                fill_trees=True,
                                features_weight_in_full_trees=5,
-                               individuals_seed=4358,
+                               individuals_seed=None,
                                num_workers=5,
                                vocab=None,
                                warehouse_settings=None,
@@ -1377,6 +1377,7 @@ def generate_reward_model_file(batch_size=32768,
                                              max_depth=max_depth,
                                              flatten_trees=flatten_trees,
                                              fill_trees=fill_trees,
+                                             refresh_rate=1.,
                                              features_weight_in_full_trees=features_weight_in_full_trees,
                                              rng_seed=individuals_seed)
 
@@ -1708,7 +1709,7 @@ def train_reward_model(model,
                 for b in range(B):
                     individual = individual_batch[b]
 
-                    encoding = autoencoder.encoder(individual)
+                    encoding = autoencoder.encoder(individual).detach()
 
                     predicted_rewards = model(encoding)
                     true_rewards = reward_batch[b]
