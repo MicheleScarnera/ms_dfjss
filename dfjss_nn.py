@@ -371,15 +371,19 @@ class IndividualFeedForwardAutoEncoder(nn.Module):
 
         return self.decode_activation(self.flat_out_to_decode(flat_out))
 
-    def anti_decoder(self, desired_output, start_encode, gradient_max_norm=0.1, verbose=0, return_iterations=False):
-        if desired_output.dim() > 1 and start_encode.dim() > 1:
+    def anti_decoder(self, desired_output, start_encode=None, gradient_max_norm=0.1, verbose=0, return_iterations=False):
+        if desired_output.dim() > 1 and ((start_encode is not None and start_encode.dim() > 1) or start_encode is None):
             return torch.stack([self.anti_decoder(desired_output[i],
-                                                  start_encode[i],
+                                                  start_encode[i] if start_encode is not None else None,
                                                   gradient_max_norm=gradient_max_norm,
                                                   verbose=verbose,
                                                   return_iterations=False) for i in range(desired_output.shape[0])])
 
-        current_encode = start_encode.detach().requires_grad_()
+        if start_encode is not None:
+            current_encode = start_encode.detach().requires_grad_()
+        else:
+            current_encode = self.encoder(sparse_to_one_hot(desired_output)).requires_grad_()
+
         current_encode.retain_grad()
 
         criterion = nn.NLLLoss()
@@ -1523,7 +1527,7 @@ class RewardModelDataset(data.Dataset):
 class RewardModel(nn.Module):
     autoencoder: IndividualFeedForwardAutoEncoder
 
-    def __init__(self, input_size, num_rewards, num_layers=2, layer_widths=(1024,), activation="elu"):
+    def __init__(self, input_size, num_rewards, num_layers=2, layer_widths=(1024,), rewards_activation="elu"):
         super().__init__()
 
         if not isinstance(layer_widths, tuple):
@@ -1535,9 +1539,10 @@ class RewardModel(nn.Module):
 
         self.num_rewards = num_rewards
 
-        self.activation = activation
+        self.rewards_activation = rewards_activation
 
         self.layers = nn.ModuleList()
+        self.layer_activations = nn.ModuleList()
 
         for i in range(num_layers):
             if i == 0:
@@ -1548,20 +1553,21 @@ class RewardModel(nn.Module):
                 out_width = layer_widths[i % num_widths]
 
             self.layers.append(nn.Linear(in_features=in_width, out_features=out_width))
+            self.layer_activations.append(nn.PReLU())
 
         self.last_layer_to_rewards = nn.Linear(in_features=self.layers[-1].out_features, out_features=num_rewards)
 
     def forward(self, x):
         y = x
 
-        for layer in self.layers:
-            y = layer(y)
+        for layer, activ in zip(self.layers, self.layer_activations):
+            y = activ(layer(y))
 
         y = self.last_layer_to_rewards(y)
 
-        if self.activation == "exp":
+        if self.rewards_activation == "exp":
             y = torch.exp(y)
-        if self.activation == "elu":
+        if self.rewards_activation == "elu":
             y = torch.nn.functional.elu(y) + 1.
 
         return y
@@ -1575,7 +1581,7 @@ class RewardModel(nn.Module):
                   f"Input size: {self.input_size}",
                   f"Number of Rewards: {self.num_rewards}",
                   f"Hidden Layers: {len(self.layers)} ({', '.join([str(layer.in_features) + '->' + str(layer.out_features) for layer in self.layers])})",
-                  f"Activation: {self.activation}",
+                  f"Activation: {self.rewards_activation}",
                   f"Number of parameters: (Learnable: {self.count_parameters()}, Fixed: {self.count_parameters(False)})",
                   longdash]
 
