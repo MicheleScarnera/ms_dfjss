@@ -371,7 +371,8 @@ class IndividualFeedForwardAutoEncoder(nn.Module):
 
         return self.decode_activation(self.flat_out_to_decode(flat_out))
 
-    def anti_decoder(self, desired_output, start_encode=None, gradient_max_norm=0.1, verbose=0, return_iterations=False):
+    def anti_decoder(self, desired_output, start_encode=None, gradient_max_norm=0.1, verbose=0,
+                     return_iterations=False):
         if desired_output.dim() > 1 and ((start_encode is not None and start_encode.dim() > 1) or start_encode is None):
             return torch.stack([self.anti_decoder(desired_output[i],
                                                   start_encode[i] if start_encode is not None else None,
@@ -1499,7 +1500,8 @@ class RewardModelDataset(data.Dataset):
         def end_with_eos(string):
             return string if string.endswith("EOS") else string + "EOS"
 
-        self.individuals_data = individual_sequence_collate([one_hot_sequence(end_with_eos(ind)) for ind in self.df["Individual"]])
+        self.individuals_data = individual_sequence_collate(
+            [one_hot_sequence(end_with_eos(ind)) for ind in self.df["Individual"]])
 
         self.individual_sequence_length = self.individuals_data.shape[1]
 
@@ -1508,7 +1510,8 @@ class RewardModelDataset(data.Dataset):
         self.num_rewards = len(self.rewards_columns)
 
         self.rewards_data = torch.tensor(self.df.loc[:,
-                                         self.rewards_columns].to_numpy(dtype="float32"))  # torch.full(size=(len(self.df), self.num_rewards), fill_value=torch.nan)
+                                         self.rewards_columns].to_numpy(
+            dtype="float32"))  # torch.full(size=(len(self.df), self.num_rewards), fill_value=torch.nan)
 
     def __iter__(self):
         return self.data_iterator()
@@ -1527,7 +1530,13 @@ class RewardModelDataset(data.Dataset):
 class RewardModel(nn.Module):
     autoencoder: IndividualFeedForwardAutoEncoder
 
-    def __init__(self, input_size, num_rewards, num_layers=2, layer_widths=(1024,), rewards_activation="elu"):
+    def __init__(self, input_size,
+                 num_rewards,
+                 num_layers=2,
+                 layer_widths=(1024,),
+                 layer_dropout=0.1,
+                 residual_layers=False,
+                 rewards_activation="elu"):
         super().__init__()
 
         if not isinstance(layer_widths, tuple):
@@ -1543,6 +1552,9 @@ class RewardModel(nn.Module):
 
         self.layers = nn.ModuleList()
         self.layer_activations = nn.ModuleList()
+        self.layer_dropout = nn.Dropout(layer_dropout)
+
+        self.residual_layers = residual_layers
 
         for i in range(num_layers):
             if i == 0:
@@ -1561,7 +1573,8 @@ class RewardModel(nn.Module):
         y = x
 
         for layer, activ in zip(self.layers, self.layer_activations):
-            y = activ(layer(y))
+            y = self.layer_dropout(activ(layer(y))) + (
+                y if (self.residual_layers and layer.in_features == layer.out_features) else 0.)
 
         y = self.last_layer_to_rewards(y)
 
@@ -1581,7 +1594,9 @@ class RewardModel(nn.Module):
                   f"Input size: {self.input_size}",
                   f"Number of Rewards: {self.num_rewards}",
                   f"Hidden Layers: {len(self.layers)} ({', '.join([str(layer.in_features) + '->' + str(layer.out_features) for layer in self.layers])})",
-                  f"Activation: {self.rewards_activation}",
+                  f"Layers of same size are residual: {'yes' if self.residual_layers else 'no'}",
+                  f"Layer Dropout: {self.layer_dropout.p}",
+                  f"Final Activation: {self.rewards_activation}",
                   f"Number of parameters: (Learnable: {self.count_parameters()}, Fixed: {self.count_parameters(False)})",
                   longdash]
 
@@ -1594,11 +1609,14 @@ def train_reward_model(model,
                        num_epochs=50,
                        batch_size=64,
                        val_split=0.2,
+                       weight_decay=0.001,
                        per_reward_loss_weight=0.3,
                        per_reward_loss_weight_inc=0.3,
                        mean_reward_loss_weight=0.7,
                        mean_reward_loss_weight_inc=0.,
-                       gradient_clipping=1.):
+                       gradient_clipping=1.,
+                       loss_is_smooth_l1=False,
+                       smooth_l1_beta=100.):
     """
     :type autoencoder: IndividualFeedForwardAutoEncoder
 
@@ -1608,11 +1626,14 @@ def train_reward_model(model,
     :param num_epochs:
     :param batch_size:
     :param val_split:
+    :param weight_decay:
     :param per_reward_loss_weight:
     :param per_reward_loss_weight_inc:
     :param mean_reward_loss_weight:
     :param mean_reward_loss_weight_inc:
     :param gradient_clipping:
+    :param loss_is_smooth_l1:
+    :param smooth_l1_beta:
     :return:
     """
     folder_name = datetime.datetime.now().strftime(f'REWARD MODEL %Y-%m-%d %H-%M-%S')
@@ -1647,9 +1668,26 @@ def train_reward_model(model,
         shuffle=True
     )
 
-    criterion_per_reward = nn.MSELoss()
-    criterion_mean_reward = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    if loss_is_smooth_l1:
+        criterion_per_reward = nn.SmoothL1Loss(beta=smooth_l1_beta)
+        criterion_mean_reward = nn.SmoothL1Loss(beta=smooth_l1_beta)
+    else:
+        criterion_per_reward = nn.MSELoss()
+        criterion_mean_reward = nn.MSELoss()
+
+    weights = []
+    biases = []
+
+    for name, param in model.named_parameters():
+        if "weight" in name:
+            weights.append(param)
+        else:
+            biases.append(param)
+
+    optimizer = optim.Adam([{'params': weights, 'weight_decay': weight_decay},
+                            {'params': biases, 'weight_decay': 0.}], lr=0.001)
+
+    print(f"Weight decay = {weight_decay}")
 
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, mode="min",
                                                      threshold=0.005, patience=8, cooldown=5, factor=0.1 ** 0.25,
@@ -1755,7 +1793,7 @@ def train_reward_model(model,
                             end="", flush=True)
                     else:
                         print(
-                            f"\rEpoch {epoch}: Validating... {val_progress / train_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(val_start, time.time(), val_progress, val_progress_needed))}, {dps_text}, Average criterion: {val_loss / val_progress:.4f} ({criterion_weights_per_reward:.2f}*{val_per_reward_criterion / val_progress:.3f}+{criterion_weights_mean_reward:.2f}*{val_mean_reward_criterion / val_progress:.3f}))",
+                            f"\rEpoch {epoch}: Validating... {val_progress / val_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(val_start, time.time(), val_progress, val_progress_needed))}, {dps_text}, Average criterion: {val_loss / val_progress:.4f} ({criterion_weights_per_reward:.2f}*{val_per_reward_criterion / val_progress:.3f}+{criterion_weights_mean_reward:.2f}*{val_mean_reward_criterion / val_progress:.3f}))",
                             end="", flush=True)
 
                 if is_train:
