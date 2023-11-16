@@ -363,7 +363,7 @@ class IndividualFeedForwardAutoEncoder(nn.Module):
         if start_encode is not None:
             current_encode = start_encode.detach().requires_grad_()
         else:
-            current_encode = self.encoder(sparse_to_one_hot(desired_output)).requires_grad_()
+            current_encode = self.encoder(sparse_to_one_hot(desired_output)).detach().requires_grad_()
 
         current_encode.retain_grad()
 
@@ -441,7 +441,7 @@ def sparse_to_one_hot(sequence, vocab=None):
     if vocab is None:
         vocab = VOCAB
 
-    return torch.nn.functional.one_hot(sequence, num_classes=len(vocab))
+    return torch.nn.functional.one_hot(sequence, num_classes=len(vocab)).to(device, torch.float32)
 
 
 def reduce_sequence(sequence, input_is_logs=False):
@@ -1479,7 +1479,14 @@ def generate_reward_model_file(batch_size=8,
 
 
 class RewardModelDataset(data.Dataset):
-    def __init__(self, force_num_rewards=None, verbose=1):
+    def __init__(self, autoencoder, force_num_rewards=None, anti_decode=False, verbose=1):
+        """
+        :type autoencoder: IndividualFeedForwardAutoEncoder
+
+        :param autoencoder:
+        :param force_num_rewards:
+        :param verbose:
+        """
         super().__init__()
 
         try:
@@ -1507,8 +1514,18 @@ class RewardModelDataset(data.Dataset):
 
         self.raw_individuals = np.unique(self.df["Individual"])
 
-        self._individuals_data = individual_sequence_collate(
-            [one_hot_sequence(end_with_eos(ind)) for ind in self.raw_individuals])
+        if verbose > 0:
+            print(f"Pre-computing {'anti-decodes' if anti_decode else 'encodes'} of individuals...", end="")
+
+        if anti_decode:
+            self._individuals_data = autoencoder.anti_decoder(
+                torch.stack([sparse_sequence(end_with_eos(ind)) for ind in self.raw_individuals], dim=0)).detach()
+        else:
+            self._individuals_data = autoencoder.encoder(
+                torch.stack([one_hot_sequence(end_with_eos(ind)) for ind in self.raw_individuals], dim=0)).detach()
+
+        if verbose > 0:
+            print("Done")
 
         self.individual_sequence_length = self._individuals_data.shape[1]
 
@@ -1631,7 +1648,6 @@ class RewardModel(nn.Module):
 
 
 def train_reward_model(model,
-                       autoencoder,
                        dataset,
                        num_epochs=50,
                        batch_size=64,
@@ -1781,9 +1797,9 @@ def train_reward_model(model,
                     individual = individual_batch[b]
                     seed = seed_batch[b]
 
-                    encoding = autoencoder.encoder(individual).detach()
+                    # encoding = autoencoder.encoder(individual).detach()
 
-                    predicted_rewards = model(encoding, seed).squeeze(0)
+                    predicted_rewards = model(individual, seed).squeeze(0)
                     true_rewards = reward_batch[b]
 
                     predicted_mean_reward = predicted_rewards.mean(dim=-1)
