@@ -1487,16 +1487,8 @@ class RewardModelDataset(data.Dataset):
         except OSError as os_error:
             raise OSError(f"Could not read {REWARDMODEL_FILENAME}. Error given: {os_error}")
 
-        self.N = len(self.df)
-
         def end_with_eos(string):
             return string if string.endswith("EOS") else string + "EOS"
-
-        self.individuals_data = individual_sequence_collate(
-            [one_hot_sequence(end_with_eos(ind)) for ind in self.df["Individual"]])
-
-        self.individual_sequence_length = self.individuals_data.shape[1]
-
         df_is_wide = reward_model_df_is_wide(self.df)
 
         if df_is_wide:
@@ -1508,6 +1500,20 @@ class RewardModelDataset(data.Dataset):
             self.seeds = self.seeds[0:force_num_rewards]
             self.df = self.df[[seed in self.seeds for seed in self.df.loc[:, "Seed"]]]
 
+        self.N = len(self.df)
+
+        # make sure df is sorted
+        self.df.sort_values(by=["Individual", "Seed"], inplace=True)
+
+        self.raw_individuals = np.unique(self.df["Individual"])
+
+        self._individuals_data = individual_sequence_collate(
+            [one_hot_sequence(end_with_eos(ind)) for ind in self.raw_individuals])
+
+        self.individual_sequence_length = self._individuals_data.shape[1]
+
+        self.individual_to_data = dict([(raw, tens) for raw, tens in zip(self.raw_individuals, self._individuals_data)])
+
         if verbose > 0:
             s = [int(seed.item()) for seed in self.seeds]
             S = len(s)
@@ -1515,7 +1521,6 @@ class RewardModelDataset(data.Dataset):
             print(f"Counter of seeds: {counter}")
             perpl = np.exp(np.sum([-freq / S * np.log(freq / S) for seed, freq in counter.most_common()]))
             print(f"Number of seeds in dataset: {len(s)}, Perplexity: {perpl:.3f}")
-
 
         self.seed_to_index = dict([(seed.item(), torch.tensor(i)) for i, seed in enumerate(self.seeds)])
 
@@ -1525,17 +1530,20 @@ class RewardModelDataset(data.Dataset):
 
         self.rewards_data = torch.tensor(self.df.loc[:, "Fitness"].to_numpy(dtype="float32"))
 
+    def get_individual(self, idx):
+        return self.individual_to_data[self.df.loc[idx, "Individual"]]
+
     def __iter__(self):
         return self.data_iterator()
 
     def __getitem__(self, idx):
-        return self.individuals_data[idx], self.seeds_data[idx], self.rewards_data[idx]
+        return self.get_individual(idx), self.seeds_data[idx], self.rewards_data[idx]
 
     def __len__(self):
         return self.N
 
     def data_iterator(self):
-        for i in range(self.N):
+        for i in range(len(self)):
             yield self[i]
 
 
@@ -1809,11 +1817,11 @@ def train_reward_model(model,
 
                     if is_train:
                         print(
-                            f"\rEpoch {epoch}: Training... {train_progress / train_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(train_start, time.time(), train_progress, train_progress_needed))}, {dps_text}, Average criterion: {train_loss / train_progress:.4f} ({criterion_weights_per_reward:.2f}*{train_per_reward_criterion / train_progress:.3f}+{criterion_weights_mean_reward:.2f}*{train_mean_reward_criterion / train_progress:.3f}))",
+                            f"\rEpoch {epoch}: Training... {train_progress} / {train_progress_needed} ({train_progress / train_progress_needed:.1%}) ETA {misc.timeformat(misc.timeleft(train_start, time.time(), train_progress, train_progress_needed))}, {dps_text}, Average criterion: {train_loss / train_progress:.4f} ({criterion_weights_per_reward:.2f}*{train_per_reward_criterion / train_progress:.3f}+{criterion_weights_mean_reward:.2f}*{train_mean_reward_criterion / train_progress:.3f}))",
                             end="", flush=True)
                     else:
                         print(
-                            f"\rEpoch {epoch}: Validating... {val_progress / val_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(val_start, time.time(), val_progress, val_progress_needed))}, {dps_text}, Average criterion: {val_loss / val_progress:.4f} ({criterion_weights_per_reward:.2f}*{val_per_reward_criterion / val_progress:.3f}+{criterion_weights_mean_reward:.2f}*{val_mean_reward_criterion / val_progress:.3f}))",
+                            f"\rEpoch {epoch}: Validating... {val_progress} / {val_progress_needed} ({val_progress / val_progress_needed:.1%}) ETA {misc.timeformat(misc.timeleft(val_start, time.time(), val_progress, val_progress_needed))}, {dps_text}, Average criterion: {val_loss / val_progress:.4f} ({criterion_weights_per_reward:.2f}*{val_per_reward_criterion / val_progress:.3f}+{criterion_weights_mean_reward:.2f}*{val_mean_reward_criterion / val_progress:.3f}))",
                             end="", flush=True)
 
                 if is_train:
