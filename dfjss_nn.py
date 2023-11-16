@@ -12,6 +12,8 @@ import time
 import datetime
 import os
 
+from collections import Counter
+
 import dfjss_objects as dfjss
 import dfjss_priorityfunction as pf
 import dfjss_genetic as genetic
@@ -1340,9 +1342,24 @@ def train_autoencoder(model,
             val_set.refresh_data()
 
 
-def generate_reward_model_file(batch_size=32768,
-                               num_batches=None,
-                               simulation_seeds_amount=50,
+def reward_model_df_is_wide(df):
+    return np.any([misc.begins_with(column, "Fitness_") for column in df.columns])
+
+
+def reward_model_df_wide_to_long(df):
+    result = pd.wide_to_long(df, stubnames="Fitness", sep="_", i="Individual", j="Seed").reset_index()
+    result.dropna(inplace=True)
+    result.sort_values(by=["Individual", "Seed"], inplace=True, ignore_index=True)
+
+    return result
+
+
+def generate_reward_model_file(batch_size=8,
+                               num_batches=4000,
+                               long=True,
+                               seeds_per_batch=32,
+                               number_of_possible_seeds=128,
+                               explicit_seeds=None,
                                max_depth=8,
                                flatten_trees=True,
                                fill_trees=True,
@@ -1368,13 +1385,10 @@ def generate_reward_model_file(batch_size=32768,
 
     fitness_log = None
 
-    inc = 25
-    simulation_seeds = [seed for seed in range(0, inc * simulation_seeds_amount, inc)]
-
     batch_n = 1
     while num_batches is None or (num_batches is not None and batch_n <= num_batches):
         try:
-            print(f"Batch {batch_n}")
+            print(f"Batch {batch_n}{f' of {num_batches}' if num_batches is not None else ''}")
 
             start = time.time()
 
@@ -1398,9 +1412,9 @@ def generate_reward_model_file(batch_size=32768,
             gen_algo_settings.multiprocessing_processes = num_workers
             gen_algo_settings.population_size = batch_size
             gen_algo_settings.total_steps = 1
-            gen_algo_settings.number_of_possible_seeds = simulation_seeds_amount
-            gen_algo_settings.number_of_simulations_per_individual = simulation_seeds_amount
-            gen_algo_settings.simulations_seeds = simulation_seeds
+            gen_algo_settings.number_of_possible_seeds = number_of_possible_seeds
+            gen_algo_settings.number_of_simulations_per_individual = seeds_per_batch
+            gen_algo_settings.simulations_seeds = explicit_seeds
             gen_algo_settings.save_logs_csv = False
 
             gen_algo = genetic.GeneticAlgorithm(settings=gen_algo_settings)
@@ -1418,23 +1432,30 @@ def generate_reward_model_file(batch_size=32768,
             if len(fitness_log) != batch_size:
                 raise Exception(f"Length of fitness log {len(fitness_log)} does not match size {batch_size}")
 
+            if long:
+                fitness_log = reward_model_df_wide_to_long(fitness_log)
+
             if os.path.exists(REWARDMODEL_FILENAME):
                 old_fitness_log = pd.read_csv(REWARDMODEL_FILENAME)
 
-                columns_old = set(old_fitness_log.columns)
-                columns_current = set(fitness_log.columns)
+                if long and reward_model_df_is_wide(old_fitness_log):
+                    old_fitness_log = reward_model_df_wide_to_long(old_fitness_log)
 
-                if columns_old != columns_current:
-                    print("Dataset on disk's columns and the computed dataset have different columns")
+                if not long:
+                    columns_old = set(old_fitness_log.columns)
+                    columns_current = set(fitness_log.columns)
 
-                    if columns_old.issubset(columns_current):
-                        print(
-                            f"Computed dataset has these additional columns: {columns_current.difference(columns_old)}")
-                    else:
-                        print(
-                            f"Dataset on disk has these additional columns: {columns_old.difference(columns_current)}")
+                    if columns_old != columns_current:
+                        print("Dataset on disk's columns and the computed dataset have different columns")
 
-                    print("Datasets will be merged anyway")
+                        if columns_old.issubset(columns_current):
+                            print(
+                                f"Computed dataset has these additional columns: {columns_current.difference(columns_old)}")
+                        else:
+                            print(
+                                f"Dataset on disk has these additional columns: {columns_old.difference(columns_current)}")
+
+                        print("Datasets will be merged anyway")
 
                 fitness_log = pd.concat([old_fitness_log, fitness_log])
 
@@ -1458,22 +1479,13 @@ def generate_reward_model_file(batch_size=32768,
 
 
 class RewardModelDataset(data.Dataset):
-    def __init__(self, force_num_rewards=None):
+    def __init__(self, force_num_rewards=None, verbose=1):
         super().__init__()
 
         try:
             self.df = pd.read_csv(REWARDMODEL_FILENAME)
         except OSError as os_error:
             raise OSError(f"Could not read {REWARDMODEL_FILENAME}. Error given: {os_error}")
-
-        def begins_with(string, prefix):
-            """
-
-            :type string: str
-            :type prefix: str
-            :return: bool
-            """
-            return string[::-1].endswith(prefix[::-1])
 
         self.N = len(self.df)
 
@@ -1485,17 +1497,25 @@ class RewardModelDataset(data.Dataset):
 
         self.individual_sequence_length = self.individuals_data.shape[1]
 
-        df_is_wide = np.any([begins_with(column, "Fitness_") for column in self.df.columns])
+        df_is_wide = reward_model_df_is_wide(self.df)
 
         if df_is_wide:
-            self.df = pd.wide_to_long(self.df, stubnames="Fitness", sep="_", i="Individual", j="Seed").reset_index()
-            self.df.sort_values(by=["Individual", "Seed"], inplace=True, ignore_index=True)
+            self.df = reward_model_df_wide_to_long(self.df)
 
         self.seeds = torch.tensor(np.unique(self.df.loc[:, "Seed"]))
 
         if type(force_num_rewards) == int:
             self.seeds = self.seeds[0:force_num_rewards]
             self.df = self.df[[seed in self.seeds for seed in self.df.loc[:, "Seed"]]]
+
+        if verbose > 0:
+            s = [int(seed.item()) for seed in self.seeds]
+            S = len(s)
+            counter = Counter(s)
+            print(f"Counter of seeds: {counter}")
+            perpl = np.exp(np.sum([-freq / S * np.log(freq / S) for seed, freq in counter.most_common()]))
+            print(f"Number of seeds in dataset: {len(s)}, Perplexity: {perpl:.3f}")
+
 
         self.seed_to_index = dict([(seed.item(), torch.tensor(i)) for i, seed in enumerate(self.seeds)])
 

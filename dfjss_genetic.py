@@ -518,9 +518,9 @@ class GeneticAlgorithm:
     def do_genetic_routine_once(self, current_step, max_steps, verbose=0):
         result = GeneticAlgorithmRoutineOutput()
 
-        if len(self.settings.simulations_seeds) != self.settings.number_of_possible_seeds:
+        if len(self.settings.simulations_seeds) != int(self.settings.number_of_possible_seeds):
             raise ValueError(
-                f"Number of seeds provided in settings.simulations_seeds ({len(self.settings.simulations_seeds)}) is not the same as settings.number_of_possible_seeds ({self.settings.number_of_simulations_per_individual})")
+                f"Number of seeds provided in settings.simulations_seeds ({len(self.settings.simulations_seeds)}) is not the same as settings.number_of_possible_seeds ({self.settings.number_of_possible_seeds})")
 
         start = time.time()
 

@@ -110,8 +110,11 @@ def H(n):
     return gamma + np.log(n) + 0.5/n - 1./(12*n**2) + 1./(120*n**4)
 
 
-def begins_with(containing_string, contained_string):
-    containing_string = str(containing_string)
-    contained_string = str(contained_string)
-    return (len(containing_string) >= len(contained_string)) and (
-            containing_string[0:len(contained_string)] == contained_string)
+def begins_with(string, prefix):
+    """
+
+    :type string: str
+    :type prefix: str
+    :return: bool
+    """
+    return string[::-1].endswith(prefix[::-1])
