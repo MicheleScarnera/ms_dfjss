@@ -54,6 +54,8 @@ FEATURES_AND_CONSTANTS = INDIVIDUALS_FEATURES + CONSTANTS
 VOCAB = ["NULL", "EOS", "(", ")"]  # , *OPERATIONS, *INDIVIDUALS_FEATURES, *CONSTANTS
 VOCAB_REDUCED = VOCAB.copy()
 
+EOS_INDEX = VOCAB.index("EOS")
+
 FIRST_NONFUNCTIONAL_REDUCED_TOKEN_INDEX = len(VOCAB_REDUCED)
 
 VOCAB_OPERATIONS_LOCATION = (len(VOCAB), len(VOCAB) + len(OPERATIONS))
@@ -79,59 +81,65 @@ VOCAB_REDUCTION_MATRIX[5, VOCAB_FEATURES_LOCATION[0]:VOCAB_FEATURES_LOCATION[1]]
 class RNNEncoderHat(nn.Module):
     module: nn.Module
 
-    def __init__(self, rnn, embedding):
+    def __init__(self, rnn, encoding_size):
         super().__init__()
         self.rnn = rnn
-        self.embedding = embedding
-        # self.layer_norm = nn.LayerNorm(rnn.hidden_size)
+        self.encoding_size = encoding_size
 
-    def forward(self, x, h):
+        self.accumulator_y_to_a = nn.Linear(in_features=rnn.hidden_size, out_features=encoding_size)
+        self.accumulator_a_to_a = nn.Linear(in_features=encoding_size, out_features=encoding_size)
+
+    def forward(self, x):
         is_batch = len(x.shape) == 3
 
         if is_batch:
-            x_reduced_info = reduce_sequence(x)[:, :, FIRST_NONFUNCTIONAL_REDUCED_TOKEN_INDEX:len(VOCAB_REDUCED)]
-        else:
-            x_reduced_info = reduce_sequence(x)[:, FIRST_NONFUNCTIONAL_REDUCED_TOKEN_INDEX:len(VOCAB_REDUCED)]
+            return torch.stack([self.forward(x_) for x_ in x], dim=0)
 
-        argmax_dim = 2 if is_batch else 1
-        e = self.embedding(torch.argmax(x, dim=argmax_dim))
+        d = 2 if self.rnn.bidirectional else 1
 
-        rnn_out = self.rnn.forward(torch.cat([e, x_reduced_info], dim=argmax_dim), h)
-        return rnn_out[0], rnn_out[1]
+        current_h = torch.zeros(size=(d * self.rnn.num_layers, self.rnn.hidden_size))
+        accumulator = torch.zeros(size=(self.encoding_size, ))
+
+        for x_ in x:
+            y_, current_h = self.rnn(x_.unsqueeze(0), current_h)
+
+            accumulator = torch.nn.functional.tanh(self.accumulator_y_to_a(y_.squeeze(0)) + self.accumulator_a_to_a(accumulator))
+
+        return accumulator.squeeze(0)
 
 
 class RNNDecoderHat(nn.Module):
     rnn: nn.RNN
 
-    def __init__(self, rnn, actual_input_size):
+    def __init__(self, rnn, output_size):
         super().__init__()
         self.rnn = rnn
-        self.actual_input_size = actual_input_size
-        self.proj = nn.Linear(in_features=rnn.hidden_size, out_features=actual_input_size, bias=False)
-        # self.layer_norm = nn.LayerNorm(rnn.hidden_size)
+        self.output_proj = nn.Linear(in_features=rnn.hidden_size, out_features=output_size, bias=False)
 
-    def forward(self, x, h, reverse_input_h=True):
-        if reverse_input_h:
-            h_ = torch.flip(h, dims=[0])
-        else:
-            h_ = h
+    def forward(self, a, max_length=None):
+        is_batch = len(a.shape) == 2
 
-        rnn_out = self.rnn.forward(x, h_)
+        if is_batch:
+            return torch.stack([self.forward(a_, max_length=max_length) for a_ in a], dim=0)
 
-        # return self.proj(rnn_out[0]), rnn_out[1]
+        d = 2 if self.rnn.bidirectional else 1
 
-        if len(x.shape) == 2:
-            decoder_y = rnn_out[0]  # self.layer_norm(rnn_out[0])
-            output = nn.functional.log_softmax(self.proj(decoder_y), dim=1)
+        current_h = torch.zeros(size=(d * self.rnn.num_layers, self.rnn.hidden_size))
+        result = []
 
-            return decoder_y, rnn_out[1], output
-        elif len(x.shape) == 3:
-            decoder_y = rnn_out[0]  # self.layer_norm(rnn_out[0])
-            output = nn.functional.log_softmax(self.proj(decoder_y), dim=2)
+        i = 0
+        while (max_length is not None and i < max_length) or (max_length is None):
+            decoder_y, current_h = self.rnn.forward(a.unsqueeze(0), current_h)
 
-            return decoder_y, rnn_out[1], output
-        else:
-            raise ValueError(f"Expected either 2-D or 3-D, got {len(x.shape)}-D")
+            actual_y = torch.nn.functional.log_softmax(self.output_proj(decoder_y), dim=-1).squeeze(0)
+            result.append(actual_y)
+
+            if max_length is None and torch.argmax(actual_y, dim=-1) == EOS_INDEX:
+                break
+
+            i += 1
+
+        return torch.stack(result, dim=0)
 
 
 def new_first_decoder_token(confidence=1, dtype=torch.float32):
@@ -141,8 +149,7 @@ def new_first_decoder_token(confidence=1, dtype=torch.float32):
 
 
 class IndividualRNNAutoEncoder(nn.Module):
-    def __init__(self, input_size=None, hidden_size=512, num_layers=3, dropout=0.1, bidirectional=False,
-                 nonlinearity='tanh', embedding_dim=64):
+    def __init__(self, input_size=None, hidden_size=512, encoding_size=1024, num_layers=3, dropout=0.1, bidirectional=False):
         super(IndividualRNNAutoEncoder, self).__init__()
 
         if input_size is None:
@@ -150,33 +157,26 @@ class IndividualRNNAutoEncoder(nn.Module):
 
         self.input_size = input_size
 
-        input_size_encoder = embedding_dim + len(
-            VOCAB_REDUCED[FIRST_NONFUNCTIONAL_REDUCED_TOKEN_INDEX:len(VOCAB_REDUCED)])
-
         self.d = 2 if bidirectional else 1
         self.num_layers = num_layers
         self.hidden_size = hidden_size
 
-        self.encoder_embedding = nn.Embedding(num_embeddings=input_size, embedding_dim=embedding_dim)
+        self.encoding_size = encoding_size
 
-        self.encoder = RNNEncoderHat(nn.RNN(input_size=input_size_encoder,
+        self.encoder = RNNEncoderHat(nn.RNN(input_size=input_size,
                                             hidden_size=hidden_size,
                                             num_layers=num_layers,
                                             dropout=dropout,
                                             bidirectional=bidirectional,
                                             batch_first=True,
-                                            nonlinearity=nonlinearity,
-                                            device=device), self.encoder_embedding)
+                                            device=device), encoding_size)
 
-        self.encoder_output_size = self.d * hidden_size
-
-        self.decoder = RNNDecoderHat(nn.RNN(input_size=hidden_size,
+        self.decoder = RNNDecoderHat(nn.RNN(input_size=encoding_size,
                                             hidden_size=hidden_size,
                                             num_layers=num_layers,
                                             dropout=dropout,
                                             bidirectional=False,
                                             batch_first=False,
-                                            nonlinearity=nonlinearity,
                                             device=device), input_size)
 
         # for p in self.parameters():
@@ -188,41 +188,19 @@ class IndividualRNNAutoEncoder(nn.Module):
     def summary(self):
         longdash = '------------------------------------'
         result = [longdash, "Individual RNN Auto-Encoder",
-                  f"Vocabulary size: {self.input_size} (Embedding dimensions: {self.encoder_embedding.embedding_dim}, {self.encoder.rnn.input_size} including o/F indicators)",
-                  f"Hidden size: {self.encoder.rnn.hidden_size}", f"Layers: {self.encoder.rnn.num_layers}",
-                  f"Dropout: {self.encoder.rnn.dropout}", f"Bidirectional: {self.encoder.rnn.bidirectional}",
+                  f"Vocabulary size: {self.input_size}",
+                  f"Encoding/Accumulator size: {self.encoding_size}",
+                  f"RNN Hidden size: {self.encoder.rnn.hidden_size}", f"RNN Layers: {self.encoder.rnn.num_layers}",
+                  f"RNN Dropout: {self.encoder.rnn.dropout}", f"RNN Bidirectional: {self.encoder.rnn.bidirectional}",
                   f"Number of parameters: (Learnable: {self.count_parameters()}, Fixed: {self.count_parameters(False)})",
                   longdash]
 
         return "\n".join(result)
 
     def forward(self, x):
-        is_batch = len(x.shape) == 3
-        batch_size = x.shape[0] if is_batch else None
-
-        sequence_length = x.shape[1] if is_batch else x.shape[0]
-
-        encoder_h_size = (self.d * self.num_layers, batch_size, self.encoder.rnn.hidden_size) if is_batch else (
-            self.d * self.num_layers, self.encoder.rnn.hidden_size)
-        decoder_h_size = (self.num_layers, batch_size, self.decoder.rnn.hidden_size) if is_batch else (
-            self.num_layers, self.decoder.rnn.hidden_size)
-
-        decoder_x_size = (1, batch_size, self.decoder.rnn.input_size) if is_batch else (
-            (1, self.decoder.rnn.input_size))
-
-        encoder_y, encoder_h = self.encoder(x, torch.zeros(encoder_h_size))
-
-        decoder_x = torch.zeros(
-            size=decoder_x_size)  # torch.transpose(encoder_y[:, -1, :].unsqueeze(1), 0, 1) if is_batch else encoder_y[-1, :].unsqueeze(0)
-        current_decoder_h = encoder_h  # torch.zeros(decoder_h_size)
-
-        decodes = []
-        for _ in range(sequence_length):
-            decoder_x, current_decoder_h, d = self.decoder(decoder_x, current_decoder_h)
-
-            decodes.append(d)
-
-        return torch.transpose(torch.cat(decodes, dim=0), 0, 1) if is_batch else torch.cat(decodes, dim=0)
+        max_length = x.shape[-2]
+        encode = self.encoder(x)
+        return self.decoder(encode, max_length)
 
 
 class IndividualTransformerAutoEncoder(nn.Module):
@@ -959,6 +937,7 @@ def train_autoencoder(model,
 
     df_examples = pd.DataFrame(columns=df_examples_cols)
 
+    print("Making training dataset...")
     train_set = AutoencoderDataset(max_depth=max_depth,
                                    size=train_size,
                                    refresh_rate=train_refresh_rate,
@@ -966,6 +945,7 @@ def train_autoencoder(model,
                                    fill_trees=fill_trees,
                                    rng_seed=train_seed)
 
+    print("Making validation dataset...")
     val_set = AutoencoderDataset(max_depth=max_depth,
                                  size=val_size,
                                  refresh_rate=val_refresh_rate,
@@ -1478,7 +1458,7 @@ def generate_reward_model_file(batch_size=32768,
 
 
 class RewardModelDataset(data.Dataset):
-    def __init__(self):
+    def __init__(self, force_num_rewards=None):
         super().__init__()
 
         try:
@@ -1505,19 +1485,31 @@ class RewardModelDataset(data.Dataset):
 
         self.individual_sequence_length = self.individuals_data.shape[1]
 
-        self.rewards_columns = [column for column in self.df.columns if begins_with(column, "Fitness_")]
+        df_is_wide = np.any([begins_with(column, "Fitness_") for column in self.df.columns])
 
-        self.num_rewards = len(self.rewards_columns)
+        if df_is_wide:
+            self.df = pd.wide_to_long(self.df, stubnames="Fitness", sep="_", i="Individual", j="Seed").reset_index()
+            self.df.sort_values(by=["Individual", "Seed"], inplace=True, ignore_index=True)
 
-        self.rewards_data = torch.tensor(self.df.loc[:,
-                                         self.rewards_columns].to_numpy(
-            dtype="float32"))  # torch.full(size=(len(self.df), self.num_rewards), fill_value=torch.nan)
+        self.seeds = torch.tensor(np.unique(self.df.loc[:, "Seed"]))
+
+        if type(force_num_rewards) == int:
+            self.seeds = self.seeds[0:force_num_rewards]
+            self.df = self.df[[seed in self.seeds for seed in self.df.loc[:, "Seed"]]]
+
+        self.seed_to_index = dict([(seed.item(), torch.tensor(i)) for i, seed in enumerate(self.seeds)])
+
+        self.num_rewards = len(self.seeds)
+
+        self.seeds_data = torch.tensor(self.df.loc[:, "Seed"].to_numpy(dtype="int"))
+
+        self.rewards_data = torch.tensor(self.df.loc[:, "Fitness"].to_numpy(dtype="float32"))
 
     def __iter__(self):
         return self.data_iterator()
 
     def __getitem__(self, idx):
-        return self.individuals_data[idx], self.rewards_data[idx]
+        return self.individuals_data[idx], self.seeds_data[idx], self.rewards_data[idx]
 
     def __len__(self):
         return self.N
@@ -1531,12 +1523,13 @@ class RewardModel(nn.Module):
     autoencoder: IndividualFeedForwardAutoEncoder
 
     def __init__(self, input_size,
-                 num_rewards,
+                 seed_to_index,
+                 embedding_dim=128,
                  num_layers=2,
                  layer_widths=(1024,),
                  layer_dropout=0.1,
                  residual_layers=False,
-                 rewards_activation="elu"):
+                 reward_activation="elu"):
         super().__init__()
 
         if not isinstance(layer_widths, tuple):
@@ -1546,9 +1539,14 @@ class RewardModel(nn.Module):
 
         self.input_size = input_size
 
-        self.num_rewards = num_rewards
+        self.seed_to_index = seed_to_index
 
-        self.rewards_activation = rewards_activation
+        self.num_seeds = len(self.seed_to_index)
+
+        self.seed_embedding = nn.Embedding(embedding_dim=embedding_dim,
+                                           num_embeddings=self.num_seeds)
+
+        self.reward_activation = reward_activation
 
         self.layers = nn.ModuleList()
         self.layer_activations = nn.ModuleList()
@@ -1558,7 +1556,7 @@ class RewardModel(nn.Module):
 
         for i in range(num_layers):
             if i == 0:
-                in_width = input_size
+                in_width = input_size + embedding_dim
                 out_width = layer_widths[0]
             else:
                 in_width = layer_widths[(i - 1) % num_widths]
@@ -1567,20 +1565,20 @@ class RewardModel(nn.Module):
             self.layers.append(nn.Linear(in_features=in_width, out_features=out_width))
             self.layer_activations.append(nn.PReLU())
 
-        self.last_layer_to_rewards = nn.Linear(in_features=self.layers[-1].out_features, out_features=num_rewards)
+        self.last_layer_to_reward = nn.Linear(in_features=self.layers[-1].out_features, out_features=1)
 
-    def forward(self, x):
-        y = x
+    def forward(self, x, seed):
+        y = torch.cat([x, self.seed_embedding(self.seed_to_index[seed.item()])], dim=0)
 
         for layer, activ in zip(self.layers, self.layer_activations):
             y = self.layer_dropout(activ(layer(y))) + (
                 y if (self.residual_layers and layer.in_features == layer.out_features) else 0.)
 
-        y = self.last_layer_to_rewards(y)
+        y = self.last_layer_to_reward(y)
 
-        if self.rewards_activation == "exp":
+        if self.reward_activation == "exp":
             y = torch.exp(y)
-        if self.rewards_activation == "elu":
+        if self.reward_activation == "elu":
             y = torch.nn.functional.elu(y) + 1.
 
         return y
@@ -1592,11 +1590,12 @@ class RewardModel(nn.Module):
         longdash = '------------------------------------'
         result = [longdash, "Reward Model",
                   f"Input size: {self.input_size}",
-                  f"Number of Rewards: {self.num_rewards}",
+                  f"Number of Seeds: {self.num_seeds}",
+                  f"Seed Embedding size: {self.seed_embedding.embedding_dim}",
                   f"Hidden Layers: {len(self.layers)} ({', '.join([str(layer.in_features) + '->' + str(layer.out_features) for layer in self.layers])})",
                   f"Layers of same size are residual: {'yes' if self.residual_layers else 'no'}",
                   f"Layer Dropout: {self.layer_dropout.p}",
-                  f"Final Activation: {self.rewards_activation}",
+                  f"Final Activation: {self.reward_activation}",
                   f"Number of parameters: (Learnable: {self.count_parameters()}, Fixed: {self.count_parameters(False)})",
                   longdash]
 
@@ -1733,7 +1732,7 @@ def train_reward_model(model,
 
             loader = train_loader if is_train else val_loader
 
-            for individual_batch, reward_batch in loader:
+            for individual_batch, seed_batch, reward_batch in loader:
                 B = individual_batch.shape[0]
 
                 losses = None
@@ -1752,10 +1751,11 @@ def train_reward_model(model,
 
                 for b in range(B):
                     individual = individual_batch[b]
+                    seed = seed_batch[b]
 
                     encoding = autoencoder.encoder(individual).detach()
 
-                    predicted_rewards = model(encoding)
+                    predicted_rewards = model(encoding, seed).squeeze(0)
                     true_rewards = reward_batch[b]
 
                     predicted_mean_reward = predicted_rewards.mean(dim=-1)

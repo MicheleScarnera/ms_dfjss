@@ -7,7 +7,6 @@ fill_trees = False
 
 # some architectures can only work with specific settings
 if autoencoder_type == "FEEDFORWARD":
-    flatten_trees = True
     fill_trees = True
 
 # creating a dataset to print one example, and get some parameters needed for later
