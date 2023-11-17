@@ -1615,8 +1615,8 @@ class RewardModel(nn.Module):
     def forward(self, x, seed):
         y = torch.cat([x, self.seed_embedding(self.seed_to_index[seed.item()])], dim=0)
 
-        for layer, activ in zip(self.layers, self.layer_activations):
-            y = self.layer_dropout(activ(layer(y))) + (
+        for i, layer, activ in zip(range(len(self.layers)), self.layers, self.layer_activations):
+            y = (self.layer_dropout(activ(layer(y))) if i > 0 else activ(layer(y))) + (
                 y if (self.residual_layers and layer.in_features == layer.out_features) else 0.)
 
         y = self.last_layer_to_reward(y)
