@@ -1610,15 +1610,20 @@ class RewardModel(nn.Module):
                 out_width = layer_widths[i % num_widths]
 
             self.layers.append(nn.Linear(in_features=in_width, out_features=out_width, device=device))
-            self.layer_norms.append(nn.InstanceNorm1d(out_width, device=device))
+            self.layer_norms.append(nn.BatchNorm1d(out_width, device=device))
             self.layer_activations.append(nn.PReLU(device=device))
 
         self.last_layer_to_reward = nn.Linear(in_features=self.layers[-1].out_features, out_features=1, device=device)
 
-    def forward(self, x, seed):
+    def forward(self, x, seeds):
         is_batch = x.dim() == 2
 
-        y = torch.cat([x, self.seed_embedding(self.seed_to_index[seed.item()])], dim=0)
+        if is_batch:
+            embed = self.seed_embedding(torch.stack([self.seed_to_index[seed.item()] for seed in seeds], dim=0))
+        else:
+            embed = self.seed_embedding(self.seed_to_index[seeds.item()])
+
+        y = torch.cat([x, embed], dim=-1)
 
         for i, layer, norm, activ in zip(range(len(self.layers)), self.layers, self.layer_norms, self.layer_activations):
             y_transformed = activ(
@@ -1634,7 +1639,7 @@ class RewardModel(nn.Module):
         if self.reward_activation == "elu":
             y = torch.nn.functional.elu(y) + 1.
 
-        return y
+        return y.squeeze(-1) if is_batch else y
 
     def count_parameters(self, learnable=True):
         return sum(p.numel() for p in self.parameters() if p.requires_grad == learnable)
@@ -1787,64 +1792,50 @@ def train_reward_model(model,
             for individual_batch, seed_batch, reward_batch in loader:
                 B = individual_batch.shape[0]
 
-                losses = None
-
                 if is_train:
                     if train_progress_needed is None:
-                        train_progress_needed = len(train_loader) * B
-
-                    losses = []
+                        train_progress_needed = len(train_loader)
                 else:
                     if val_progress_needed is None:
-                        val_progress_needed = len(val_loader) * B
+                        val_progress_needed = len(val_loader)
 
                 if is_train:
                     optimizer.zero_grad()
 
-                for b in range(B):
-                    individual = individual_batch[b]
-                    seed = seed_batch[b]
+                predicted_rewards = model(individual_batch, seed_batch)
 
-                    # encoding = autoencoder.encoder(individual).detach()
+                l = torch.stack([crit(predicted_rewards, reward_batch) for crit in criterion_funcs], dim=-1)
 
-                    predicted_rewards = model(individual, seed)
-                    true_rewards = reward_batch[b].unsqueeze(0)
-
-                    l = torch.tensor([crit(predicted_rewards, true_rewards) for crit in criterion_funcs], requires_grad=True, device=device)
-
-                    loss = torch.dot(l, criterion_weights)
-
-                    if is_train:
-                        losses.append(loss)
-
-                        train_progress += 1
-
-                        datapoints_per_second = train_progress / (time.time() - train_start)
-
-                        train_loss += loss.item()
-                        train_criterions += l.numpy(force=True)
-                    else:
-                        val_progress += 1
-
-                        datapoints_per_second = val_progress / (time.time() - val_start)
-
-                        val_loss += loss.item()
-                        val_criterions += l.numpy(force=True)
-
-                    dps_text = f"{datapoints_per_second:.2f} datapoints per second" if datapoints_per_second > 1. else f"{misc.timeformat(1. / datapoints_per_second)} per datapoint"
-
-                    if is_train:
-                        print(
-                            f"\rEpoch {epoch}: Training... {train_progress} / {train_progress_needed} ({train_progress / train_progress_needed:.1%}) ETA {misc.timeformat(misc.timeleft(train_start, time.time(), train_progress, train_progress_needed))}, {dps_text}, Average criterion: {running_loss_and_its_components(True, True)}",
-                            end="", flush=True)
-                    else:
-                        print(
-                            f"\rEpoch {epoch}: Validating... {val_progress} / {val_progress_needed} ({val_progress / val_progress_needed:.1%}) ETA {misc.timeformat(misc.timeleft(val_start, time.time(), val_progress, val_progress_needed))}, {dps_text}, Average criterion: {running_loss_and_its_components(False, True)}",
-                            end="", flush=True)
+                loss = torch.linalg.vecdot(l, criterion_weights)
 
                 if is_train:
-                    losses = torch.stack(losses)
-                    losses.mean().backward()
+                    train_progress += 1
+
+                    batches_per_second = train_progress / (time.time() - train_start)
+
+                    train_loss += loss.item()
+                    train_criterions += l.numpy(force=True)
+                else:
+                    val_progress += 1
+
+                    batches_per_second = val_progress / (time.time() - val_start)
+
+                    val_loss += loss.item()
+                    val_criterions += l.numpy(force=True)
+
+                dps_text = f"{batches_per_second:.2f} batches per second ({batches_per_second * B:.2f} datapoints/s)" if batches_per_second > 1. else f"{misc.timeformat(1. / batches_per_second)} per batch ({misc.timeformat(1. / (batches_per_second * B))} per datapoint)"
+
+                if is_train:
+                    print(
+                        f"\rEpoch {epoch}: Training... {train_progress} / {train_progress_needed} ({train_progress / train_progress_needed:.1%}) ETA {misc.timeformat(misc.timeleft(train_start, time.time(), train_progress, train_progress_needed))}, {dps_text}, Average criterion: {running_loss_and_its_components(True, True)}",
+                        end="", flush=True)
+                else:
+                    print(
+                        f"\rEpoch {epoch}: Validating... {val_progress} / {val_progress_needed} ({val_progress / val_progress_needed:.1%}) ETA {misc.timeformat(misc.timeleft(val_start, time.time(), val_progress, val_progress_needed))}, {dps_text}, Average criterion: {running_loss_and_its_components(False, True)}",
+                        end="", flush=True)
+
+                if is_train:
+                    loss.mean().backward()
 
                     grad_norm = nn.utils.clip_grad_norm_(model.parameters(),
                                                          max_norm=gradient_clipping,
@@ -1852,11 +1843,14 @@ def train_reward_model(model,
 
                     optimizer.step()
 
-        train_loss /= train_progress
-        train_criterions /= train_progress
+        train_norm = train_progress
+        val_norm = val_progress
 
-        val_loss /= val_progress
-        val_criterions /= val_progress
+        train_loss /= train_norm
+        train_criterions /= train_norm
+
+        val_loss /= val_norm
+        val_criterions /= val_norm
 
         current_lr = optimizer.param_groups[0]['lr']
 
