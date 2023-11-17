@@ -12,4 +12,4 @@ reward_model = dfjss_nn.RewardModel(input_size=autoencoder.encoding_size,
 
 print(reward_model.summary())
 
-dfjss_nn.train_reward_model(reward_model, dataset=dataset, loss_is_smooth_l1=True, weight_decay=0.)
+dfjss_nn.train_reward_model(reward_model, dataset=dataset, weight_decay=0.)

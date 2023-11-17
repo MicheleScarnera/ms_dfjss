@@ -1589,11 +1589,13 @@ class RewardModel(nn.Module):
         self.num_seeds = len(self.seed_to_index)
 
         self.seed_embedding = nn.Embedding(embedding_dim=embedding_dim,
-                                           num_embeddings=self.num_seeds)
+                                           num_embeddings=self.num_seeds,
+                                           device=device)
 
         self.reward_activation = reward_activation
 
         self.layers = nn.ModuleList()
+        self.layer_norms = nn.ModuleList()
         self.layer_activations = nn.ModuleList()
         self.layer_dropout = nn.Dropout(layer_dropout)
 
@@ -1607,17 +1609,23 @@ class RewardModel(nn.Module):
                 in_width = layer_widths[(i - 1) % num_widths]
                 out_width = layer_widths[i % num_widths]
 
-            self.layers.append(nn.Linear(in_features=in_width, out_features=out_width))
-            self.layer_activations.append(nn.PReLU())
+            self.layers.append(nn.Linear(in_features=in_width, out_features=out_width, device=device))
+            self.layer_norms.append(nn.InstanceNorm1d(out_width, device=device))
+            self.layer_activations.append(nn.PReLU(device=device))
 
-        self.last_layer_to_reward = nn.Linear(in_features=self.layers[-1].out_features, out_features=1)
+        self.last_layer_to_reward = nn.Linear(in_features=self.layers[-1].out_features, out_features=1, device=device)
 
     def forward(self, x, seed):
+        is_batch = x.dim() == 2
+
         y = torch.cat([x, self.seed_embedding(self.seed_to_index[seed.item()])], dim=0)
 
-        for i, layer, activ in zip(range(len(self.layers)), self.layers, self.layer_activations):
-            y = (self.layer_dropout(activ(layer(y))) if i > 0 else activ(layer(y))) + (
-                y if (self.residual_layers and layer.in_features == layer.out_features) else 0.)
+        for i, layer, norm, activ in zip(range(len(self.layers)), self.layers, self.layer_norms, self.layer_activations):
+            y_transformed = activ(
+                (norm(layer(y)) if is_batch else norm(layer(y).unsqueeze(0)).squeeze(0)) +
+                (y if (self.residual_layers and layer.in_features == layer.out_features) else 0.))
+
+            y = (self.layer_dropout(y_transformed) if i > 0 else y_transformed)
 
         y = self.last_layer_to_reward(y)
 
@@ -1653,32 +1661,30 @@ def train_reward_model(model,
                        batch_size=64,
                        val_split=0.2,
                        weight_decay=0.001,
-                       per_reward_loss_weight=0.3,
-                       per_reward_loss_weight_inc=0.3,
-                       mean_reward_loss_weight=0.7,
-                       mean_reward_loss_weight_inc=0.,
+                       loss_weights=(0., 1.0, 0.),
+                       loss_weights_inc=(0., 0., 0.),
+                       loss_names=("L1", "SmoothL1", "L2"),
                        gradient_clipping=1.,
-                       loss_is_smooth_l1=False,
                        smooth_l1_beta=100.):
     """
-    :type autoencoder: IndividualFeedForwardAutoEncoder
-
     :param model:
-    :param autoencoder:
     :param dataset:
     :param num_epochs:
     :param batch_size:
     :param val_split:
     :param weight_decay:
-    :param per_reward_loss_weight:
-    :param per_reward_loss_weight_inc:
-    :param mean_reward_loss_weight:
-    :param mean_reward_loss_weight_inc:
+    :param loss_weights:
+    :param loss_weights_inc:
+    :param loss_names:
     :param gradient_clipping:
-    :param loss_is_smooth_l1:
     :param smooth_l1_beta:
     :return:
     """
+    num_losses = len(loss_weights)
+    assert len(loss_weights) == len(loss_weights_inc)
+    assert len(loss_weights) == len(loss_names)
+    assert len(loss_weights) == 3
+
     folder_name = datetime.datetime.now().strftime(f'REWARD MODEL %Y-%m-%d %H-%M-%S')
 
     if not os.path.exists(folder_name):
@@ -1711,12 +1717,7 @@ def train_reward_model(model,
         shuffle=True
     )
 
-    if loss_is_smooth_l1:
-        criterion_per_reward = nn.SmoothL1Loss(beta=smooth_l1_beta)
-        criterion_mean_reward = nn.SmoothL1Loss(beta=smooth_l1_beta)
-    else:
-        criterion_per_reward = nn.MSELoss()
-        criterion_mean_reward = nn.MSELoss()
+    criterion_funcs = [nn.L1Loss(), nn.SmoothL1Loss(beta=smooth_l1_beta), nn.MSELoss()]
 
     weights = []
     biases = []
@@ -1739,8 +1740,7 @@ def train_reward_model(model,
     for epoch in range(1, num_epochs + 1):
         # Training
         train_loss = 0.
-        train_per_reward_criterion = 0.
-        train_mean_reward_criterion = 0.
+        train_criterions = np.zeros(shape=num_losses)
 
         train_start = None
         train_progress = 0
@@ -1748,19 +1748,27 @@ def train_reward_model(model,
 
         # Validation
         val_loss = 0.
-        val_per_reward_criterion = 0.
-        val_mean_reward_criterion = 0.
+        val_criterions = np.zeros(shape=num_losses)
 
         val_start = None
         val_progress = 0
         val_progress_needed = None
 
-        # Per reward/Mean reward criterion weights
-        criterion_weights_per_reward = (epoch - 1) * per_reward_loss_weight_inc + per_reward_loss_weight
-        criterion_weights_mean_reward = (epoch - 1) * mean_reward_loss_weight_inc + mean_reward_loss_weight
-        criterion_weights_norm = criterion_weights_per_reward + criterion_weights_mean_reward
-        criterion_weights_per_reward /= criterion_weights_norm
-        criterion_weights_mean_reward /= criterion_weights_norm
+        # Criterion weights
+        criterion_weights = torch.tensor(data=loss_weights, requires_grad=False, device=device)
+        criterion_weights += (epoch - 1) * torch.tensor(data=loss_weights_inc, requires_grad=False, device=device)
+        criterion_weights /= torch.sum(criterion_weights)
+
+        def running_loss_and_its_components(train, norm):
+            if train:
+                total_loss = train_loss / train_progress if norm else train_loss
+                criterions = train_criterions / train_progress if norm else train_criterions
+            else:
+                total_loss = val_loss / val_progress if norm else val_loss
+                criterions = val_criterions / val_progress if norm else val_criterions
+
+            return f"{total_loss:.3f} (" + "+".join(
+                [f"{criterion_weights[i]:.2f}*{criterions[i]:.3f}" for i in range(num_losses)]) + ")"
 
         for is_train in (True, False):
             if is_train:
@@ -1799,16 +1807,12 @@ def train_reward_model(model,
 
                     # encoding = autoencoder.encoder(individual).detach()
 
-                    predicted_rewards = model(individual, seed).squeeze(0)
-                    true_rewards = reward_batch[b]
+                    predicted_rewards = model(individual, seed)
+                    true_rewards = reward_batch[b].unsqueeze(0)
 
-                    predicted_mean_reward = predicted_rewards.mean(dim=-1)
-                    true_reward_mean = true_rewards.mean(dim=-1)
+                    l = torch.tensor([crit(predicted_rewards, true_rewards) for crit in criterion_funcs], requires_grad=True, device=device)
 
-                    loss_per_reward = criterion_per_reward(predicted_rewards, true_rewards)
-                    loss_mean_reward = criterion_mean_reward(predicted_mean_reward, true_reward_mean)
-
-                    loss = criterion_weights_per_reward * loss_per_reward + criterion_weights_mean_reward * loss_mean_reward
+                    loss = torch.dot(l, criterion_weights)
 
                     if is_train:
                         losses.append(loss)
@@ -1818,26 +1822,24 @@ def train_reward_model(model,
                         datapoints_per_second = train_progress / (time.time() - train_start)
 
                         train_loss += loss.item()
-                        train_per_reward_criterion += loss_per_reward.item()
-                        train_mean_reward_criterion += loss_mean_reward.item()
+                        train_criterions += l.numpy(force=True)
                     else:
                         val_progress += 1
 
                         datapoints_per_second = val_progress / (time.time() - val_start)
 
                         val_loss += loss.item()
-                        val_per_reward_criterion += loss_per_reward.item()
-                        val_mean_reward_criterion += loss_mean_reward.item()
+                        val_criterions += l.numpy(force=True)
 
                     dps_text = f"{datapoints_per_second:.2f} datapoints per second" if datapoints_per_second > 1. else f"{misc.timeformat(1. / datapoints_per_second)} per datapoint"
 
                     if is_train:
                         print(
-                            f"\rEpoch {epoch}: Training... {train_progress} / {train_progress_needed} ({train_progress / train_progress_needed:.1%}) ETA {misc.timeformat(misc.timeleft(train_start, time.time(), train_progress, train_progress_needed))}, {dps_text}, Average criterion: {train_loss / train_progress:.4f} ({criterion_weights_per_reward:.2f}*{train_per_reward_criterion / train_progress:.3f}+{criterion_weights_mean_reward:.2f}*{train_mean_reward_criterion / train_progress:.3f}))",
+                            f"\rEpoch {epoch}: Training... {train_progress} / {train_progress_needed} ({train_progress / train_progress_needed:.1%}) ETA {misc.timeformat(misc.timeleft(train_start, time.time(), train_progress, train_progress_needed))}, {dps_text}, Average criterion: {running_loss_and_its_components(True, True)}",
                             end="", flush=True)
                     else:
                         print(
-                            f"\rEpoch {epoch}: Validating... {val_progress} / {val_progress_needed} ({val_progress / val_progress_needed:.1%}) ETA {misc.timeformat(misc.timeleft(val_start, time.time(), val_progress, val_progress_needed))}, {dps_text}, Average criterion: {val_loss / val_progress:.4f} ({criterion_weights_per_reward:.2f}*{val_per_reward_criterion / val_progress:.3f}+{criterion_weights_mean_reward:.2f}*{val_mean_reward_criterion / val_progress:.3f}))",
+                            f"\rEpoch {epoch}: Validating... {val_progress} / {val_progress_needed} ({val_progress / val_progress_needed:.1%}) ETA {misc.timeformat(misc.timeleft(val_start, time.time(), val_progress, val_progress_needed))}, {dps_text}, Average criterion: {running_loss_and_its_components(False, True)}",
                             end="", flush=True)
 
                 if is_train:
@@ -1851,34 +1853,33 @@ def train_reward_model(model,
                     optimizer.step()
 
         train_loss /= train_progress
-        train_per_reward_criterion /= train_progress
-        train_mean_reward_criterion /= train_progress
+        train_criterions /= train_progress
 
         val_loss /= val_progress
-        val_per_reward_criterion /= val_progress
-        val_mean_reward_criterion /= val_progress
+        val_criterions /= val_progress
 
         current_lr = optimizer.param_groups[0]['lr']
 
         print(
-            f"\rEpoch {epoch}: Loss(PerReward+MeanReward): (Train: {train_loss:.4f} ({criterion_weights_per_reward:.2f}*{train_per_reward_criterion:.3f}+{criterion_weights_mean_reward:.2f}*{train_mean_reward_criterion:.3f})) (Val: {val_loss:.4f} ({criterion_weights_per_reward:.2f}*{val_per_reward_criterion:.3f}+{criterion_weights_mean_reward:.2f}*{val_mean_reward_criterion:.3f})) LR: {current_lr:.0e} Took {misc.timeformat(time.time() - train_start)} ({misc.timeformat(val_start - train_start)}, {misc.timeformat(time.time() - val_start)})"
+            f"\rEpoch {epoch}: Loss({'+'.join(loss_names)}): (Train: {running_loss_and_its_components(True, False)}) (Val: {running_loss_and_its_components(False, False)}) LR: {current_lr:.0e} Took {misc.timeformat(time.time() - train_start)} ({misc.timeformat(val_start - train_start)}, {misc.timeformat(time.time() - val_start)})"
         )
 
-        if not is_train:
-            scheduler.step(val_loss)
+        scheduler.step(val_loss)
 
         new_row = dict()
         new_row["Epoch"] = epoch
-        new_row["Loss_Weight_PerReward"] = criterion_weights_per_reward
-        new_row["Loss_Weight_MeanReward"] = criterion_weights_mean_reward
+        for i in range(num_losses):
+            new_row[f"Loss_Weight_{loss_names[i]}"] = criterion_weights[i]
+
         new_row["Train_Loss"] = train_loss
-        new_row["Train_PerReward_Loss"] = train_per_reward_criterion
-        new_row["Train_MeanReward_Loss"] = train_mean_reward_criterion
+        for i in range(num_losses):
+            new_row[f"Train_{loss_names[i]}_Loss"] = train_criterions[i]
+
         new_row["Train_LR"] = current_lr
 
         new_row["Val_Loss"] = val_loss
-        new_row["Val_PerReward_Loss"] = val_per_reward_criterion
-        new_row["Val_MeanReward_Loss"] = val_mean_reward_criterion
+        for i in range(num_losses):
+            new_row[f"Val_{loss_names[i]}_Loss"] = val_criterions[i]
 
         if len(df) > 0:
             df = pd.concat([df, pd.DataFrame(new_row, index=[0])], ignore_index=True)
