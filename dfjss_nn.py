@@ -1863,7 +1863,7 @@ def train_reward_model(model,
         new_row = dict()
         new_row["Epoch"] = epoch
         for i in range(num_losses):
-            new_row[f"Loss_Weight_{loss_names[i]}"] = criterion_weights[i]
+            new_row[f"Loss_Weight_{loss_names[i]}"] = criterion_weights[i].item()
 
         new_row["Train_Loss"] = train_loss
         for i in range(num_losses):

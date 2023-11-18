@@ -1,2 +1,0 @@
-Epoch,Loss_Weight_L1,Loss_Weight_SmoothL1,Loss_Weight_L2,Train_Loss,Train_L1_Loss,Train_SmoothL1_Loss,Train_L2_Loss,Train_LR,Val_Loss,Val_L1_Loss,Val_SmoothL1_Loss,Val_L2_Loss
-1,tensor(0.),tensor(1.),tensor(0.),461.9322956987643,511.9322956987643,461.9322956987643,512345.6826117003,0.001,462.91012873027125,512.9101287302713,462.91012873027125,518277.8940921276
