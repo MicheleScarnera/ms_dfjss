@@ -1574,6 +1574,7 @@ class RewardModel(nn.Module):
                  layer_widths=(1024,),
                  layer_dropout=0.1,
                  residual_layers=False,
+                 num_obscured_seeds=0,
                  reward_activation="elu"):
         super().__init__()
 
@@ -1584,12 +1585,28 @@ class RewardModel(nn.Module):
 
         self.input_size = input_size
 
-        self.seed_to_index = seed_to_index
+        self.seed_to_index = seed_to_index.copy()
 
         self.num_seeds = len(self.seed_to_index)
 
+        # Obscure seeds
+        self.num_obscured_seeds = num_obscured_seeds
+
+        if num_obscured_seeds > 0:
+            for i, key in enumerate(reversed(list(self.seed_to_index.keys()))):
+                if i >= num_obscured_seeds:
+                    break
+
+                del self.seed_to_index[key]
+
+        # force index 0 to be unoccupied, as index 0 is the "null" index
+        if np.any([value == 0 for value in self.seed_to_index.values()]):
+            for key in self.seed_to_index.keys():
+                self.seed_to_index[key] += 1
+
         self.seed_embedding = nn.Embedding(embedding_dim=embedding_dim,
-                                           num_embeddings=self.num_seeds,
+                                           num_embeddings=self.num_seeds - self.num_obscured_seeds + 1,
+                                           padding_idx=0,
                                            device=device)
 
         self.reward_activation = reward_activation
@@ -1619,9 +1636,9 @@ class RewardModel(nn.Module):
         is_batch = x.dim() == 2
 
         if is_batch:
-            embed = self.seed_embedding(torch.stack([self.seed_to_index[seed.item()] for seed in seeds], dim=0))
+            embed = self.seed_embedding(torch.stack([self.seed_to_index.get(seed.item(), torch.tensor(0)) for seed in seeds], dim=0))
         else:
-            embed = self.seed_embedding(self.seed_to_index[seeds.item()])
+            embed = self.seed_embedding(self.seed_to_index.get(seeds.item(), torch.tensor(0)))
 
         y = torch.cat([x, embed], dim=-1)
 
@@ -1648,7 +1665,7 @@ class RewardModel(nn.Module):
         longdash = '------------------------------------'
         result = [longdash, "Reward Model",
                   f"Input size: {self.input_size}",
-                  f"Number of Seeds: {self.num_seeds}",
+                  f"Number of Seeds: {self.num_seeds} ({self.num_obscured_seeds} obscured)",
                   f"Seed Embedding size: {self.seed_embedding.embedding_dim}",
                   f"Hidden Layers: {len(self.layers)} ({', '.join([str(layer.in_features) + '->' + str(layer.out_features) for layer in self.layers])})",
                   f"Layers of same size are residual: {'yes' if self.residual_layers else 'no'}",
@@ -1670,8 +1687,11 @@ def train_reward_model(model,
                        loss_weights_inc=(0., 0., 0.),
                        loss_names=("L1", "SmoothL1", "L2"),
                        gradient_clipping=1.,
-                       smooth_l1_beta=100.):
+                       smooth_l1_beta=100.,
+                       contributions_degree=2):
     """
+    :type model: RewardModel
+
     :param model:
     :param dataset:
     :param num_epochs:
@@ -1697,6 +1717,9 @@ def train_reward_model(model,
 
     print(f"Model(s) will be saved in \"{folder_name}\"")
 
+    with open(f"{folder_name}/model_summary.txt", "w") as summary_file:
+        summary_file.write(model.summary())
+
     df_cols = ["Epoch", "Loss_Weight_PerReward", "Loss_Weight_MeanReward"]
 
     for tv in ("Train", "Val"):
@@ -1707,6 +1730,8 @@ def train_reward_model(model,
             df_cols.append("Train_LR")
 
     df = pd.DataFrame(columns=df_cols)
+
+    # Train-Val split
 
     train_set, val_set = data.random_split(dataset=dataset, lengths=[1. - val_split, val_split])
 
@@ -1722,7 +1747,32 @@ def train_reward_model(model,
         shuffle=True
     )
 
-    criterion_funcs = [nn.L1Loss(), nn.SmoothL1Loss(beta=smooth_l1_beta), nn.MSELoss()]
+    # First-layer Contributions
+
+    weights_for_contributions_dict = dict()
+
+    weights_for_contributions_dict["Individual"] = model.layers[0].weight[:, 0:model.input_size]
+    weights_for_contributions_dict["Seed_Embedding"] = model.layers[0].weight[:, model.input_size:model.layers[0].weight.shape[1]]
+
+    print(f"(Sanity check) Size of contribution weights matrices: {[(key, value.shape) for key, value in weights_for_contributions_dict.items()]}")
+
+    def get_contributions():
+        result = dict()
+        with torch.no_grad():
+            norm = torch.pow(torch.abs(model.layers[0].weight), contributions_degree).sum()
+
+            for key, value in weights_for_contributions_dict.items():
+                result[key] = (torch.pow(torch.abs(value), contributions_degree).sum() / norm).item()
+
+        return result
+
+    def contributions_format(c):
+        return "[" + ", ".join([f"{key}: {value:.2%}" for key, value in c.items()]) + "]"
+
+    print(
+        f"(Sanity check) Initial L{contributions_degree} contributions: {contributions_format(get_contributions())}")
+
+    # Weight decay
 
     weights = []
     biases = []
@@ -1732,6 +1782,8 @@ def train_reward_model(model,
             weights.append(param)
         else:
             biases.append(param)
+
+    criterion_funcs = [nn.L1Loss(), nn.SmoothL1Loss(beta=smooth_l1_beta), nn.MSELoss()]
 
     optimizer = optim.Adam([{'params': weights, 'weight_decay': weight_decay},
                             {'params': biases, 'weight_decay': 0.}], lr=0.001)
@@ -1781,6 +1833,9 @@ def train_reward_model(model,
                 model.train()
 
                 train_start = time.time()
+
+                with torch.no_grad():
+                    embed_params_before = model.seed_embedding.weight.data.clone()
             else:
                 print(f"\rEpoch {epoch}: Validating...", end="", flush=True)
                 model.eval()
@@ -1854,8 +1909,13 @@ def train_reward_model(model,
 
         current_lr = optimizer.param_groups[0]['lr']
 
+        with torch.no_grad():
+            embed_param_shift = torch.abs(model.seed_embedding.weight.data - embed_params_before).sum().item()
+
+        contribs = get_contributions()
+
         print(
-            f"\rEpoch {epoch}: Loss({'+'.join(loss_names)}): (Train: {running_loss_and_its_components(True, False)}) (Val: {running_loss_and_its_components(False, False)}) LR: {current_lr:.0e} Took {misc.timeformat(time.time() - train_start)} ({misc.timeformat(val_start - train_start)}, {misc.timeformat(time.time() - val_start)})"
+            f"\rEpoch {epoch}: Loss({'+'.join(loss_names)}): (Train: {running_loss_and_its_components(True, False)}) (Val: {running_loss_and_its_components(False, False)}) LR: {current_lr:.0e}, L{contributions_degree} Contributions: {contributions_format(contribs)}, Embedding's parameter shift: {embed_param_shift:.4f}, Took {misc.timeformat(time.time() - train_start)} ({misc.timeformat(val_start - train_start)}, {misc.timeformat(time.time() - val_start)})"
         )
 
         scheduler.step(val_loss)
@@ -1874,6 +1934,9 @@ def train_reward_model(model,
         new_row["Val_Loss"] = val_loss
         for i in range(num_losses):
             new_row[f"Val_{loss_names[i]}_Loss"] = val_criterions[i]
+
+        for key, value in contribs.items():
+            new_row[f"L{contributions_degree}_Contribution_{key}"] = value
 
         if len(df) > 0:
             df = pd.concat([df, pd.DataFrame(new_row, index=[0])], ignore_index=True)

@@ -1019,9 +1019,15 @@ class Warehouse:
                     )
 
         end_reason = "UNKNOWN"
-        routine_step = 1
+        routine_step = 0
         # run routine...
         while True:
+            routine_step += 1
+
+            if 0 <= max_routine_steps <= routine_step:
+                end_reason = "reaching the maximum routine steps"
+                break
+
             if verbose > 1:
                 print(
                     f"Routine step {routine_step} - Time: {misc.timeformat(self.current_time)} - Jobs to do: {len(self.jobs)} ({len([None for job in self.jobs if not self.is_job_busy(job)])} available)")
@@ -1047,12 +1053,6 @@ class Warehouse:
                 if verbose > 1:
                     print(
                         "Notice: Simulation has gone beyond its time window. This is not necessarily an issue, there might still be jobs to finish.")
-
-            if 0 < max_routine_steps <= routine_step:
-                end_reason = "reaching the maximum routine steps"
-                break
-
-            routine_step += 1
 
         # SIMULATION ENDS
 
