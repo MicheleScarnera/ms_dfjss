@@ -100,12 +100,13 @@ class RNNEncoderHat(nn.Module):
         d = 2 if self.rnn.bidirectional else 1
 
         current_h = torch.zeros(size=(d * self.rnn.num_layers, self.rnn.hidden_size))
-        accumulator = torch.zeros(size=(self.encoding_size, ))
+        accumulator = torch.zeros(size=(self.encoding_size,))
 
         for x_ in x:
             y_, current_h = self.rnn(x_.unsqueeze(0), current_h)
 
-            accumulator = torch.nn.functional.tanh(self.accumulator_y_to_a(y_.squeeze(0)) + self.accumulator_a_to_a(accumulator))
+            accumulator = torch.nn.functional.tanh(
+                self.accumulator_y_to_a(y_.squeeze(0)) + self.accumulator_a_to_a(accumulator))
 
         return accumulator.squeeze(0)
 
@@ -151,7 +152,8 @@ def new_first_decoder_token(confidence=1, dtype=torch.float32):
 
 
 class IndividualRNNAutoEncoder(nn.Module):
-    def __init__(self, input_size=None, hidden_size=512, encoding_size=1024, num_layers=3, dropout=0.1, bidirectional=False):
+    def __init__(self, input_size=None, hidden_size=512, encoding_size=1024, num_layers=3, dropout=0.1,
+                 bidirectional=False):
         super(IndividualRNNAutoEncoder, self).__init__()
 
         if input_size is None:
@@ -446,7 +448,7 @@ def sparse_to_one_hot(sequence, vocab=None):
 
 def reduce_sequence(sequence, input_is_logs=False):
     if len(sequence.shape) == 3:
-        return torch.stack([reduce_sequence(x_) for x_ in sequence], dim=0)
+        return torch.stack([reduce_sequence(x_, input_is_logs) for x_ in sequence], dim=0)
 
     if sequence.shape[1] == VOCAB_REDUCED_SIZE:
         raise ValueError("Sequence is already reduced")
@@ -987,8 +989,8 @@ def train_autoencoder(model,
             return other_classes_weight
 
     raw_criterion_class_weights = torch.tensor([class_weight(token) for token in VOCAB], dtype=torch.float32)
-    criterion_raw = nn.NLLLoss(weight=raw_criterion_class_weights)
-    criterion_reduced = nn.NLLLoss()
+    criterion_raw = nn.NLLLoss(weight=raw_criterion_class_weights, reduction="none")
+    criterion_reduced = nn.NLLLoss(reduction="none")
     optimizer = optim.Adam(model.parameters(), lr=0.001)  # optim.SGD(model.parameters(), lr=0.001, momentum=0.25)
 
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, mode="max",
@@ -1070,9 +1072,21 @@ def train_autoencoder(model,
                     losses = []
 
                 true_sequences = true_sequences.to(device)
-                true_sequences_sparse = torch.argmax(true_sequences, dim=2)
+                true_sequences_sparse = torch.argmax(true_sequences, dim=-1)
+
+                true_sequences_reduced_sparse = torch.argmax(reduce_sequence(true_sequences), dim=-1)
 
                 outputs = model(true_sequences).to(device)
+                outputs_reduced = reduce_sequence(outputs, input_is_logs=True)
+
+                if autoencoder_type == "FEEDFORWARD":
+                    loss_raw_criterions = criterion_raw(outputs.transpose(1, 2), true_sequences_sparse)
+                    loss_reduced_criterions = reduced_criterion_scale * criterion_reduced(outputs_reduced.transpose(1, 2),
+                                                                                          true_sequences_reduced_sparse)
+                else:
+                    loss_raw_criterions = None
+                    loss_reduced_criterions = None
+
                 B = true_sequences.shape[0]
                 for b in range(B):
                     if is_train:
@@ -1122,9 +1136,13 @@ def train_autoencoder(model,
 
                         val_examples.append(new_example)
 
-                    loss_raw_criterion = criterion_raw(output, true_sequence_sparse)
-                    loss_reduced_criterion = reduced_criterion_scale * criterion_reduced(output_reduced,
-                                                                                         true_sequence_reduced_sparse)
+                    if autoencoder_type == "FEEDFORWARD":
+                        loss_raw_criterion = loss_raw_criterions[b].mean()
+                        loss_reduced_criterion = loss_reduced_criterions[b].mean()
+                    else:
+                        loss_raw_criterion = criterion_raw(output, true_sequence_sparse).mean()
+                        loss_reduced_criterion = reduced_criterion_scale * criterion_reduced(output_reduced,
+                                                                                             true_sequence_reduced_sparse).mean()
 
                     if loss_reduced_criterion < 0.0005:
                         loss_criterion = loss_raw_criterion
@@ -1496,6 +1514,7 @@ class RewardModelDataset(data.Dataset):
 
         def end_with_eos(string):
             return string if string.endswith("EOS") else string + "EOS"
+
         df_is_wide = reward_model_df_is_wide(self.df)
 
         if df_is_wide:
@@ -1636,13 +1655,15 @@ class RewardModel(nn.Module):
         is_batch = x.dim() == 2
 
         if is_batch:
-            embed = self.seed_embedding(torch.stack([self.seed_to_index.get(seed.item(), torch.tensor(0)) for seed in seeds], dim=0))
+            embed = self.seed_embedding(
+                torch.stack([self.seed_to_index.get(seed.item(), torch.tensor(0)) for seed in seeds], dim=0))
         else:
             embed = self.seed_embedding(self.seed_to_index.get(seeds.item(), torch.tensor(0)))
 
         y = torch.cat([x, embed], dim=-1)
 
-        for i, layer, norm, activ in zip(range(len(self.layers)), self.layers, self.layer_norms, self.layer_activations):
+        for i, layer, norm, activ in zip(range(len(self.layers)), self.layers, self.layer_norms,
+                                         self.layer_activations):
             y_transformed = activ(
                 (norm(layer(y)) if is_batch else norm(layer(y).unsqueeze(0)).squeeze(0)) +
                 (y if (self.residual_layers and layer.in_features == layer.out_features) else 0.))
@@ -1752,9 +1773,11 @@ def train_reward_model(model,
     weights_for_contributions_dict = dict()
 
     weights_for_contributions_dict["Individual"] = model.layers[0].weight[:, 0:model.input_size]
-    weights_for_contributions_dict["Seed_Embedding"] = model.layers[0].weight[:, model.input_size:model.layers[0].weight.shape[1]]
+    weights_for_contributions_dict["Seed_Embedding"] = model.layers[0].weight[:,
+                                                       model.input_size:model.layers[0].weight.shape[1]]
 
-    print(f"(Sanity check) Size of contribution weights matrices: {[(key, value.shape) for key, value in weights_for_contributions_dict.items()]}")
+    print(
+        f"(Sanity check) Size of contribution weights matrices: {[(key, value.shape) for key, value in weights_for_contributions_dict.items()]}")
 
     def get_contributions():
         result = dict()
@@ -1791,7 +1814,7 @@ def train_reward_model(model,
     print(f"Weight decay = {weight_decay}")
 
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, mode="min",
-                                                     threshold=0.005, patience=8, cooldown=5, factor=0.1 ** 0.25,
+                                                     threshold=0.005, patience=5, cooldown=0, factor=0.1 ** 0.25,
                                                      verbose=False)
 
     for epoch in range(1, num_epochs + 1):

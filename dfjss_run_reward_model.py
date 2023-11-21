@@ -8,7 +8,7 @@ dataset = dfjss_nn.RewardModelDataset(autoencoder=autoencoder)
 
 reward_model = dfjss_nn.RewardModel(input_size=autoencoder.encoding_size,
                                     seed_to_index=dataset.seed_to_index,
-                                    embedding_dim=336,
+                                    embedding_dim=128,
                                     num_layers=2,
                                     residual_layers=True,
                                     layer_dropout=0.1,

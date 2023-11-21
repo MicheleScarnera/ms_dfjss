@@ -2,7 +2,7 @@ import dfjss_nn
 
 autoencoder_type = "FEEDFORWARD"
 
-flatten_trees = False
+flatten_trees = True
 fill_trees = False
 
 # some architectures can only work with specific settings
