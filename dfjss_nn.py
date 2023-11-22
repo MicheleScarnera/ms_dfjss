@@ -1567,7 +1567,9 @@ class RewardModelDataset(data.Dataset):
 
         longdash = '------------------------------------'
         result = [longdash, "Reward Model Dataset",
+                  f"Number of Individuals: {len(self.raw_individuals)}",
                   f"Number of Seeds: {self.num_seeds} ({self.seed_censor_rate:.0%} censor rate)",
+                  f"Sample size (number of individual-seed pairs): {self.N}",
                   f"Counter of seeds: {counter}",
                   f"Perplexity of seed distribution: {perpl:.3f}",
                   longdash]
@@ -1735,8 +1737,11 @@ def train_reward_model(model,
 
     print(f"Model(s) will be saved in \"{folder_name}\"")
 
-    with open(f"{folder_name}/model_summary.txt", "w") as summary_file:
-        summary_file.write(model.summary())
+    with open(f"{folder_name}/model_summary.txt", "w") as model_summary_file:
+        model_summary_file.write(model.summary())
+
+    with open(f"{folder_name}/dataset_summary.txt", "w") as dataset_summary_file:
+        dataset_summary_file.write(dataset.summary())
 
     df_cols = ["Epoch", "Loss_Weight_PerReward", "Loss_Weight_MeanReward"]
 

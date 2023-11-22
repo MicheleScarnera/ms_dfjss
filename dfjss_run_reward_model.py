@@ -17,4 +17,4 @@ print(dataset.summary())
 
 print(reward_model.summary())
 
-dfjss_nn.train_reward_model(reward_model, dataset=dataset, weight_decay=0., loss_weights=(0., 0., 1.))
+dfjss_nn.train_reward_model(reward_model, dataset=dataset, weight_decay=0., loss_weights=(0., 0., 1.), num_epochs=200)
