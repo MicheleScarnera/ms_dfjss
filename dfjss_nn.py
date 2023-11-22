@@ -1582,7 +1582,7 @@ class RewardModelDataset(data.Dataset):
 
     def __getitem__(self, idx):
         return self.get_individual(idx), \
-               (self.seeds_data[idx] if torch.rand(1, generator=self.rng, device=device) < self.seed_censor_rate else torch.tensor(-1)),\
+               (torch.tensor(-1) if torch.rand(1, generator=self.rng, device=device) < self.seed_censor_rate else self.seeds_data[idx]),\
                self.rewards_data[idx]
 
     def __len__(self):
