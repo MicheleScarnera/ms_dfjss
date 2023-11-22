@@ -1497,7 +1497,7 @@ def generate_reward_model_file(batch_size=8,
 
 
 class RewardModelDataset(data.Dataset):
-    def __init__(self, autoencoder, force_num_rewards=None, anti_decode=False, verbose=1):
+    def __init__(self, autoencoder, force_num_rewards=None, anti_decode=False, seed_censor_rate=0., verbose=1):
         """
         :type autoencoder: IndividualFeedForwardAutoEncoder
 
@@ -1520,6 +1520,10 @@ class RewardModelDataset(data.Dataset):
         if df_is_wide:
             self.df = reward_model_df_wide_to_long(self.df)
 
+        # Censor seeds
+        self.rng = torch.Generator()
+        self.seed_censor_rate = seed_censor_rate
+
         self.seeds = torch.tensor(np.unique(self.df.loc[:, "Seed"]))
 
         if type(force_num_rewards) == int:
@@ -1538,10 +1542,10 @@ class RewardModelDataset(data.Dataset):
 
         if anti_decode:
             self._individuals_data = autoencoder.anti_decoder(
-                torch.stack([sparse_sequence(end_with_eos(ind)) for ind in self.raw_individuals], dim=0)).detach()
+                torch.stack([sparse_sequence(end_with_eos(ind)) for ind in self.raw_individuals], dim=0)).detach().to(device)
         else:
             self._individuals_data = autoencoder.encoder(
-                torch.stack([one_hot_sequence(end_with_eos(ind)) for ind in self.raw_individuals], dim=0)).detach()
+                torch.stack([one_hot_sequence(end_with_eos(ind)) for ind in self.raw_individuals], dim=0)).detach().to(device)
 
         if verbose > 0:
             print("Done")
@@ -1550,21 +1554,25 @@ class RewardModelDataset(data.Dataset):
 
         self.individual_to_data = dict([(raw, tens) for raw, tens in zip(self.raw_individuals, self._individuals_data)])
 
-        if verbose > 0:
-            s = [int(seed.item()) for seed in self.seeds]
-            S = len(s)
-            counter = Counter(s)
-            print(f"Counter of seeds: {counter}")
-            perpl = np.exp(np.sum([-freq / S * np.log(freq / S) for seed, freq in counter.most_common()]))
-            print(f"Number of seeds in dataset: {len(s)}, Perplexity: {perpl:.3f}")
-
-        self.seed_to_index = dict([(seed.item(), torch.tensor(i)) for i, seed in enumerate(self.seeds)])
-
-        self.num_rewards = len(self.seeds)
+        self.num_seeds = len(self.seeds)
 
         self.seeds_data = torch.tensor(self.df.loc[:, "Seed"].to_numpy(dtype="int"))
 
         self.rewards_data = torch.tensor(self.df.loc[:, "Fitness"].to_numpy(dtype="float32"))
+
+    def summary(self):
+        S = self.N
+        counter = Counter([int(seed.item()) for seed in self.seeds_data])
+        perpl = np.exp(np.sum([-freq / S * np.log(freq / S) for seed, freq in counter.most_common()]))
+
+        longdash = '------------------------------------'
+        result = [longdash, "Reward Model Dataset",
+                  f"Number of Seeds: {self.num_seeds} ({self.seed_censor_rate:.0%} censor rate)",
+                  f"Counter of seeds: {counter}",
+                  f"Perplexity of seed distribution: {perpl:.3f}",
+                  longdash]
+
+        return "\n".join(result)
 
     def get_individual(self, idx):
         return self.individual_to_data[self.df.loc[idx, "Individual"]]
@@ -1573,7 +1581,9 @@ class RewardModelDataset(data.Dataset):
         return self.data_iterator()
 
     def __getitem__(self, idx):
-        return self.get_individual(idx), self.seeds_data[idx], self.rewards_data[idx]
+        return self.get_individual(idx), \
+               (self.seeds_data[idx] if torch.rand(1, generator=self.rng, device=device) < self.seed_censor_rate else torch.tensor(-1)),\
+               self.rewards_data[idx]
 
     def __len__(self):
         return self.N
@@ -1587,13 +1597,12 @@ class RewardModel(nn.Module):
     autoencoder: IndividualFeedForwardAutoEncoder
 
     def __init__(self, input_size,
-                 seed_to_index,
+                 seeds,
                  embedding_dim=128,
                  num_layers=2,
                  layer_widths=(1024,),
                  layer_dropout=0.1,
                  residual_layers=False,
-                 num_obscured_seeds=0,
                  reward_activation="elu"):
         super().__init__()
 
@@ -1604,27 +1613,15 @@ class RewardModel(nn.Module):
 
         self.input_size = input_size
 
-        self.seed_to_index = seed_to_index.copy()
+        self.seeds = seeds
 
-        self.num_seeds = len(self.seed_to_index)
+        self.seed_to_index = dict([(seed.item(), torch.tensor(i+1)) for i, seed in enumerate(self.seeds)])
+        self.seed_to_index[-1] = torch.tensor(0)
 
-        # Obscure seeds
-        self.num_obscured_seeds = num_obscured_seeds
-
-        if num_obscured_seeds > 0:
-            for i, key in enumerate(reversed(list(self.seed_to_index.keys()))):
-                if i >= num_obscured_seeds:
-                    break
-
-                del self.seed_to_index[key]
-
-        # force index 0 to be unoccupied, as index 0 is the "null" index
-        if np.any([value == 0 for value in self.seed_to_index.values()]):
-            for key in self.seed_to_index.keys():
-                self.seed_to_index[key] += 1
+        self.num_seeds = len(self.seeds)
 
         self.seed_embedding = nn.Embedding(embedding_dim=embedding_dim,
-                                           num_embeddings=self.num_seeds - self.num_obscured_seeds + 1,
+                                           num_embeddings=self.num_seeds + 1,
                                            padding_idx=0,
                                            device=device)
 
@@ -1686,7 +1683,7 @@ class RewardModel(nn.Module):
         longdash = '------------------------------------'
         result = [longdash, "Reward Model",
                   f"Input size: {self.input_size}",
-                  f"Number of Seeds: {self.num_seeds} ({self.num_obscured_seeds} obscured)",
+                  f"Number of Seeds: {self.num_seeds}",
                   f"Seed Embedding size: {self.seed_embedding.embedding_dim}",
                   f"Hidden Layers: {len(self.layers)} ({', '.join([str(layer.in_features) + '->' + str(layer.out_features) for layer in self.layers])})",
                   f"Layers of same size are residual: {'yes' if self.residual_layers else 'no'}",
