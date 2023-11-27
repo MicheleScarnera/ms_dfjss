@@ -25,6 +25,8 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 
 print(f"Device: {device.upper()}")
 
+AUTOENCODER_PRECOMPUTE_TABLE_FILENAME = "precompute_table.csv"
+
 REWARDMODEL_FILENAME = "reward_model_dataset.csv"
 INDIVIDUALS_FEATURES = ["operation_work_required",
                         "operation_windup",
@@ -331,6 +333,86 @@ class IndividualFeedForwardAutoEncoder(nn.Module):
         self.flat_in_size = self.sequence_length * VOCAB_SIZE  # (embedding_dim if embedding_dim > 0 else VOCAB_SIZE)
         self.flat_out_size = self.sequence_length * VOCAB_SIZE
 
+    def make_precompute_table(self, individuals, path, batch_size=128, verbose=1):
+        data = {"Individual": [], "Encode": [], "AntiDecode": []}
+
+        start = time.time()
+        if verbose > 0:
+            print(f"Making pre-compute table for autoencoder...", end="", flush=True)
+
+        i = 1
+        I = len(individuals)
+        running_batch = []
+        for ind in individuals:
+            ind = end_with_eos(ind)
+            seq = one_hot_sequence(ind)
+
+            data["Individual"].append(ind)
+
+            is_last = i == I
+
+            if len(running_batch) < batch_size:
+                running_batch.append(seq)
+
+            if len(running_batch) == batch_size or is_last:
+                batch_tensor = torch.stack(running_batch)
+
+                with torch.no_grad():
+                    encode = self.encoder(batch_tensor)
+
+                def format_it(tensor):
+                    return np.array2string(tensor.numpy(), threshold=self.encoding_size + 1)
+
+                data["Encode"].extend([format_it(e) for e in encode])
+                data["AntiDecode"].extend(
+                    [format_it(ad) for ad in self.anti_decoder(one_hot_to_sparse(batch_tensor), start_encode=encode)])
+
+                running_batch = []
+
+            if verbose > 0:
+                print(
+                    f"\rMaking pre-compute table for autoencoder... {(i / I):.2%} ETA {misc.timeformat(misc.timeleft(start, time.time(), i, I))}",
+                    end="", flush=True)
+
+            i += 1
+        if verbose > 0:
+            print(f"\rMade pre-compute table in {misc.timeformat(time.time() - start)}", flush=True)
+
+        df = pd.DataFrame(data)
+
+        df.to_csv(path_or_buf=path, index=False)
+
+        return df
+
+    def get_precompute_table(self, individuals, path, anti_decode=True, verbose=1):
+        make_table = False
+        df = None
+        if os.path.exists(path):
+            df = pd.read_csv(path)
+
+            arg_individuals = set([end_with_eos(seq) for seq in individuals])
+            table_individuals = set(df["Individual"])
+
+            if len(arg_individuals.difference(table_individuals)) > 0:
+                make_table = True
+        else:
+            make_table = True
+
+        if make_table:
+            df = self.make_precompute_table(individuals, path, verbose=verbose)
+
+        if type(df.loc[0, "Encode"]) == str or type(df.loc[0, "AntiDecode"]) == str:
+            for c in ("Encode", "AntiDecode"):
+                df[c] = [np.fromstring(row[c].strip("[]"), dtype=np.float32, sep=" ") for _, row in df.iterrows()]
+
+        C = "AntiDecode" if anti_decode else "Encode"
+
+        return dict([(
+            end_with_eos(row["Individual"]),
+            torch.tensor(row[C])
+        )
+            for _, row in df.iterrows()])
+
     def auto_encoder(self, sequence):
         return self.decoder(self.encoder(sequence))
 
@@ -353,12 +435,13 @@ class IndividualFeedForwardAutoEncoder(nn.Module):
 
         return self.decode_activation(self.flat_out_to_decode(flat_out))
 
-    def anti_decoder(self, desired_output, start_encode=None, gradient_max_norm=0.1, verbose=0,
+    def anti_decoder(self, desired_output, start_encode=None, gradient_max_norm=0.1, max_iters=100, verbose=0,
                      return_iterations=False):
         if desired_output.dim() > 1 and ((start_encode is not None and start_encode.dim() > 1) or start_encode is None):
             return torch.stack([self.anti_decoder(desired_output[i],
                                                   start_encode[i] if start_encode is not None else None,
                                                   gradient_max_norm=gradient_max_norm,
+                                                  max_iters=max_iters,
                                                   verbose=verbose,
                                                   return_iterations=False) for i in range(desired_output.shape[0])])
 
@@ -374,7 +457,7 @@ class IndividualFeedForwardAutoEncoder(nn.Module):
         scheduler = optim.lr_scheduler.LambdaLR(optimizer, lambda epoch: 1. / (1. + 0.01 * epoch))
 
         iterations = 0
-        while True:
+        while True and ((max_iters >= 0 and iterations < max_iters) or max_iters < 0):
             optimizer.zero_grad()
 
             current_output_logits = self.decoder(current_encode)
@@ -403,9 +486,9 @@ class IndividualFeedForwardAutoEncoder(nn.Module):
             iterations += 1
 
         if return_iterations:
-            return current_encode, iterations
+            return current_encode.detach(), iterations
         else:
-            return current_encode
+            return current_encode.detach()
 
     def forward(self, x):
         return self.auto_encoder(x)
@@ -1081,8 +1164,9 @@ def train_autoencoder(model,
 
                 if autoencoder_type == "FEEDFORWARD":
                     loss_raw_criterions = criterion_raw(outputs.transpose(1, 2), true_sequences_sparse)
-                    loss_reduced_criterions = reduced_criterion_scale * criterion_reduced(outputs_reduced.transpose(1, 2),
-                                                                                          true_sequences_reduced_sparse)
+                    loss_reduced_criterions = reduced_criterion_scale * criterion_reduced(
+                        outputs_reduced.transpose(1, 2),
+                        true_sequences_reduced_sparse)
                 else:
                     loss_raw_criterions = None
                     loss_reduced_criterions = None
@@ -1496,12 +1580,18 @@ def generate_reward_model_file(batch_size=8,
     return fitness_log
 
 
+def end_with_eos(string):
+    return string if string.endswith("EOS") else string + "EOS"
+
+
 class RewardModelDataset(data.Dataset):
-    def __init__(self, autoencoder, force_num_rewards=None, anti_decode=False, seed_censor_rate=0., verbose=1):
+    def __init__(self, autoencoder, autoencoder_folder, force_num_rewards=None, anti_decode=False, seed_censor_rate=0.,
+                 verbose=1):
         """
         :type autoencoder: IndividualFeedForwardAutoEncoder
 
         :param autoencoder:
+        :param autoencoder_folder:
         :param force_num_rewards:
         :param verbose:
         """
@@ -1511,9 +1601,6 @@ class RewardModelDataset(data.Dataset):
             self.df = pd.read_csv(REWARDMODEL_FILENAME)
         except OSError as os_error:
             raise OSError(f"Could not read {REWARDMODEL_FILENAME}. Error given: {os_error}")
-
-        def end_with_eos(string):
-            return string if string.endswith("EOS") else string + "EOS"
 
         df_is_wide = reward_model_df_is_wide(self.df)
 
@@ -1537,6 +1624,15 @@ class RewardModelDataset(data.Dataset):
 
         self.raw_individuals = np.unique(self.df["Individual"])
 
+        precompute_table_path = f"{autoencoder_folder}/{AUTOENCODER_PRECOMPUTE_TABLE_FILENAME}"
+        self.precompute_table = autoencoder.get_precompute_table(self.raw_individuals,
+                                                                 precompute_table_path,
+                                                                 anti_decode=anti_decode,
+                                                                 verbose=verbose)
+
+        self._individuals_data = torch.stack([self.precompute_table[end_with_eos(ind)] for ind in self.raw_individuals])
+
+        """
         if verbose > 0:
             print(f"Pre-computing {'anti-decodes' if anti_decode else 'encodes'} of individuals...", end="")
 
@@ -1549,6 +1645,7 @@ class RewardModelDataset(data.Dataset):
 
         if verbose > 0:
             print("Done")
+        """
 
         self.individual_sequence_length = self._individuals_data.shape[1]
 
@@ -1584,7 +1681,8 @@ class RewardModelDataset(data.Dataset):
 
     def __getitem__(self, idx):
         return self.get_individual(idx), \
-               (torch.tensor(-1) if torch.rand(1, generator=self.rng, device=device) < self.seed_censor_rate else self.seeds_data[idx]),\
+               (torch.tensor(-1) if torch.rand(1, generator=self.rng, device=device) < self.seed_censor_rate else
+                self.seeds_data[idx]), \
                self.rewards_data[idx]
 
     def __len__(self):
@@ -1604,7 +1702,7 @@ class RewardModel(nn.Module):
                  num_layers=2,
                  layer_widths=(1024,),
                  layer_dropout=0.1,
-                 residual_layers=False,
+                 layers_are_residual=False,
                  reward_activation="elu"):
         super().__init__()
 
@@ -1613,14 +1711,14 @@ class RewardModel(nn.Module):
 
         num_widths = len(layer_widths)
 
-        self.input_size = input_size
+        self.register_buffer("input_size", torch.tensor(input_size))
 
-        self.seeds = seeds
+        self.register_buffer("seeds", seeds.clone().detach())
 
-        self.seed_to_index = dict([(seed.item(), torch.tensor(i+1)) for i, seed in enumerate(self.seeds)])
-        self.seed_to_index[-1] = torch.tensor(0)
+        self.seed_to_index = None
+        self.make_seed_to_index()
 
-        self.num_seeds = len(self.seeds)
+        self.register_buffer("num_seeds", torch.tensor([len(self.seeds)]))
 
         self.seed_embedding = nn.Embedding(embedding_dim=embedding_dim,
                                            num_embeddings=self.num_seeds + 1,
@@ -1634,7 +1732,7 @@ class RewardModel(nn.Module):
         self.layer_activations = nn.ModuleList()
         self.layer_dropout = nn.Dropout(layer_dropout)
 
-        self.residual_layers = residual_layers
+        self.register_buffer("layers_are_residual", torch.tensor([layers_are_residual]))
 
         for i in range(num_layers):
             if i == 0:
@@ -1649,6 +1747,21 @@ class RewardModel(nn.Module):
             self.layer_activations.append(nn.PReLU(device=device))
 
         self.last_layer_to_reward = nn.Linear(in_features=self.layers[-1].out_features, out_features=1, device=device)
+
+    def make_seed_to_index(self):
+        if self.seed_to_index is not None:
+            raise Exception("seed_to_index already created")
+
+        self.seed_to_index = dict([(seed.item(), torch.tensor(i + 1)) for i, seed in enumerate(self.seeds)])
+        self.seed_to_index[-1] = torch.tensor(0)
+
+    def get_layers_are_residual(self):
+        return self.layers_are_residual.item()
+
+    def import_state(self, path):
+        self.load_state_dict(torch.load(path))
+
+        self.make_seed_to_index()
 
     def forward(self, x, seeds):
         is_batch = x.dim() == 2
@@ -1665,7 +1778,7 @@ class RewardModel(nn.Module):
                                          self.layer_activations):
             y_transformed = activ(
                 (norm(layer(y)) if is_batch else norm(layer(y).unsqueeze(0)).squeeze(0)) +
-                (y if (self.residual_layers and layer.in_features == layer.out_features) else 0.))
+                (y if (self.get_layers_are_residual() and layer.in_features == layer.out_features) else 0.))
 
             y = (self.layer_dropout(y_transformed) if i > 0 else y_transformed)
 
@@ -1685,10 +1798,10 @@ class RewardModel(nn.Module):
         longdash = '------------------------------------'
         result = [longdash, "Reward Model",
                   f"Input size: {self.input_size}",
-                  f"Number of Seeds: {self.num_seeds}",
+                  f"Number of Seeds: {self.num_seeds.item()}",
                   f"Seed Embedding size: {self.seed_embedding.embedding_dim}",
                   f"Hidden Layers: {len(self.layers)} ({', '.join([str(layer.in_features) + '->' + str(layer.out_features) for layer in self.layers])})",
-                  f"Layers of same size are residual: {'yes' if self.residual_layers else 'no'}",
+                  f"Layers of same size are residual: {'yes' if self.get_layers_are_residual() else 'no'}",
                   f"Layer Dropout: {self.layer_dropout.p}",
                   f"Final Activation: {self.reward_activation}",
                   f"Number of parameters: (Learnable: {self.count_parameters()}, Fixed: {self.count_parameters(False)})",
@@ -1707,7 +1820,7 @@ def train_reward_model(model,
                        loss_weights_inc=(0., 0., 0.),
                        loss_names=("L1", "SmoothL1", "L2"),
                        gradient_clipping=1.,
-                       smooth_l1_beta=100.,
+                       smooth_l1_beta=50.,
                        contributions_degree=2):
     """
     :type model: RewardModel
@@ -1723,6 +1836,7 @@ def train_reward_model(model,
     :param loss_names:
     :param gradient_clipping:
     :param smooth_l1_beta:
+    :param contributions_degree:
     :return:
     """
     num_losses = len(loss_weights)

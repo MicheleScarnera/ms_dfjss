@@ -991,22 +991,22 @@ class GeneticAlgorithm:
                             if verbose > 0:
                                 print(f"\tCould not save genetic algorithm log ({error})")
 
-                    try:
-                        laststate_json_path = f"{folder_name}/{LASTSTATE_JSON_NAME}.json"
+                        try:
+                            laststate_json_path = f"{folder_name}/{LASTSTATE_JSON_NAME}.json"
 
-                        laststate_dict = dict()
+                            laststate_dict = dict()
 
-                        laststate_dict["rng_state"] = self.rng.bit_generator.state
-                        laststate_dict["population"] = [repr(individual) for individual in self.population]
+                            laststate_dict["rng_state"] = self.rng.bit_generator.state
+                            laststate_dict["population"] = [repr(individual) for individual in self.population]
 
-                        with open(laststate_json_path, 'w') as file:
-                            json.dump(laststate_dict, file)
+                            with open(laststate_json_path, 'w') as file:
+                                json.dump(laststate_dict, file)
 
-                        if verbose > 0:
-                            print("\tLast state saved successfully")
-                    except Exception as error:
-                        if verbose > 0:
-                            print(f"\tCould not save last state ({error})")
+                            if verbose > 0:
+                                print("\tLast state saved successfully")
+                        except Exception as error:
+                            if verbose > 0:
+                                print(f"\tCould not save last state ({error})")
 
         except KeyboardInterrupt as kb_interrupt:
             print("\nGenetic algorithm was manually interrupted")

@@ -2,15 +2,21 @@ import dfjss_nn
 
 autoencoder = dfjss_nn.IndividualFeedForwardAutoEncoder(sequence_length=32)
 
-autoencoder.import_state(r"AUTOENCODER FEEDFORWARD THE GOOD ONE\model_epoch376.pth")
+folder = "AUTOENCODER FEEDFORWARD THE GOOD ONE"
+state_path = f"{folder}/model_epoch376.pth"
 
-dataset = dfjss_nn.RewardModelDataset(autoencoder=autoencoder, seed_censor_rate=0.15)
+autoencoder.import_state(state_path)
+
+dataset = dfjss_nn.RewardModelDataset(autoencoder=autoencoder,
+                                      autoencoder_folder=folder,
+                                      anti_decode=False,
+                                      seed_censor_rate=0.15)
 
 reward_model = dfjss_nn.RewardModel(input_size=autoencoder.encoding_size,
                                     seeds=dataset.seeds,
                                     embedding_dim=128,
                                     num_layers=2,
-                                    residual_layers=True,
+                                    layers_are_residual=True,
                                     layer_dropout=0.1)
 
 print(dataset.summary())
