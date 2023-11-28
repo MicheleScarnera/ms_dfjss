@@ -333,7 +333,7 @@ class IndividualFeedForwardAutoEncoder(nn.Module):
         self.flat_in_size = self.sequence_length * VOCAB_SIZE  # (embedding_dim if embedding_dim > 0 else VOCAB_SIZE)
         self.flat_out_size = self.sequence_length * VOCAB_SIZE
 
-    def make_precompute_table(self, individuals, path, batch_size=128, verbose=1):
+    def make_precompute_table(self, individuals, path, batch_size=64, verbose=1):
         data = {"Individual": [], "Encode": [], "AntiDecode": []}
 
         start = time.time()
@@ -380,11 +380,20 @@ class IndividualFeedForwardAutoEncoder(nn.Module):
 
         df = pd.DataFrame(data)
 
-        df.to_csv(path_or_buf=path, index=False)
+        if os.path.exists(path):
+            df_old = pd.read_csv(path)
+
+            df = pd.concat([df, df_old], ignore_index=True)
+            df.drop_duplicates(subset="Individual", inplace=True)
+
+        df.to_csv(path_or_buf=path, index=False, mode="w")
 
         return df
 
     def get_precompute_table(self, individuals, path, anti_decode=True, verbose=1):
+        if verbose > 0:
+            print("Getting/Making dataset's pre-compute table...")
+
         make_table = False
         df = None
         if os.path.exists(path):
@@ -1585,7 +1594,7 @@ def end_with_eos(string):
 
 
 class RewardModelDataset(data.Dataset):
-    def __init__(self, autoencoder, autoencoder_folder, force_num_rewards=None, anti_decode=False, seed_censor_rate=0.,
+    def __init__(self, autoencoder, autoencoder_folder, force_num_rewards=None, anti_decode=False,
                  verbose=1):
         """
         :type autoencoder: IndividualFeedForwardAutoEncoder
@@ -1607,11 +1616,13 @@ class RewardModelDataset(data.Dataset):
         if df_is_wide:
             self.df = reward_model_df_wide_to_long(self.df)
 
-        # Censor seeds
-        self.rng = torch.Generator()
-        self.seed_censor_rate = seed_censor_rate
+        # mean fitness, integrating out seed
+        df_seedmean = self.df.groupby(["Individual"]).mean().reset_index()
+        df_seedmean["Seed"] = -1
 
-        self.seeds = torch.tensor(np.unique(self.df.loc[:, "Seed"]))
+        self.df = pd.concat([self.df, df_seedmean], ignore_index=True)
+
+        self.seeds = torch.tensor(np.unique(self.df.loc[self.df["Seed"] != -1, "Seed"]))
 
         if type(force_num_rewards) == int:
             self.seeds = self.seeds[0:force_num_rewards]
@@ -1632,21 +1643,6 @@ class RewardModelDataset(data.Dataset):
 
         self._individuals_data = torch.stack([self.precompute_table[end_with_eos(ind)] for ind in self.raw_individuals])
 
-        """
-        if verbose > 0:
-            print(f"Pre-computing {'anti-decodes' if anti_decode else 'encodes'} of individuals...", end="")
-
-        if anti_decode:
-            self._individuals_data = autoencoder.anti_decoder(
-                torch.stack([sparse_sequence(end_with_eos(ind)) for ind in self.raw_individuals], dim=0)).detach().to(device)
-        else:
-            self._individuals_data = autoencoder.encoder(
-                torch.stack([one_hot_sequence(end_with_eos(ind)) for ind in self.raw_individuals], dim=0)).detach().to(device)
-
-        if verbose > 0:
-            print("Done")
-        """
-
         self.individual_sequence_length = self._individuals_data.shape[1]
 
         self.individual_to_data = dict([(raw, tens) for raw, tens in zip(self.raw_individuals, self._individuals_data)])
@@ -1665,7 +1661,7 @@ class RewardModelDataset(data.Dataset):
         longdash = '------------------------------------'
         result = [longdash, "Reward Model Dataset",
                   f"Number of Individuals: {len(self.raw_individuals)}",
-                  f"Number of Seeds: {self.num_seeds} ({self.seed_censor_rate:.0%} censor rate)",
+                  f"Number of Seeds: {self.num_seeds}",
                   f"Sample size (number of individual-seed pairs): {self.N}",
                   f"Counter of seeds: {counter}",
                   f"Perplexity of seed distribution: {perpl:.3f}",
@@ -1680,10 +1676,7 @@ class RewardModelDataset(data.Dataset):
         return self.data_iterator()
 
     def __getitem__(self, idx):
-        return self.get_individual(idx), \
-               (torch.tensor(-1) if torch.rand(1, generator=self.rng, device=device) < self.seed_censor_rate else
-                self.seeds_data[idx]), \
-               self.rewards_data[idx]
+        return self.get_individual(idx), self.seeds_data[idx], self.rewards_data[idx]
 
     def __len__(self):
         return self.N
@@ -1748,7 +1741,10 @@ class RewardModel(nn.Module):
 
         self.last_layer_to_reward = nn.Linear(in_features=self.layers[-1].out_features, out_features=1, device=device)
 
-    def make_seed_to_index(self):
+    def make_seed_to_index(self, force=False):
+        if force:
+            self.seed_to_index = None
+
         if self.seed_to_index is not None:
             raise Exception("seed_to_index already created")
 
@@ -1761,7 +1757,7 @@ class RewardModel(nn.Module):
     def import_state(self, path):
         self.load_state_dict(torch.load(path))
 
-        self.make_seed_to_index()
+        self.make_seed_to_index(True)
 
     def forward(self, x, seeds):
         is_batch = x.dim() == 2
@@ -2085,3 +2081,87 @@ def train_reward_model(model,
         df.to_csv(path_or_buf=f"{folder_name}/log.csv", index=False)
 
         torch.save(model.state_dict(), f"{folder_name}/model_epoch{epoch}.pth")
+
+
+def optimize_reward(model,
+                    autoencoder,
+                    dataset,
+                    seed_to_optimize=-1,
+                    mode="adam",
+                    init="best_of_dataset",
+                    max_iters=2000,
+                    iters_per_print=25,
+                    gradient_max_norm=1.,
+                    verbose=1):
+    """
+    :type model: RewardModel
+    :type autoencoder: IndividualFeedForwardAutoEncoder
+    :type dataset: RewardModelDataset
+
+    :param model:
+    :param dataset:
+    :param seed_to_optimize:
+    :param mode:
+    :param init:
+    :param max_iters:
+    :param iters_per_print:
+    :param gradient_max_norm:
+    :param verbose:
+    :return:
+    """
+    if max_iters <= 0:
+        raise ValueError("max_iters must be strictly positive")
+
+    if type(seed_to_optimize) != torch.tensor:
+        seed_to_optimize = torch.tensor(seed_to_optimize)
+
+    if verbose > 0:
+        print(f"Optimizing reward (seed = {seed_to_optimize}, mode = {mode}, init = {init})...")
+
+    model.eval()
+    if verbose > 0:
+        print("Note: model has been set to eval mode")
+
+    if init == "best_of_dataset":
+        best_individual, best_fitness = None, float('inf')
+
+        for ind, seed, fitness in dataset:
+            if seed != seed_to_optimize:
+                continue
+
+            if fitness < best_fitness:
+                best_individual = ind
+                best_fitness = fitness
+
+        x = best_individual
+    else:
+        raise NotImplementedError()
+
+    if mode == "adam":
+        x.requires_grad_()
+
+        optimizer = optim.Adam(params=[x], lr=0.001)
+        scheduler = optim.lr_scheduler.LambdaLR(optimizer, lambda epoch: 1. / (1. + 0.01 * epoch))
+    else:
+        raise NotImplementedError()
+
+    for iteration in range(1, max_iters+1):
+        if mode == "adam":
+            fitness = model(x, seed_to_optimize)
+
+            fitness.backward()
+
+            grad_norm = nn.utils.clip_grad_norm_(x,
+                                                 max_norm=gradient_max_norm,
+                                                 error_if_nonfinite=True)
+
+            optimizer.step()
+            scheduler.step()
+
+            with torch.no_grad():
+                x.clamp_(min=-1, max=1)
+
+            if verbose > 0 and (iteration % iters_per_print == 0 or iteration == 1 or iteration == max_iters):
+                print(f"Iteration {str(iteration).ljust(4)}: Fitness = {fitness.item():.3f}, Individual = {string_from_onehots(autoencoder.decoder(x))}")
+
+    return x
