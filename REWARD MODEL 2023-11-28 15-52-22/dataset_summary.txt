@@ -1,0 +1,8 @@
+------------------------------------
+Reward Model Dataset
+Number of Individuals: 32480
+Number of Seeds: 0
+Sample size (number of individual-seed pairs): 32480
+Counter of seeds: Counter({-1: 32480})
+Perplexity of seed distribution: 1.000
+------------------------------------

@@ -25,4 +25,5 @@ reward_model.import_state(reward_model_state_path)
 
 print(reward_model.summary())
 
-dfjss_nn.optimize_reward(reward_model, autoencoder, dataset)
+dfjss_nn.optimize_reward(reward_model, autoencoder, dataset,
+                         init="best_of_dataset")

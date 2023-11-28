@@ -1594,14 +1594,14 @@ def end_with_eos(string):
 
 
 class RewardModelDataset(data.Dataset):
-    def __init__(self, autoencoder, autoencoder_folder, force_num_rewards=None, anti_decode=False,
+    def __init__(self, autoencoder, autoencoder_folder, force_num_nonmean_seeds=None, anti_decode=False,
                  verbose=1):
         """
         :type autoencoder: IndividualFeedForwardAutoEncoder
 
         :param autoencoder:
         :param autoencoder_folder:
-        :param force_num_rewards:
+        :param force_num_nonmean_seeds:
         :param verbose:
         """
         super().__init__()
@@ -1624,9 +1624,9 @@ class RewardModelDataset(data.Dataset):
 
         self.seeds = torch.tensor(np.unique(self.df.loc[self.df["Seed"] != -1, "Seed"]))
 
-        if type(force_num_rewards) == int:
-            self.seeds = self.seeds[0:force_num_rewards]
-            self.df = self.df[[seed in self.seeds for seed in self.df.loc[:, "Seed"]]]
+        if type(force_num_nonmean_seeds) == int:
+            self.seeds = self.seeds[0:force_num_nonmean_seeds]
+            self.df = self.df[[(seed in self.seeds or seed == -1) for seed in self.df.loc[:, "Seed"]]].reset_index()
 
         self.N = len(self.df)
 
@@ -1693,7 +1693,7 @@ class RewardModel(nn.Module):
                  seeds,
                  embedding_dim=128,
                  num_layers=2,
-                 layer_widths=(1024,),
+                 layer_widths=(256, 128),
                  layer_dropout=0.1,
                  layers_are_residual=False,
                  reward_activation="elu"):
@@ -1713,10 +1713,13 @@ class RewardModel(nn.Module):
 
         self.register_buffer("num_seeds", torch.tensor([len(self.seeds)]))
 
-        self.seed_embedding = nn.Embedding(embedding_dim=embedding_dim,
-                                           num_embeddings=self.num_seeds + 1,
-                                           padding_idx=0,
-                                           device=device)
+        if embedding_dim > 0:
+            self.seed_embedding = nn.Embedding(embedding_dim=embedding_dim,
+                                               num_embeddings=self.num_seeds + 1,
+                                               padding_idx=0,
+                                               device=device)
+        else:
+            self.seed_embedding = None
 
         self.reward_activation = reward_activation
 
@@ -1729,7 +1732,7 @@ class RewardModel(nn.Module):
 
         for i in range(num_layers):
             if i == 0:
-                in_width = input_size + embedding_dim
+                in_width = input_size + max(embedding_dim, 0)
                 out_width = layer_widths[0]
             else:
                 in_width = layer_widths[(i - 1) % num_widths]
@@ -1762,13 +1765,16 @@ class RewardModel(nn.Module):
     def forward(self, x, seeds):
         is_batch = x.dim() == 2
 
-        if is_batch:
-            embed = self.seed_embedding(
-                torch.stack([self.seed_to_index.get(seed.item(), torch.tensor(0)) for seed in seeds], dim=0))
-        else:
-            embed = self.seed_embedding(self.seed_to_index.get(seeds.item(), torch.tensor(0)))
+        if self.seed_embedding is not None:
+            if is_batch:
+                embed = self.seed_embedding(
+                    torch.stack([self.seed_to_index.get(seed.item(), torch.tensor(0)) for seed in seeds], dim=0))
+            else:
+                embed = self.seed_embedding(self.seed_to_index.get(seeds.item(), torch.tensor(0)))
 
-        y = torch.cat([x, embed], dim=-1)
+            y = torch.cat([x, embed], dim=-1)
+        else:
+            y = x
 
         for i, layer, norm, activ in zip(range(len(self.layers)), self.layers, self.layer_norms,
                                          self.layer_activations):
@@ -1795,7 +1801,7 @@ class RewardModel(nn.Module):
         result = [longdash, "Reward Model",
                   f"Input size: {self.input_size}",
                   f"Number of Seeds: {self.num_seeds.item()}",
-                  f"Seed Embedding size: {self.seed_embedding.embedding_dim}",
+                  f"Seed Embedding size: {self.seed_embedding.embedding_dim if self.seed_embedding is not None else 'N/A'}",
                   f"Hidden Layers: {len(self.layers)} ({', '.join([str(layer.in_features) + '->' + str(layer.out_features) for layer in self.layers])})",
                   f"Layers of same size are residual: {'yes' if self.get_layers_are_residual() else 'no'}",
                   f"Layer Dropout: {self.layer_dropout.p}",
@@ -2134,6 +2140,8 @@ def optimize_reward(model,
                 best_fitness = fitness
 
         x = best_individual
+    elif init == "zeros":
+        x = torch.zeros(size=(model.input_size.item(),))
     else:
         raise NotImplementedError()
 

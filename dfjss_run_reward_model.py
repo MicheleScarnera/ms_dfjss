@@ -9,8 +9,8 @@ autoencoder.import_state(state_path)
 
 dataset = dfjss_nn.RewardModelDataset(autoencoder=autoencoder,
                                       autoencoder_folder=folder,
-                                      anti_decode=False,
-                                      seed_censor_rate=0.15)
+                                      anti_decode=True,
+                                      force_num_nonmean_seeds=0)
 
 reward_model = dfjss_nn.RewardModel(input_size=autoencoder.encoding_size,
                                     seeds=dataset.seeds,
