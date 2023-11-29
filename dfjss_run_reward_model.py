@@ -14,7 +14,7 @@ dataset = dfjss_nn.RewardModelDataset(autoencoder=autoencoder,
 
 reward_model = dfjss_nn.RewardModel(input_size=autoencoder.encoding_size,
                                     seeds=dataset.seeds,
-                                    embedding_dim=128,
+                                    embedding_dim=-1,
                                     num_layers=2,
                                     layers_are_residual=True,
                                     layer_dropout=0.1)

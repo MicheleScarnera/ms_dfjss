@@ -12,7 +12,7 @@ import time
 import datetime
 import os
 
-from collections import Counter
+from collections import Counter, defaultdict
 
 import dfjss_objects as dfjss
 import dfjss_priorityfunction as pf
@@ -333,7 +333,12 @@ class IndividualFeedForwardAutoEncoder(nn.Module):
         self.flat_in_size = self.sequence_length * VOCAB_SIZE  # (embedding_dim if embedding_dim > 0 else VOCAB_SIZE)
         self.flat_out_size = self.sequence_length * VOCAB_SIZE
 
+        self.eval()
+        print("Note: autoencoder has been set to eval mode")
+
     def make_precompute_table(self, individuals, path, batch_size=64, verbose=1):
+        self.eval()
+
         data = {"Individual": [], "Encode": [], "AntiDecode": []}
 
         start = time.time()
@@ -402,7 +407,7 @@ class IndividualFeedForwardAutoEncoder(nn.Module):
             arg_individuals = set([end_with_eos(seq) for seq in individuals])
             table_individuals = set(df["Individual"])
 
-            if len(arg_individuals.difference(table_individuals)) > 0:
+            if not arg_individuals <= table_individuals:
                 make_table = True
         else:
             make_table = True
@@ -653,6 +658,17 @@ def string_from_sparse(sparses, vocab=None, list_mode=False):
     return result
 
 
+def all_features_are_constants(sequence):
+    if type(sequence) == str:
+        T = tokenize_with_vocab(sequence)
+    elif type(sequence[0]) == str:
+        T = sequence
+    else:
+        T = string_from_onehots(sequence, list_mode=True)
+
+    return not np.any([(token in INDIVIDUALS_FEATURES) for token in T])
+
+
 # "house": sequence of tokens "(FoF)"
 
 HOUSE_DETECTOR_COORDINATES = [(0, 2), (1, 5), (2, 4), (3, 5), (4, 3)]
@@ -807,7 +823,7 @@ class AutoencoderDataset(data.Dataset):
 
         self.rng = np.random.default_rng(rng_seed)
 
-        self.fill_individuals()
+        self.generate_individuals()
 
     def max_sequence_length(self):
         if self.flatten_trees:
@@ -840,7 +856,7 @@ class AutoencoderDataset(data.Dataset):
 
         return tree
 
-    def fill_individuals(self):
+    def generate_individuals(self):
         depths = [d for d in range(2, self.max_depth + 1)]
         while len(self.individuals) < self.size:
             self.gen_algo.settings.tree_generation_max_depth = self.rng.choice(depths)
@@ -885,7 +901,7 @@ class AutoencoderDataset(data.Dataset):
                     self.individuals.pop(index)
 
         # if length less than size, generate individuals
-        self.fill_individuals()
+        self.generate_individuals()
 
         self.times_refreshed += 1
 
@@ -1466,6 +1482,7 @@ def reward_model_df_wide_to_long(df):
 
 
 def generate_reward_model_file(batch_size=8,
+                               additional_constants_per_batch=4,
                                num_batches=4000,
                                long=True,
                                seeds_per_batch=32,
@@ -1494,26 +1511,48 @@ def generate_reward_model_file(batch_size=8,
                                              features_weight_in_full_trees=features_weight_in_full_trees,
                                              rng_seed=individuals_seed)
 
-    fitness_log = None
+    autoencoder_constant_dataset = AutoencoderDataset(size=additional_constants_per_batch,
+                                                      max_depth=max_depth,
+                                                      flatten_trees=flatten_trees,
+                                                      fill_trees=fill_trees,
+                                                      refresh_rate=1.,
+                                                      features_weight_in_full_trees=0.,
+                                                      rng_seed=individuals_seed)
 
-    batch_n = 1
+    fitness_log = None
+    fitness_of_constant = None
+    fitness_columns = None
+    batch_n = 0
     while num_batches is None or (num_batches is not None and batch_n <= num_batches):
         try:
-            print(f"Batch {batch_n}{f' of {num_batches}' if num_batches is not None else ''}")
+            evaluating_constant_individuals = batch_n <= 0
+
+            if evaluating_constant_individuals:
+                print("Evaluating fitness of constant individuals...")
+            else:
+                print(f"Batch {batch_n}{f' of {num_batches}' if num_batches is not None else ''}")
 
             start = time.time()
 
             individuals = []
 
-            for i in range(batch_size):
+            I = 1 if evaluating_constant_individuals else batch_size
+
+            for i in range(I):
                 if flatten_trees:
                     tree = pf.representation_to_priority_function_tree("({0.0}+{0.0})", features=INDIVIDUALS_FEATURES)
                     tree.fill(max_depth)
 
-                    tree.set_from_flattened(string_from_onehots(autoencoder_dataset[i], vocab=vocab, list_mode=True))
+                    if not evaluating_constant_individuals:
+                        tree.set_from_flattened(
+                            string_from_onehots(autoencoder_dataset[i], vocab=vocab, list_mode=True))
                 else:
-                    tree = pf.representation_to_priority_function_tree(autoencoder_dataset[i],
-                                                                       features=INDIVIDUALS_FEATURES)
+                    if not evaluating_constant_individuals:
+                        tree = pf.representation_to_priority_function_tree(autoencoder_dataset[i],
+                                                                           features=INDIVIDUALS_FEATURES)
+                    else:
+                        tree = pf.representation_to_priority_function_tree("({0.0}+{0.0})",
+                                                                           features=INDIVIDUALS_FEATURES)
 
                 individuals.append(tree)
 
@@ -1521,10 +1560,10 @@ def generate_reward_model_file(batch_size=8,
             gen_algo_settings.features = INDIVIDUALS_FEATURES
             gen_algo_settings.warehouse_settings = warehouse_settings
             gen_algo_settings.multiprocessing_processes = num_workers
-            gen_algo_settings.population_size = batch_size
+            gen_algo_settings.population_size = I
             gen_algo_settings.total_steps = 1
             gen_algo_settings.number_of_possible_seeds = number_of_possible_seeds
-            gen_algo_settings.number_of_simulations_per_individual = seeds_per_batch
+            gen_algo_settings.number_of_simulations_per_individual = number_of_possible_seeds if evaluating_constant_individuals else seeds_per_batch
             gen_algo_settings.simulations_seeds = explicit_seeds
             gen_algo_settings.save_logs_csv = False
 
@@ -1533,15 +1572,42 @@ def generate_reward_model_file(batch_size=8,
 
             gen_algo_result = gen_algo.run_genetic_algorithm(sort_fitness_log=False, verbose=verbose)
 
+            if fitness_columns is None:
+                fitness_columns = [f"Fitness_{s}" for s in gen_algo_settings.simulations_seeds]
+
             fitness_log = gen_algo_result.fitness_log
+
+            if evaluating_constant_individuals:
+                fitness_of_constant = fitness_log.loc[0, fitness_columns].copy()
+            else:
+                # add random, constant individuals to the fitness log
+                data = defaultdict(list)
+
+                for j in range(additional_constants_per_batch):
+                    constant_tree = pf.representation_to_priority_function_tree("({0.0}+{0.0})",
+                                                                                features=INDIVIDUALS_FEATURES)
+
+                    constant_tree.fill(max_depth)
+
+                    constant_tree.set_from_flattened(
+                        string_from_onehots(autoencoder_constant_dataset[j], vocab=vocab, list_mode=True))
+
+                    data["Individual"].append(repr(constant_tree))
+
+                    for c in fitness_columns:
+                        data[c].append(fitness_of_constant[c])
+
+                fitness_log = pd.concat([fitness_log, pd.DataFrame(data)])
 
             if flatten_trees:
                 fitness_log["Individual"] = [ind.replace("(", "").replace(")", "") for ind in fitness_log["Individual"]]
 
             fitness_log.drop(columns=["Fitness", "Phenotype"], inplace=True)
 
-            if len(fitness_log) != batch_size:
-                raise Exception(f"Length of fitness log {len(fitness_log)} does not match size {batch_size}")
+            fitness_log["IsConstant"] = [int(all_features_are_constants(ind)) for ind in fitness_log["Individual"]]
+
+            if not evaluating_constant_individuals and len(fitness_log) != (batch_size + additional_constants_per_batch):
+                raise Exception(f"Length of fitness log {len(fitness_log)} does not match expected size {batch_size + additional_constants_per_batch}")
 
             if long:
                 fitness_log = reward_model_df_wide_to_long(fitness_log)
@@ -1576,6 +1642,8 @@ def generate_reward_model_file(batch_size=8,
 
             print("Refreshing dataset...")
             autoencoder_dataset.refresh_data()
+            if not evaluating_constant_individuals:
+                autoencoder_constant_dataset.refresh_data()
 
             batch_n += 1
 
@@ -1686,6 +1754,20 @@ class RewardModelDataset(data.Dataset):
             yield self[i]
 
 
+def perturb(encoding, v=10, p=0., generator=None):
+    shape = tuple(encoding.shape)
+    with torch.no_grad():
+        noise = torch.empty(size=shape).uniform_(-1. / v, 1. / v, generator=generator)
+
+        result = torch.clamp(encoding + noise, min=-1, max=1)
+
+        peg = torch.bernoulli(torch.full_like(encoding, fill_value=p), generator=generator)
+
+        result = (1. - peg) * result + peg * encoding
+
+        return result
+
+
 class RewardModel(nn.Module):
     autoencoder: IndividualFeedForwardAutoEncoder
 
@@ -1693,7 +1775,7 @@ class RewardModel(nn.Module):
                  seeds,
                  embedding_dim=128,
                  num_layers=2,
-                 layer_widths=(256, 128),
+                 layer_widths=(1024,),
                  layer_dropout=0.1,
                  layers_are_residual=False,
                  reward_activation="elu"):
@@ -1762,6 +1844,9 @@ class RewardModel(nn.Module):
 
         self.make_seed_to_index(True)
 
+        self.eval()
+        print("Note: reward model has been set to eval mode")
+
     def forward(self, x, seeds):
         is_batch = x.dim() == 2
 
@@ -1823,6 +1908,7 @@ def train_reward_model(model,
                        loss_names=("L1", "SmoothL1", "L2"),
                        gradient_clipping=1.,
                        smooth_l1_beta=50.,
+                       individual_perturbation=1500,
                        contributions_degree=2):
     """
     :type model: RewardModel
@@ -1975,8 +2061,9 @@ def train_reward_model(model,
 
                 train_start = time.time()
 
-                with torch.no_grad():
-                    embed_params_before = model.seed_embedding.weight.data.clone()
+                if model.seed_embedding is not None:
+                    with torch.no_grad():
+                        embed_params_before = model.seed_embedding.weight.data.clone()
             else:
                 print(f"\rEpoch {epoch}: Validating...", end="", flush=True)
                 model.eval()
@@ -1997,6 +2084,9 @@ def train_reward_model(model,
 
                 if is_train:
                     optimizer.zero_grad()
+
+                if individual_perturbation is not None:
+                    individual_batch = perturb(individual_batch, v=individual_perturbation)
 
                 predicted_rewards = model(individual_batch, seed_batch)
 
@@ -2050,13 +2140,17 @@ def train_reward_model(model,
 
         current_lr = optimizer.param_groups[0]['lr']
 
-        with torch.no_grad():
-            embed_param_shift = torch.abs(model.seed_embedding.weight.data - embed_params_before).sum().item()
+        if model.seed_embedding is not None:
+            with torch.no_grad():
+                embed_param_shift = "{:.4f}".format(
+                    torch.abs(model.seed_embedding.weight.data - embed_params_before).sum().item())
+        else:
+            embed_param_shift = "N/A"
 
         contribs = get_contributions()
 
         print(
-            f"\rEpoch {epoch}: Loss({'+'.join(loss_names)}): (Train: {running_loss_and_its_components(True, False)}) (Val: {running_loss_and_its_components(False, False)}) LR: {current_lr:.0e}, L{contributions_degree} Contributions: {contributions_format(contribs)}, Embedding's parameter shift: {embed_param_shift:.4f}, Took {misc.timeformat(time.time() - train_start)} ({misc.timeformat(val_start - train_start)}, {misc.timeformat(time.time() - val_start)})"
+            f"\rEpoch {epoch}: Loss({'+'.join(loss_names)}): (Train: {running_loss_and_its_components(True, False)}) (Val: {running_loss_and_its_components(False, False)}) LR: {current_lr:.0e}, L{contributions_degree} Contributions: {contributions_format(contribs)}, Embedding's parameter shift: {embed_param_shift}, Took {misc.timeformat(time.time() - train_start)} ({misc.timeformat(val_start - train_start)}, {misc.timeformat(time.time() - val_start)})"
         )
 
         scheduler.step(val_loss)
@@ -2098,6 +2192,7 @@ def optimize_reward(model,
                     max_iters=2000,
                     iters_per_print=25,
                     gradient_max_norm=1.,
+                    rng_seed=123,
                     verbose=1):
     """
     :type model: RewardModel
@@ -2112,6 +2207,7 @@ def optimize_reward(model,
     :param max_iters:
     :param iters_per_print:
     :param gradient_max_norm:
+    :param rng_seed:
     :param verbose:
     :return:
     """
@@ -2128,6 +2224,9 @@ def optimize_reward(model,
     if verbose > 0:
         print("Note: model has been set to eval mode")
 
+    rng = torch.Generator()
+    rng.manual_seed(rng_seed)
+
     if init == "best_of_dataset":
         best_individual, best_fitness = None, float('inf')
 
@@ -2142,18 +2241,45 @@ def optimize_reward(model,
         x = best_individual
     elif init == "zeros":
         x = torch.zeros(size=(model.input_size.item(),))
+    elif init == "random":
+        x = -1. + 2. * torch.rand(size=(model.input_size.item(),), generator=rng)
     else:
-        raise NotImplementedError()
+        raise NotImplementedError(f"init '{init}' not implemented")
+
+    optimizer, scheduler = None, None
+
+    def sa_neighbor(y):
+        with torch.no_grad():
+            result = y.clone()
+            k = torch.randint(size=(1,), low=0, high=y.shape[0], generator=rng)
+            result[k] = -1. + 2. * torch.rand(size=(1,), generator=rng)
+
+        return result
+
+    def sa_temperature(i):
+        return 1. - i / max_iters
+
+    def sa_energy(y):
+        with torch.no_grad():
+            result = model(y, seed_to_optimize)
+
+        return result
+
+    def sa_acceptance_prob(energy_x, energy_y, T):
+        return torch.exp(-torch.abs((energy_x - energy_y) / T)).clamp_(max=1.)
 
     if mode == "adam":
         x.requires_grad_()
 
         optimizer = optim.Adam(params=[x], lr=0.001)
         scheduler = optim.lr_scheduler.LambdaLR(optimizer, lambda epoch: 1. / (1. + 0.01 * epoch))
+    elif mode == "sa":
+        pass
     else:
-        raise NotImplementedError()
+        raise NotImplementedError(f"mode '{mode}' not implemented in the optimizer initialization step")
 
-    for iteration in range(1, max_iters+1):
+    fitness = float('nan')
+    for iteration in range(1, max_iters + 1):
         if mode == "adam":
             fitness = model(x, seed_to_optimize)
 
@@ -2168,8 +2294,21 @@ def optimize_reward(model,
 
             with torch.no_grad():
                 x.clamp_(min=-1, max=1)
+        elif mode == "sa":
+            T = sa_temperature(iteration)
+            y = sa_neighbor(x)
+            fitness = sa_energy(x)
+            p = sa_acceptance_prob(fitness, sa_energy(y), T)
 
-            if verbose > 0 and (iteration % iters_per_print == 0 or iteration == 1 or iteration == max_iters):
-                print(f"Iteration {str(iteration).ljust(4)}: Fitness = {fitness.item():.3f}, Individual = {string_from_onehots(autoencoder.decoder(x))}")
+            if torch.rand(size=(1,), generator=rng) < p:
+                x = y
+        else:
+            raise NotImplementedError(f"mode '{mode}' not implemented in the optimization step")
+
+        if verbose > 0 and (iteration % iters_per_print == 0 or iteration == 1 or iteration == max_iters):
+            print(
+                f"Iteration {str(iteration).ljust(6)}: Fitness = {fitness.item():.3f}, Individual = {string_from_onehots(autoencoder.decoder(x))}")
+    if verbose > 0:
+        print(f"Final result:\n{x}")
 
     return x
