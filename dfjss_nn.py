@@ -1,5 +1,3 @@
-import numbers
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -11,6 +9,7 @@ import pandas as pd
 import time
 import datetime
 import os
+import warnings
 
 from collections import Counter, defaultdict
 
@@ -24,6 +23,8 @@ torch.autograd.set_detect_anomaly(True)
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 print(f"Device: {device.upper()}")
+
+torch.set_default_device(device)
 
 AUTOENCODER_PRECOMPUTE_TABLE_FILENAME = "precompute_table.csv"
 
@@ -82,211 +83,10 @@ VOCAB_REDUCTION_MATRIX[4, VOCAB_OPERATIONS_LOCATION[0]:VOCAB_OPERATIONS_LOCATION
 VOCAB_REDUCTION_MATRIX[5, VOCAB_FEATURES_LOCATION[0]:VOCAB_FEATURES_LOCATION[1]] = 1.
 
 
-class RNNEncoderHat(nn.Module):
-    module: nn.Module
-
-    def __init__(self, rnn, encoding_size):
-        super().__init__()
-        self.rnn = rnn
-        self.encoding_size = encoding_size
-
-        self.accumulator_y_to_a = nn.Linear(in_features=rnn.hidden_size, out_features=encoding_size)
-        self.accumulator_a_to_a = nn.Linear(in_features=encoding_size, out_features=encoding_size)
-
-    def forward(self, x):
-        is_batch = len(x.shape) == 3
-
-        if is_batch:
-            return torch.stack([self.forward(x_) for x_ in x], dim=0)
-
-        d = 2 if self.rnn.bidirectional else 1
-
-        current_h = torch.zeros(size=(d * self.rnn.num_layers, self.rnn.hidden_size))
-        accumulator = torch.zeros(size=(self.encoding_size,))
-
-        for x_ in x:
-            y_, current_h = self.rnn(x_.unsqueeze(0), current_h)
-
-            accumulator = torch.nn.functional.tanh(
-                self.accumulator_y_to_a(y_.squeeze(0)) + self.accumulator_a_to_a(accumulator))
-
-        return accumulator.squeeze(0)
-
-
-class RNNDecoderHat(nn.Module):
-    rnn: nn.RNN
-
-    def __init__(self, rnn, output_size):
-        super().__init__()
-        self.rnn = rnn
-        self.output_proj = nn.Linear(in_features=rnn.hidden_size, out_features=output_size, bias=False)
-
-    def forward(self, a, max_length=None):
-        is_batch = len(a.shape) == 2
-
-        if is_batch:
-            return torch.stack([self.forward(a_, max_length=max_length) for a_ in a], dim=0)
-
-        d = 2 if self.rnn.bidirectional else 1
-
-        current_h = torch.zeros(size=(d * self.rnn.num_layers, self.rnn.hidden_size))
-        result = []
-
-        i = 0
-        while (max_length is not None and i < max_length) or (max_length is None):
-            decoder_y, current_h = self.rnn.forward(a.unsqueeze(0), current_h)
-
-            actual_y = torch.nn.functional.log_softmax(self.output_proj(decoder_y), dim=-1).squeeze(0)
-            result.append(actual_y)
-
-            if max_length is None and torch.argmax(actual_y, dim=-1) == EOS_INDEX:
-                break
-
-            i += 1
-
-        return torch.stack(result, dim=0)
-
-
 def new_first_decoder_token(confidence=1, dtype=torch.float32):
     result = np.full(shape=VOCAB_SIZE, fill_value=0)
     result[VOCAB.index("(")] = confidence
     return torch.tensor(result, dtype=dtype)
-
-
-class IndividualRNNAutoEncoder(nn.Module):
-    def __init__(self, input_size=None, hidden_size=512, encoding_size=1024, num_layers=3, dropout=0.1,
-                 bidirectional=False):
-        super(IndividualRNNAutoEncoder, self).__init__()
-
-        if input_size is None:
-            input_size = len(VOCAB)
-
-        self.input_size = input_size
-
-        self.d = 2 if bidirectional else 1
-        self.num_layers = num_layers
-        self.hidden_size = hidden_size
-
-        self.encoding_size = encoding_size
-
-        self.encoder = RNNEncoderHat(nn.RNN(input_size=input_size,
-                                            hidden_size=hidden_size,
-                                            num_layers=num_layers,
-                                            dropout=dropout,
-                                            bidirectional=bidirectional,
-                                            batch_first=True,
-                                            device=device), encoding_size)
-
-        self.decoder = RNNDecoderHat(nn.RNN(input_size=encoding_size,
-                                            hidden_size=hidden_size,
-                                            num_layers=num_layers,
-                                            dropout=dropout,
-                                            bidirectional=False,
-                                            batch_first=False,
-                                            device=device), input_size)
-
-        # for p in self.parameters():
-        #     p.register_hook(lambda grad: torch.clamp(grad, -gradient_clip_value, gradient_clip_value))
-
-    def count_parameters(self, learnable=True):
-        return sum(p.numel() for p in self.parameters() if p.requires_grad == learnable)
-
-    def summary(self):
-        longdash = '------------------------------------'
-        result = [longdash, "Individual RNN Auto-Encoder",
-                  f"Vocabulary size: {self.input_size}",
-                  f"Encoding/Accumulator size: {self.encoding_size}",
-                  f"RNN Hidden size: {self.encoder.rnn.hidden_size}", f"RNN Layers: {self.encoder.rnn.num_layers}",
-                  f"RNN Dropout: {self.encoder.rnn.dropout}", f"RNN Bidirectional: {self.encoder.rnn.bidirectional}",
-                  f"Number of parameters: (Learnable: {self.count_parameters()}, Fixed: {self.count_parameters(False)})",
-                  longdash]
-
-        return "\n".join(result)
-
-    def forward(self, x):
-        max_length = x.shape[-2]
-        encode = self.encoder(x)
-        return self.decoder(encode, max_length)
-
-
-class IndividualTransformerAutoEncoder(nn.Module):
-    def __init__(self, nhead=9, num_encoder_layers=2, num_decoder_layers=2, dim_feedforward=512,
-                 dropout=0.1, max_length=34):
-        super(IndividualTransformerAutoEncoder, self).__init__()
-
-        # self.embedding = nn.Embedding(VOCAB_SIZE, d_model)
-
-        self.transformer = nn.Transformer(d_model=VOCAB_SIZE,
-                                          nhead=nhead,
-                                          num_encoder_layers=num_encoder_layers,
-                                          num_decoder_layers=num_decoder_layers,
-                                          dim_feedforward=dim_feedforward,
-                                          dropout=dropout,
-                                          batch_first=True,
-                                          device=device)
-
-        self.dropout = dropout
-        self.max_length = max_length
-
-    def auto_encode(self, sequence):
-        # embedded = self.embedding(index_sequence)
-        return nn.functional.log_softmax(self.transformer(sequence, sequence), dim=-1)
-
-    def encode(self, sequence):
-        return self.transformer.encoder(sequence)
-
-    def decode(self, encoded, target):
-        return nn.functional.log_softmax(self.transformer(target, encoded), dim=-1)
-
-    def blind_decode(self, encoded):
-        if encoded.dim() == 3:
-            return [self.blind_decode(e) for e in encoded]
-
-        # Initialize the generated sequence with the start token
-        generated_sequence_sparse = [VOCAB.index("(")]
-        generated_sequence = [nn.functional.log_softmax(new_first_decoder_token(8), dim=0)]
-        end_token = VOCAB.index("EOS")
-
-        with torch.no_grad():
-            for _ in range(self.max_length - 1):
-                current_decode = torch.stack(generated_sequence, dim=0).to(device)
-
-                output = self.transformer.decoder(current_decode, encoded)
-
-                generated_sequence.append(nn.functional.log_softmax(output[-1, :], dim=-1))
-
-                predicted_token_sparse = output[-1, :].argmax().item()
-                generated_sequence_sparse.append(predicted_token_sparse)
-
-                # If the end token is predicted, stop decoding
-                if predicted_token_sparse == end_token:
-                    break
-
-        result_decode = torch.stack(generated_sequence, dim=0).to(device)
-
-        return result_decode, torch.tensor(generated_sequence_sparse)
-
-    def blind_auto_encode(self, sequence):
-        return self.blind_decode(self.encode(sequence))
-
-    def forward(self, x):
-        return self.auto_encode(x)
-
-    def count_parameters(self, learnable=True):
-        return sum(p.numel() for p in self.parameters() if p.requires_grad == learnable)
-
-    def summary(self):
-        longdash = '------------------------------------'
-        result = [longdash, "Individual Transformer Auto-Encoder",
-                  f"Vocabulary size: {self.transformer.d_model}",
-                  f"Max Length: {self.max_length}",
-                  f"Heads: {self.transformer.nhead}",
-                  f"Layers: {self.transformer.encoder.num_layers} (Encoder), {self.transformer.decoder.num_layers} (Decoder)",
-                  f"Dropout: {self.dropout}",
-                  f"Number of parameters: (Learnable: {self.count_parameters()}, Fixed: {self.count_parameters(False)})",
-                  longdash]
-
-        return "\n".join(result)
 
 
 class IndividualFeedForwardAutoEncoder(nn.Module):
@@ -919,6 +719,181 @@ class AutoencoderDataset(data.Dataset):
             yield individual
 
 
+def num_diagonals(n, include_self_diagonals=False):
+    return n * (n + 1) // 2 if include_self_diagonals else n * (n - 1) // 2
+
+
+def num_diagonals_inverse(x, include_self_diagonals=False, return_int=True):
+    b = 1 if include_self_diagonals else -1
+
+    result = 0.5 * (-b + np.sqrt(8 * x + 1))
+    return int(result) if return_int else result
+
+
+def random_unordered_pairs(no_elements, no_pairs=None, torch_rng=None, include_self_pairs=True):
+    d = num_diagonals(no_elements, include_self_pairs)
+
+    if no_pairs is None:
+        no_pairs = d
+    elif no_pairs > d:
+        raise ValueError(f"Number of requested pairs ({no_pairs}) is higher than the number of possible pairs ({d})")
+
+    combs = torch.combinations(torch.arange(no_elements), r=2, with_replacement=include_self_pairs)
+
+    perm = torch.randperm(len(combs), generator=torch_rng)
+
+    return combs[perm[:no_pairs]]
+
+
+class EncoderSimilarityDataset(data.Dataset):
+    def __init__(self, autoencoder_dataset, rng_seed=450, num_of_pairs=1000, sets_of_features_size=250,
+                 include_self_similarity=True):
+        """
+        :type autoencoder_dataset: AutoencoderDataset
+
+        :param autoencoder_dataset:
+        :param rng_seed:
+        """
+        super().__init__()
+
+        self.autoencoder_dataset = autoencoder_dataset
+
+        self.size_from_dataset = num_diagonals_inverse(num_of_pairs,
+                                                       include_self_diagonals=include_self_similarity,
+                                                       return_int=True)
+
+        max_pairs = num_diagonals(self.size_from_dataset, include_self_similarity)
+
+        if num_of_pairs is None:
+            num_of_pairs = float('inf')
+
+        self.num_of_pairs = min(num_of_pairs, max_pairs)
+        self.rng = torch.Generator()
+        self.rng.manual_seed(rng_seed)
+
+        self.sets_of_features_size = sets_of_features_size
+        self.sets_of_features = self.get_sets_of_features()
+        self.sim_matrix = None
+
+        self.individual_pairs = torch.zeros(size=(self.num_of_pairs, 2, *tuple(autoencoder_dataset[0].shape)))
+        self.similarities = torch.zeros(size=(self.num_of_pairs,), dtype=torch.float32)
+        self.last_times_refreshed = float("-inf")
+
+        self.include_self_similarity = include_self_similarity
+
+        self.refresh_data()
+
+    def get_sets_of_features(self, seed=123, center_std=3., features_std=1., feature_abs=True):
+        rng = torch.Generator()
+
+        rng.manual_seed(seed)
+
+        centers = dict()
+
+        sets_of_features = []
+
+        for c in INDIVIDUALS_FEATURES:
+            centers[c] = torch.normal(mean=0., std=center_std, size=(1,), generator=rng).item()
+
+        for _ in range(self.sets_of_features_size):
+            feature_values = dict()
+
+            for c in INDIVIDUALS_FEATURES:
+                feature_values[c] = torch.normal(mean=centers[c], std=features_std, size=(1,), generator=rng)
+
+                if feature_abs:
+                    feature_values[c] = torch.abs(feature_values[c])
+
+                feature_values[c] = feature_values[c].item()
+
+            sets_of_features.append(feature_values)
+
+        return sets_of_features
+
+    def get_similarity_matrix(self, priority_functions):
+        """
+        :type priority_functions: list[pf.PriorityFunctionTree]
+
+        :param sets_of_features:
+        :return:
+        """
+        with torch.no_grad():
+            num_functions = len(priority_functions)
+
+            if num_functions <= 1:
+                raise ValueError(f"Not enough priority functions. Need at least 2, got {num_functions}")
+
+            k = len(self.sets_of_features)
+
+            priority_values = torch.zeros(size=(num_functions, k), dtype=torch.float32)
+
+            for i in range(k):
+                for f in range(num_functions):
+                    priority_values[f, i] = priority_functions[f].run(features=self.sets_of_features[i])
+
+            return torch.corrcoef(priority_values).nan_to_num_()
+
+    def refresh_data(self):
+        # note: this does not refresh the autoencoder dataset itself
+        if self.autoencoder_dataset.times_refreshed <= self.last_times_refreshed:
+            warnings.warn(
+                "EncoderSimilarityDataset.refresh_data() was called more than once on the same refresh of its AutoencoderDataset")
+
+        self.last_times_refreshed = self.autoencoder_dataset.times_refreshed
+
+        indices = torch.randperm(n=len(self.autoencoder_dataset))[0:self.size_from_dataset]
+
+        # make priority functions
+        start = time.time()
+
+        priority_functions = []
+        for i in indices:
+            individual_tensor = self.autoencoder_dataset[i]
+
+            if self.autoencoder_dataset.flatten_trees:
+                ind_tokens = string_from_onehots(individual_tensor, list_mode=True)
+                pr_func = pf.representation_to_priority_function_tree("({0.0}+{0.0})", features=INDIVIDUALS_FEATURES)
+                pr_func.fill(self.autoencoder_dataset.max_depth)
+                pr_func.set_from_flattened(ind_tokens)
+
+                priority_functions.append(pr_func)
+            else:
+                raise NotImplementedError()
+
+        # print(f"Evaluating the priority functions took {misc.timeformat(time.time() - start)}")
+
+        # similarity matrix
+        start = time.time()
+        self.sim_matrix = self.get_similarity_matrix(priority_functions)
+
+        # print(f"Computing the similarity matrix took {misc.timeformat(time.time() - start)}")
+
+        # create non-duplicate pairings
+        pairs_idx = random_unordered_pairs(self.size_from_dataset, None,
+                                           torch_rng=self.rng,
+                                           include_self_pairs=self.include_self_similarity)
+
+        # make pairs and similarities
+        for i in range(self.num_of_pairs):
+            for p in (0, 1):
+                self.individual_pairs[i, p] = self.autoencoder_dataset[pairs_idx[i, p]]
+
+            self.similarities[i] = self.sim_matrix[*pairs_idx[i]]
+
+    def __iter__(self):
+        return self.data_iterator()
+
+    def __getitem__(self, idx):
+        return self.individual_pairs[idx], self.similarities[idx]
+
+    def __len__(self):
+        return self.num_of_pairs
+
+    def data_iterator(self):
+        for individual, sim in zip(self.individual_pairs, self.similarities):
+            yield individual, sim
+
+
 def individual_sequence_collate(batch):
     longest_sequence_length = max([sample.shape[0] for sample in batch])
 
@@ -948,13 +923,17 @@ def train_autoencoder(model,
                       max_depth=8,
                       flatten_trees=True,
                       fill_trees=True,
-                      train_size=5000,
-                      train_refresh_rate=1.,
-                      train_seed=100,
-                      val_size=1000,
-                      val_refresh_rate=0.,
-                      val_seed=1337,
-                      val_perfects_100_patience=5,
+                      train_autoencoder_size=5000,
+                      train_autoencoder_refresh_rate=1.,
+                      train_autoencoder_seed=100,
+                      val_autoencoder_size=1000,
+                      val_autoencoder_refresh_rate=0.,
+                      val_autoencoder_seed=1337,
+                      val_autoencoder_perfects_100_patience=5,
+                      train_encoder_size=1000,
+                      val_encoder_size=1000,
+                      encoder_sets_of_features_size=250,
+                      encoder_include_self_similarity=True,
                       raw_criterion_weight=0.3,
                       raw_criterion_weight_inc=0.05,
                       reduced_criterion_weight=0.7,
@@ -970,20 +949,20 @@ def train_autoencoder(model,
     """
     Train an autoencoder.
 
-    :type model: nn.Module
+    :type model: IndividualFeedForwardAutoEncoder
 
     :param model: The autoencoder model.
     :param max_depth: Individuals will not exceed this depth.
     :param flatten_trees: Whether data should be of flat individuals or not. You cannot have flat individuals if they are not also full.
     :param fill_trees: Whether individuals should be full. You cannot have flat individuals if they are not also full.
     :param num_epochs: The maximum number of epochs to train on.
-    :param train_size: The size of the training set each epoch.
-    :param train_refresh_rate: How much, in percentage, the training set is replaced with new data each epoch.
-    :param train_seed: The seed for the training data.
-    :param val_size: The size of the validation set each epoch. If the training set has non-zero refresh rate, it makes sense for this to be large, even larger than train_size.
-    :param val_refresh_rate: How much, in percentage, the validation set is replaced with new data each epoch. It is recommended to keep this to 0 for consistency of evaluation.
-    :param val_seed: The seed for the validation data.
-    :param val_perfects_100_patience: If the 'Perfects' metric in the validation set reaches 100%, training is stopped if it's kept at 100% for 'val_perfects_100_patience' epochs in a row.
+    :param train_autoencoder_size: The size of the training set each epoch.
+    :param train_autoencoder_refresh_rate: How much, in percentage, the training set is replaced with new data each epoch.
+    :param train_autoencoder_seed: The seed for the training data.
+    :param val_autoencoder_size: The size of the validation set each epoch. If the training set has non-zero refresh rate, it makes sense for this to be large, even larger than train_size.
+    :param val_autoencoder_refresh_rate: How much, in percentage, the validation set is replaced with new data each epoch. It is recommended to keep this to 0 for consistency of evaluation.
+    :param val_autoencoder_seed: The seed for the validation data.
+    :param val_autoencoder_perfects_100_patience: If the 'Perfects' metric in the validation set reaches 100%, training is stopped if it's kept at 100% for 'val_perfects_100_patience' epochs in a row.
     :param raw_criterion_weight: The relative weight of the raw criterion at epoch 1.
     :param raw_criterion_weight_inc: Every epoch, the relative weight of the raw criterion is increased by this amount.
     :param reduced_criterion_weight: The relative weight of the reduced criterion at epoch 1.
@@ -1004,22 +983,7 @@ def train_autoencoder(model,
         raise ValueError(
             "You cannot have flat individuals if they are not also full. Change the flatten_trees and fill_trees arguments")
 
-    model_type = type(model)
-
-    if model_type == IndividualRNNAutoEncoder:
-        autoencoder_type = "RNN"
-    elif model_type == IndividualTransformerAutoEncoder:
-        autoencoder_type = "TRANSFORMER"
-    elif model_type == IndividualFeedForwardAutoEncoder:
-        autoencoder_type = "FEEDFORWARD"
-    else:
-        raise TypeError(f"Unknown autoencoder type ({model_type})")
-
-    if autoencoder_type == "FEEDFORWARD" and not fill_trees:
-        raise ValueError(
-            "Feed-Forward auto-encoders can only be trained with full trees, as they require the input to be of constant length. Set fill_trees to True")
-
-    folder_name = datetime.datetime.now().strftime(f'AUTOENCODER {autoencoder_type} %Y-%m-%d %H-%M-%S')
+    folder_name = datetime.datetime.now().strftime(f'AUTOENCODER %Y-%m-%d %H-%M-%S')
 
     if not os.path.exists(folder_name):
         os.makedirs(folder_name)
@@ -1042,45 +1006,66 @@ def train_autoencoder(model,
 
     df_examples_cols = ["Epoch", "Example", "AutoencodedExample", "Accuracy"]
 
-    if autoencoder_type == "TRANSFORMER":
-        df_cols.append("BlindAutoencodedExample")
-
     df = pd.DataFrame(columns=df_cols)
 
     df_examples = pd.DataFrame(columns=df_examples_cols)
 
     print("Making training dataset...")
-    train_set = AutoencoderDataset(max_depth=max_depth,
-                                   size=train_size,
-                                   refresh_rate=train_refresh_rate,
-                                   flatten_trees=flatten_trees,
-                                   fill_trees=fill_trees,
-                                   rng_seed=train_seed)
+    train_autoencoder_set = AutoencoderDataset(max_depth=max_depth,
+                                               size=train_autoencoder_size,
+                                               refresh_rate=train_autoencoder_refresh_rate,
+                                               flatten_trees=flatten_trees,
+                                               fill_trees=fill_trees,
+                                               rng_seed=train_autoencoder_seed)
+
+    train_encoder_set = EncoderSimilarityDataset(autoencoder_dataset=train_autoencoder_set,
+                                                 num_of_pairs=train_encoder_size,
+                                                 sets_of_features_size=encoder_sets_of_features_size,
+                                                 include_self_similarity=encoder_include_self_similarity,
+                                                 rng_seed=train_autoencoder_seed)
 
     print("Making validation dataset...")
-    val_set = AutoencoderDataset(max_depth=max_depth,
-                                 size=val_size,
-                                 refresh_rate=val_refresh_rate,
-                                 flatten_trees=flatten_trees,
-                                 fill_trees=fill_trees,
-                                 rng_seed=val_seed)
+    val_autoencoder_set = AutoencoderDataset(max_depth=max_depth,
+                                             size=val_autoencoder_size,
+                                             refresh_rate=val_autoencoder_refresh_rate,
+                                             flatten_trees=flatten_trees,
+                                             fill_trees=fill_trees,
+                                             rng_seed=val_autoencoder_seed)
 
-    implied_length = train_set.max_sequence_length()
-    if autoencoder_type == "FEEDFORWARD" and model.sequence_length != implied_length:
+    val_encoder_set = EncoderSimilarityDataset(autoencoder_dataset=val_autoencoder_set,
+                                               num_of_pairs=val_encoder_size,
+                                               sets_of_features_size=encoder_sets_of_features_size,
+                                               include_self_similarity=encoder_include_self_similarity,
+                                               rng_seed=val_autoencoder_seed)
+
+    implied_length = train_autoencoder_set.max_sequence_length()
+    if model.sequence_length != implied_length:
         raise ValueError(
             f"The feed-forward network needs individuals whose length is exactly {model.sequence_length}, but the max_depth ({max_depth}) parameter implies a length of {implied_length}.")
 
     print(f"Creating training and validation set for Epoch 1...", end="")
 
-    train_loader = data.DataLoader(
-        train_set,
+    train_encoder_loader = data.DataLoader(
+        train_encoder_set,
+        batch_size=batch_size,
+        shuffle=True
+    )
+
+    train_decoder_loader = data.DataLoader(
+        train_autoencoder_set,
         batch_size=batch_size,
         collate_fn=individual_sequence_collate,
         shuffle=True
     )
 
-    val_loader = data.DataLoader(
-        val_set,
+    val_encoder_loader = data.DataLoader(
+        val_encoder_set,
+        batch_size=batch_size,
+        shuffle=True
+    )
+
+    val_decoder_loader = data.DataLoader(
+        val_autoencoder_set,
         batch_size=batch_size,
         collate_fn=individual_sequence_collate,
         shuffle=True
@@ -1096,57 +1081,93 @@ def train_autoencoder(model,
         else:
             return other_classes_weight
 
+    encoder_criterion = nn.MSELoss()
+
     raw_criterion_class_weights = torch.tensor([class_weight(token) for token in VOCAB], dtype=torch.float32)
-    criterion_raw = nn.NLLLoss(weight=raw_criterion_class_weights, reduction="none")
-    criterion_reduced = nn.NLLLoss(reduction="none")
-    optimizer = optim.Adam(model.parameters(), lr=0.001)  # optim.SGD(model.parameters(), lr=0.001, momentum=0.25)
+    decoder_criterion_raw = nn.NLLLoss(weight=raw_criterion_class_weights)
+    decoder_criterion_reduced = nn.NLLLoss()
 
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, mode="max",
-                                                     threshold=0.005, patience=8, cooldown=5, factor=0.1 ** 0.25,
-                                                     verbose=False)
+    encoder_params, decoder_params = [], []
+    doing_encoder = True
 
-    reduced_criterion_scale = 1.  # np.log(len(VOCAB)) / np.log(len(VOCAB_REDUCED))
+    for name, param in model.named_parameters():
+        if doing_encoder and name == 'encoder_to_h_out.weight':
+            doing_encoder = False
+
+        if doing_encoder:
+            encoder_params.append(param)
+        else:
+            decoder_params.append(param)
+
+    start_lr = 0.001
+
+    encoder_optimizer = optim.Adam(encoder_params, lr=start_lr)
+    decoder_optimizer = optim.Adam(decoder_params, lr=start_lr)
+
+    threshold, patience, factor = 0.005, 10, 0.1 ** 0.25
+
+    encoder_scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer=encoder_optimizer, mode="max",
+                                                             threshold=threshold, patience=patience, cooldown=0,
+                                                             factor=factor,
+                                                             verbose=False)
+
+    decoder_scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer=decoder_optimizer, mode="max",
+                                                             threshold=threshold, patience=patience, cooldown=0,
+                                                             factor=factor,
+                                                             verbose=False)
 
     perfect_epochs_in_a_row = 0
 
     for epoch in range(1, num_epochs + 1):
+        # ENCODER
+        train_encoder_loss = 0.
+
+        train_encoder_start = None
+        train_encoder_progress = 0
+        train_encoder_progress_needed = None
+
+        val_encoder_loss = 0.
+
+        val_encoder_start = None
+        val_encoder_progress = 0
+        val_encoder_progress_needed = None
+
+        # DECODER
+
         # Training
-        train_loss = 0.
-        train_raw_criterion = 0.
-        train_reduced_criterion = 0.
-        train_total_criterion = 0.
-        train_largest_criterion = 0.
-        train_syntaxscore = 0.
+        train_decoder_loss = 0.
+        train_decoder_raw_criterion = 0.
+        train_decoder_reduced_criterion = 0.
+        train_decoder_total_criterion = 0.
+        train_decoder_largest_criterion = 0.
 
-        train_accuracy = 0.
-        train_valid = 0.
-        train_perfect_matches = 0
+        train_decoder_accuracy = 0.
+        train_decoder_valid = 0.
+        train_decoder_perfect_matches = 0
 
-        train_start = None
-        train_progress = 0
-        train_progress_needed = None
+        train_decoder_start = None
+        train_decoder_progress = 0
+        train_decoder_progress_needed = None
 
         # Validation
 
-        val_loss = 0.
-        val_raw_criterion = 0.
-        val_reduced_criterion = 0.
-        val_total_criterion = 0.
-        val_syntaxscore = 0.
+        val_decoder_loss = 0.
+        val_decoder_raw_criterion = 0.
+        val_decoder_reduced_criterion = 0.
+        val_decoder_total_criterion = 0.
 
-        val_accuracy = 0.
-        val_valid = 0.
-        val_perfect_matches = 0
+        val_decoder_accuracy = 0.
+        val_decoder_valid = 0.
+        val_decoder_perfect_matches = 0
 
-        val_example = ""
-        val_autoencoded = ""
-        val_blind_autoencoded = ""
+        val_decoder_example = ""
+        val_decoder_autoencoded = ""
 
-        val_examples = []
+        val_decoder_examples = []
 
-        val_start = None
-        val_progress = 0
-        val_progress_needed = None
+        val_decoder_start = None
+        val_decoder_progress = 0
+        val_decoder_progress_needed = None
 
         # Raw/Reduced criterion weights
         criterion_weights_raw = (epoch - 1) * raw_criterion_weight_inc + raw_criterion_weight
@@ -1161,278 +1182,303 @@ def train_autoencoder(model,
                 print(f"\rEpoch {epoch}: Training...", end="")
                 model.train()
 
-                train_start = time.time()
-
                 gradients_thrown_out = []
             else:
                 print(f"\rEpoch {epoch}: Validating...", end="", flush=True)
                 model.eval()
 
-                val_start = time.time()
-
-            loader = train_loader if is_train else val_loader
-
-            for true_sequences in loader:
-                losses = None
-
+            # at each epoch, the encoder is trained first
+            for is_encoder in (True, False):
                 if is_train:
-                    optimizer.zero_grad()
-                    losses = []
-
-                true_sequences = true_sequences.to(device)
-                true_sequences_sparse = torch.argmax(true_sequences, dim=-1)
-
-                true_sequences_reduced_sparse = torch.argmax(reduce_sequence(true_sequences), dim=-1)
-
-                outputs = model(true_sequences).to(device)
-                outputs_reduced = reduce_sequence(outputs, input_is_logs=True)
-
-                if autoencoder_type == "FEEDFORWARD":
-                    loss_raw_criterions = criterion_raw(outputs.transpose(1, 2), true_sequences_sparse)
-                    loss_reduced_criterions = reduced_criterion_scale * criterion_reduced(
-                        outputs_reduced.transpose(1, 2),
-                        true_sequences_reduced_sparse)
+                    if is_encoder:
+                        train_encoder_start = time.time()
+                    else:
+                        train_decoder_start = time.time()
                 else:
-                    loss_raw_criterions = None
-                    loss_reduced_criterions = None
-
-                B = true_sequences.shape[0]
-                for b in range(B):
-                    if is_train:
-                        if train_progress_needed is None:
-                            train_progress_needed = len(train_loader) * B
+                    if is_encoder:
+                        val_encoder_start = time.time()
                     else:
-                        if val_progress_needed is None:
-                            val_progress_needed = len(val_loader) * B
+                        val_decoder_start = time.time()
 
-                    true_tokens = string_from_onehots(true_sequences[b], list_mode=True)
-                    output_tokens = string_from_onehots(outputs[b], list_mode=True)
+                if is_encoder:
+                    loader = train_encoder_loader if is_train else val_encoder_loader
 
-                    eos_cutoff = true_tokens.index("EOS")
+                    for pairs_batch, sim_batch in loader:
+                        predicted_sims = torch.cosine_similarity(model.encoder(pairs_batch[:, 0]),
+                                                                 model.encoder(pairs_batch[:, 1]),
+                                                                 dim=-1)
 
-                    # +1 because EOS needs to be present
-                    eos_cutoff = min(eos_cutoff + 1, len(true_tokens))
+                        loss = encoder_criterion(predicted_sims, sim_batch)
 
-                    true_tokens = true_tokens[0:eos_cutoff]
-                    output_tokens = output_tokens[0:eos_cutoff]
+                        loss.backward()
 
-                    output = outputs[b, 0:eos_cutoff, :]
-                    true_sequence = true_sequences[b, 0:eos_cutoff, :]
-                    true_sequence_sparse = true_sequences_sparse[b, 0:eos_cutoff]
+                        encoder_optimizer.step()
 
-                    output_reduced = reduce_sequence(output, input_is_logs=True)
-                    true_sequence_reduced = reduce_sequence(true_sequence)
-                    true_sequence_reduced_sparse = torch.argmax(true_sequence_reduced, dim=1)
-
-                    if not is_train:
-                        list_true = string_from_onehots(true_sequence, list_mode=True)
-                        list_output = string_from_onehots(output, list_mode=True)
-                        str_true = "".join(list_true)
-                        str_output = "".join(list_output)
-
-                        if val_example == "":
-                            val_example = str_true
-                            val_autoencoded = str_output
-
-                            if autoencoder_type == "TRANSFORMER":
-                                val_blind_autoencoded = string_from_sparse(model.blind_auto_encode(true_sequence)[1])
-
-                        new_example = dict()
-                        new_example["Epoch"] = epoch
-                        new_example["Example"] = str_true
-                        new_example["AutoencodedExample"] = str_output
-                        new_example["Accuracy"] = np.mean([t == o for t, o in zip(list_true, list_output)])
-
-                        val_examples.append(new_example)
-
-                    if autoencoder_type == "FEEDFORWARD":
-                        loss_raw_criterion = loss_raw_criterions[b].mean()
-                        loss_reduced_criterion = loss_reduced_criterions[b].mean()
-                    else:
-                        loss_raw_criterion = criterion_raw(output, true_sequence_sparse).mean()
-                        loss_reduced_criterion = reduced_criterion_scale * criterion_reduced(output_reduced,
-                                                                                             true_sequence_reduced_sparse).mean()
-
-                    if loss_reduced_criterion < 0.0005:
-                        loss_criterion = loss_raw_criterion
-                    else:
-                        loss_criterion = criterion_weights_raw * loss_raw_criterion + (
-                                criterion_weights_reduced * loss_reduced_criterion)
-
-                    if flatten_trees or syntax_score_coefficient <= 0.:
-                        loss_syntax_penalty = torch.tensor([0.])
-                        sntx = torch.tensor([0.])
-                    else:
-                        loss_syntax_penalty, sntx = syntax_penalty_term_and_syntax_score(output[0:-1, :],
-                                                                                         lam=syntax_score_coefficient)
-                    loss = loss_criterion + loss_syntax_penalty
-
-                    if is_train:
-                        if torch.isfinite(loss):
-                            losses.append(loss)
-                        else:
-                            print(f"WARNING: a non-finite loss was encountered ({loss}). It will not be considered")
-
-                        train_loss += loss.item()
-                        train_raw_criterion += loss_raw_criterion.item()
-                        train_reduced_criterion += loss_reduced_criterion.item()
-                        train_total_criterion += loss_criterion.item()
-                        train_syntaxscore += sntx.item()
-
-                        if loss_criterion.item() > train_largest_criterion:
-                            train_largest_criterion = loss_criterion.item()
-                    else:
-                        val_loss += loss.item()
-                        val_raw_criterion += loss_raw_criterion.item()
-                        val_reduced_criterion += loss_reduced_criterion.item()
-                        val_total_criterion += loss_criterion.item()
-                        val_syntaxscore += sntx.item()
-
-                    found_mismatch = False
-
-                    T = len(true_tokens)
-                    matches = 0
-                    for t in range(T):
-                        true_token = true_tokens[t]
-                        output_token = output_tokens[t]
-
-                        if true_token == output_token:
-                            matches += 1
-                        else:
-                            found_mismatch = True
-
-                        if t == (T - 1):
-                            if is_train:
-                                train_accuracy += matches / T
-                            else:
-                                val_accuracy += matches / T
-                            break
-
-                    if not found_mismatch:
                         if is_train:
-                            train_perfect_matches += 1
+                            train_encoder_loss += loss.item()
+
+                            if train_encoder_progress_needed is None:
+                                train_encoder_progress_needed = len(train_encoder_loader)
+
+                            train_encoder_progress += 1
+
+                            datapoints_per_second = train_encoder_progress / (time.time() - train_encoder_start) * batch_size
                         else:
-                            val_perfect_matches += 1
+                            val_encoder_loss += loss.item()
 
-                    if not flatten_trees:
-                        if pf.is_representation_valid("".join(output_tokens[0:-1]), features=INDIVIDUALS_FEATURES):
-                            if is_train:
-                                train_valid += 1. / B
+                            if val_encoder_progress_needed is None:
+                                val_encoder_progress_needed = len(val_encoder_loader)
+
+                            val_encoder_progress += 1
+
+                            datapoints_per_second = val_encoder_progress / (time.time() - val_encoder_start) * batch_size
+
+                        dps_text = f"{datapoints_per_second:.2f} datapoints per second" if datapoints_per_second > 1. else f"{misc.timeformat(1. / datapoints_per_second)} per datapoint"
+
+                        if is_train:
+                            print(
+                                f"\rEpoch {epoch}: Training (Encoder)... {train_encoder_progress / train_encoder_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(train_encoder_start, time.time(), train_encoder_progress, train_encoder_progress_needed))}, {dps_text} (Average criterion: {train_encoder_loss / train_encoder_progress:.5e})",
+                                end="", flush=True)
+                        else:
+                            print(
+                                f"\rEpoch {epoch}: Validating (Encoder)... {val_encoder_progress / val_encoder_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(val_encoder_start, time.time(), val_encoder_progress, val_encoder_progress_needed))}, {dps_text}",
+                                end="", flush=True)
+
+                else:
+                    loader = train_decoder_loader if is_train else val_decoder_loader
+
+                    for true_sequences in loader:
+                        losses = None
+
+                        if is_train:
+                            decoder_optimizer.zero_grad()
+                            losses = []
+
+                        true_sequences = true_sequences.to(device)
+                        true_sequences_sparse = torch.argmax(true_sequences, dim=-1)
+
+                        true_sequences_reduced_sparse = torch.argmax(reduce_sequence(true_sequences), dim=-1)
+
+                        outputs = model(true_sequences).to(device)
+                        outputs_reduced = reduce_sequence(outputs, input_is_logs=True)
+
+                        loss_raw_criterion = decoder_criterion_raw(outputs.transpose(1, 2), true_sequences_sparse)
+                        loss_reduced_criterion = decoder_criterion_reduced(
+                            outputs_reduced.transpose(1, 2),
+                            true_sequences_reduced_sparse)
+
+                        if loss_reduced_criterion < 0.0005:
+                            loss_criterion = loss_raw_criterion
+                        else:
+                            loss_criterion = criterion_weights_raw * loss_raw_criterion + (
+                                    criterion_weights_reduced * loss_reduced_criterion)
+
+                        loss = loss_criterion
+
+                        if is_train:
+                            if torch.isfinite(loss):
+                                losses.append(loss)
                             else:
-                                val_valid += 1. / B
+                                print(f"WARNING: a non-finite loss was encountered ({loss}). It will not be considered")
 
-                    if is_train:
-                        train_progress += 1
+                            train_decoder_loss += loss.item()
+                            train_decoder_raw_criterion += loss_raw_criterion.item()
+                            train_decoder_reduced_criterion += loss_reduced_criterion.item()
+                            train_decoder_total_criterion += loss_criterion.item()
 
-                        datapoints_per_second = train_progress / (time.time() - train_start)
-                    else:
-                        val_progress += 1
+                            if loss_criterion.item() > train_decoder_largest_criterion:
+                                train_decoder_largest_criterion = loss_criterion.item()
+                        else:
+                            val_decoder_loss += loss.item()
+                            val_decoder_raw_criterion += loss_raw_criterion.item()
+                            val_decoder_reduced_criterion += loss_reduced_criterion.item()
+                            val_decoder_total_criterion += loss_criterion.item()
 
-                        datapoints_per_second = val_progress / (time.time() - val_start)
+                        B = true_sequences.shape[0]
+                        for b in range(B):
+                            if is_train:
+                                if train_decoder_progress_needed is None:
+                                    train_decoder_progress_needed = len(train_decoder_loader) * B
+                            else:
+                                if val_decoder_progress_needed is None:
+                                    val_decoder_progress_needed = len(val_decoder_loader) * B
 
-                    dps_text = f"{datapoints_per_second:.2f} datapoints per second" if datapoints_per_second > 1. else f"{misc.timeformat(1. / datapoints_per_second)} per datapoint"
+                            true_tokens = string_from_onehots(true_sequences[b], list_mode=True)
+                            output_tokens = string_from_onehots(outputs[b], list_mode=True)
 
-                    if is_train:
-                        gradient_norms_text = f"{np.mean(gradients_thrown_out):.2%}" if len(
-                            gradients_thrown_out) > 0 else "N/A"
-                        print(
-                            f"\rEpoch {epoch}: Training... {train_progress / train_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(train_start, time.time(), train_progress, train_progress_needed))}, {dps_text} (Average criterion: {train_total_criterion / train_progress:.3f} ({criterion_weights_raw:.2f}*{train_raw_criterion / train_progress:.3f}+{criterion_weights_reduced:.2f}*{train_reduced_criterion / train_progress:.3f}), Largest criterion: {train_largest_criterion:.3f}, Gradients' norms lost due to clipping: {gradient_norms_text})",
-                            end="", flush=True)
-                    else:
-                        print(
-                            f"\rEpoch {epoch}: Validating... {val_progress / val_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(val_start, time.time(), val_progress, val_progress_needed))}, {dps_text}",
-                            end="", flush=True)
+                            if not is_train:
+                                list_true = string_from_onehots(true_sequences[b], list_mode=True)
+                                list_output = string_from_onehots(outputs[b], list_mode=True)
+                                str_true = "".join(list_true)
+                                str_output = "".join(list_output)
 
-                if is_train:
-                    losses = torch.stack(losses)
-                    losses.mean().backward()
+                                if val_decoder_example == "":
+                                    val_decoder_example = str_true
+                                    val_decoder_autoencoded = str_output
 
-                    # zero out NaN gradients
-                    for p in model.parameters():
-                        p.grad[torch.isnan(p.grad)] = 0
+                                new_example = dict()
+                                new_example["Epoch"] = epoch
+                                new_example["Example"] = str_true
+                                new_example["AutoencodedExample"] = str_output
+                                new_example["Accuracy"] = np.mean([t == o for t, o in zip(list_true, list_output)])
 
-                    if clipping_is_norm:
-                        grad_norm = nn.utils.clip_grad_norm_(model.parameters(),
-                                                             max_norm=gradient_norm_threshold,
-                                                             norm_type=clipping_norm_type,
-                                                             error_if_nonfinite=True)
+                                val_decoder_examples.append(new_example)
 
-                        if grad_norm > 0.:
-                            norm = grad_norm.item()
-                            gradients_thrown_out.append(max((norm - gradient_norm_threshold) / norm, 0))
-                    else:
-                        grads = torch.cat([torch.flatten(p.grad) for p in model.parameters()])
-                        gradients_thrown_out.append(
-                            np.mean(np.max([(grads - gradient_value_threshold) / grads, np.zeros(len(grads))], axis=0,
-                                           where=grads > 0., initial=0.)))
+                            found_mismatch = False
 
-                        nn.utils.clip_grad_value_(model.parameters(), gradient_value_threshold)
+                            T = len(true_tokens)
+                            matches = 0
+                            for t in range(T):
+                                true_token = true_tokens[t]
+                                output_token = output_tokens[t]
 
-                    optimizer.step()
+                                if true_token == output_token:
+                                    matches += 1
+                                else:
+                                    found_mismatch = True
 
-        l_t = train_progress
-        l_v = val_progress
+                                if t == (T - 1):
+                                    if is_train:
+                                        train_decoder_accuracy += matches / T
+                                    else:
+                                        val_decoder_accuracy += matches / T
+                                    break
 
-        train_loss /= l_t
-        train_raw_criterion /= l_t
-        train_reduced_criterion /= l_t
-        train_total_criterion /= l_t
-        train_syntaxscore /= l_t
+                            if not found_mismatch:
+                                if is_train:
+                                    train_decoder_perfect_matches += 1
+                                else:
+                                    val_decoder_perfect_matches += 1
 
-        train_accuracy /= l_t
-        train_valid /= l_t
-        train_perfect_matches /= l_t
+                            if not flatten_trees:
+                                if pf.is_representation_valid("".join(output_tokens[0:-1]),
+                                                              features=INDIVIDUALS_FEATURES):
+                                    if is_train:
+                                        train_decoder_valid += 1. / B
+                                    else:
+                                        val_decoder_valid += 1. / B
 
-        de_facto_raw_weight = (train_total_criterion - train_reduced_criterion) / (
-                train_raw_criterion - train_reduced_criterion) if train_raw_criterion > train_reduced_criterion else 1.
+                            if is_train:
+                                train_decoder_progress += 1
+
+                                datapoints_per_second = train_decoder_progress / (time.time() - train_decoder_start)
+                            else:
+                                val_decoder_progress += 1
+
+                                datapoints_per_second = val_decoder_progress / (time.time() - val_decoder_start)
+
+                            dps_text = f"{datapoints_per_second:.2f} datapoints per second" if datapoints_per_second > 1. else f"{misc.timeformat(1. / datapoints_per_second)} per datapoint"
+
+                            if is_train:
+                                gradient_norms_text = f"{np.mean(gradients_thrown_out):.2%}" if len(
+                                    gradients_thrown_out) > 0 else "N/A"
+                                print(
+                                    f"\rEpoch {epoch}: Training (Decoder)... {train_decoder_progress / train_decoder_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(train_decoder_start, time.time(), train_decoder_progress, train_decoder_progress_needed))}, {dps_text} (Average criterion: {train_decoder_total_criterion / train_decoder_progress * batch_size:.3f} ({criterion_weights_raw:.2f}*{train_decoder_raw_criterion / train_decoder_progress * batch_size:.3f}+{criterion_weights_reduced:.2f}*{train_decoder_reduced_criterion / train_decoder_progress * batch_size:.3f}), Largest criterion: {train_decoder_largest_criterion:.3f}, Gradients' norms lost due to clipping: {gradient_norms_text})",
+                                    end="", flush=True)
+                            else:
+                                print(
+                                    f"\rEpoch {epoch}: Validating (Decoder)... {val_decoder_progress / val_decoder_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(val_decoder_start, time.time(), val_decoder_progress, val_decoder_progress_needed))}, {dps_text}",
+                                    end="", flush=True)
+
+                        if is_train:
+                            losses = torch.stack(losses)
+                            losses.mean().backward()
+
+                            # zero out NaN gradients
+                            for p in model.parameters():
+                                p.grad[torch.isnan(p.grad)] = 0
+
+                            if clipping_is_norm:
+                                grad_norm = nn.utils.clip_grad_norm_(model.parameters(),
+                                                                     max_norm=gradient_norm_threshold,
+                                                                     norm_type=clipping_norm_type,
+                                                                     error_if_nonfinite=True)
+
+                                if grad_norm > 0.:
+                                    norm = grad_norm.item()
+                                    gradients_thrown_out.append(max((norm - gradient_norm_threshold) / norm, 0))
+                            else:
+                                grads = torch.cat([torch.flatten(p.grad) for p in model.parameters()])
+                                gradients_thrown_out.append(
+                                    np.mean(np.max([(grads - gradient_value_threshold) / grads, np.zeros(len(grads))],
+                                                   axis=0,
+                                                   where=grads > 0., initial=0.)))
+
+                                nn.utils.clip_grad_value_(model.parameters(), gradient_value_threshold)
+
+                            decoder_optimizer.step()
+
+        l_e_t = train_encoder_progress
+        l_e_v = val_encoder_progress
+
+        train_encoder_loss /= l_e_t
+        val_encoder_loss /= l_e_v
+
+        l_d_t = train_decoder_progress
+        L_d_t = train_decoder_progress / batch_size
+        l_d_v = val_decoder_progress
+        L_d_v = val_decoder_progress / batch_size
+
+        train_decoder_loss /= L_d_t
+        train_decoder_raw_criterion /= L_d_t
+        train_decoder_reduced_criterion /= L_d_t
+        train_decoder_total_criterion /= L_d_t
+
+        train_decoder_accuracy /= l_d_t
+        train_decoder_valid /= l_d_t
+        train_decoder_perfect_matches /= l_d_t
+
+        de_facto_raw_weight = (train_decoder_total_criterion - train_decoder_reduced_criterion) / (
+                train_decoder_raw_criterion - train_decoder_reduced_criterion) if train_decoder_raw_criterion > train_decoder_reduced_criterion else 1.
         de_facto_reduced_weight = 1. - de_facto_raw_weight
 
-        val_loss /= l_v
-        val_raw_criterion /= l_v
-        val_reduced_criterion /= l_v
-        val_total_criterion = de_facto_raw_weight * val_raw_criterion + de_facto_reduced_weight * val_reduced_criterion
-        val_syntaxscore /= l_v
+        val_decoder_loss /= L_d_v
+        val_decoder_raw_criterion /= L_d_v
+        val_decoder_reduced_criterion /= L_d_v
+        val_decoder_total_criterion = de_facto_raw_weight * val_decoder_raw_criterion + de_facto_reduced_weight * val_decoder_reduced_criterion
 
-        val_accuracy /= l_v
-        val_valid /= l_v
-        val_perfect_matches /= l_v
+        val_decoder_accuracy /= l_d_v
+        val_decoder_valid /= l_d_v
+        val_decoder_perfect_matches /= l_d_v
 
-        current_lr = optimizer.param_groups[0]['lr']
+        current_encoder_lr = encoder_optimizer.param_groups[0]['lr']
+        current_decoder_lr = decoder_optimizer.param_groups[0]['lr']
 
-        if val_perfect_matches > 0.:
-            scheduler.step(val_perfect_matches)
+        if val_decoder_perfect_matches > 0.:
+            decoder_scheduler.step(val_decoder_perfect_matches)
 
         print(
-            f"\rEpoch {epoch}: Loss/Criterion/Syntax/Valid/Accuracy/Perfects: (Train: {train_loss:.4f}/{train_total_criterion:.4f} ({de_facto_raw_weight:.2f}*{train_raw_criterion:.3f}+{de_facto_reduced_weight:.2f}*{train_reduced_criterion:.3f})/{train_syntaxscore:.2%}/{train_valid:.2%}/{train_accuracy:.2%}/{train_perfect_matches:.2%}) (Val: {val_loss:.4f}/{val_total_criterion:.4f} ({de_facto_raw_weight:.2f}*{val_raw_criterion:.3f}+{de_facto_reduced_weight:.2f}*{val_reduced_criterion:.3f})/{val_syntaxscore:.2%}/{val_valid:.2%}/{val_accuracy:.2%}/{val_perfect_matches:.2%}) (Total data: {train_set.total_datapoints}, {val_set.total_datapoints}) LR: {current_lr:.0e} Took {misc.timeformat(time.time() - train_start)} ({misc.timeformat(val_start - train_start)}, {misc.timeformat(time.time() - val_start)})"
+            f"\rEpoch {epoch}: Encode/Autoencode/Valid/Accuracy/Perfects: (Train: {train_encoder_loss:.5e}/{train_decoder_total_criterion:.4f} ({de_facto_raw_weight:.2f}*{train_decoder_raw_criterion:.3f}+{de_facto_reduced_weight:.2f}*{train_decoder_reduced_criterion:.3f})/{train_decoder_valid:.2%}/{train_decoder_accuracy:.2%}/{train_decoder_perfect_matches:.2%}) (Val: {val_encoder_loss:.5e}/{val_decoder_total_criterion:.4f} ({de_facto_raw_weight:.2f}*{val_decoder_raw_criterion:.3f}+{de_facto_reduced_weight:.2f}*{val_decoder_reduced_criterion:.3f})/{val_decoder_valid:.2%}/{val_decoder_accuracy:.2%}/{val_decoder_perfect_matches:.2%}) (Total data: {train_autoencoder_set.total_datapoints}, {val_autoencoder_set.total_datapoints}) LR (En/De): {current_encoder_lr:.0e}/{current_decoder_lr:.0e} Took {misc.timeformat(time.time() - train_decoder_start)} ({misc.timeformat(val_decoder_start - train_decoder_start)}, {misc.timeformat(time.time() - val_decoder_start)})"
         )
 
         new_row = dict()
         new_row["Epoch"] = epoch
         new_row["Criterion_Weight_Raw"] = de_facto_raw_weight
         new_row["Criterion_Weight_Reduced"] = de_facto_reduced_weight
-        new_row["Train_TotalDatapoints"] = train_set.total_datapoints
-        new_row["Train_Loss"] = train_loss
-        new_row["Train_Total_Criterion"] = train_total_criterion
-        new_row["Train_Raw_Criterion"] = train_raw_criterion
-        new_row["Train_Reduced_Criterion"] = train_reduced_criterion
-        new_row["Train_SyntaxScore"] = train_syntaxscore
-        new_row["Train_Valid"] = train_valid
-        new_row["Train_Accuracy"] = train_accuracy
-        new_row["Train_Perfects"] = train_perfect_matches
-        new_row["Train_LR"] = current_lr
+        new_row["Train_Autoencoder_TotalDatapoints"] = train_autoencoder_set.total_datapoints
+        new_row["Train_Encoder_Loss"] = train_encoder_loss
+        new_row["Train_Autoencoder_Loss"] = train_decoder_loss
+        new_row["Train_Autoencoder_Total_Criterion"] = train_decoder_total_criterion
+        new_row["Train_Autoencoder_Raw_Criterion"] = train_decoder_raw_criterion
+        new_row["Train_Autoencoder_Reduced_Criterion"] = train_decoder_reduced_criterion
+        new_row["Train_Autoencoder_Valid"] = train_decoder_valid
+        new_row["Train_Autoencoder_Accuracy"] = train_decoder_accuracy
+        new_row["Train_Autoencoder_Perfects"] = train_decoder_perfect_matches
+        new_row["Train_Encoder_LR"] = current_encoder_lr
+        new_row["Train_Decoder_LR"] = current_decoder_lr
 
-        new_row["Val_TotalDatapoints"] = val_set.total_datapoints
-        new_row["Val_Loss"] = val_loss
-        new_row["Val_Total_Criterion"] = val_total_criterion
-        new_row["Val_Raw_Criterion"] = val_raw_criterion
-        new_row["Val_Reduced_Criterion"] = val_reduced_criterion
-        new_row["Val_SyntaxScore"] = val_syntaxscore
-        new_row["Val_Valid"] = val_valid
-        new_row["Val_Accuracy"] = val_accuracy
-        new_row["Val_Perfects"] = val_perfect_matches
+        new_row["Val_Autoencoder_TotalDatapoints"] = val_autoencoder_set.total_datapoints
+        new_row["Val_Encoder_Loss"] = val_encoder_loss
+        new_row["Val_Autoencoder_Loss"] = val_decoder_loss
+        new_row["Val_Autoencoder_Total_Criterion"] = val_decoder_total_criterion
+        new_row["Val_Autoencoder_Raw_Criterion"] = val_decoder_raw_criterion
+        new_row["Val_Autoencoder_Reduced_Criterion"] = val_decoder_reduced_criterion
+        new_row["Val_Autoencoder_Valid"] = val_decoder_valid
+        new_row["Val_Autoencoder_Accuracy"] = val_decoder_accuracy
+        new_row["Val_Autoencoder_Perfects"] = val_decoder_perfect_matches
 
-        new_row["Example"] = val_example
-        new_row["AutoencodedExample"] = val_autoencoded
+        new_row["Example"] = val_decoder_example
+        new_row["AutoencodedExample"] = val_decoder_autoencoded
 
         if len(df) > 0:
             df = pd.concat([df, pd.DataFrame(new_row, index=[0])], ignore_index=True)
@@ -1442,10 +1488,11 @@ def train_autoencoder(model,
         df.to_csv(path_or_buf=f"{folder_name}/log.csv", index=False)
 
         if len(df_examples) > 0:
-            df_examples = pd.concat([df_examples, pd.DataFrame(val_examples, index=range(len(val_examples)))],
-                                    ignore_index=True)
+            df_examples = pd.concat(
+                [df_examples, pd.DataFrame(val_decoder_examples, index=range(len(val_decoder_examples)))],
+                ignore_index=True)
         else:
-            df_examples = pd.DataFrame(val_examples, index=range(len(val_examples)))
+            df_examples = pd.DataFrame(val_decoder_examples, index=range(len(val_decoder_examples)))
 
         df_examples.sort_values(by=["Example", "Epoch"], inplace=True)
 
@@ -1453,10 +1500,10 @@ def train_autoencoder(model,
 
         torch.save(model.state_dict(), f"{folder_name}/model_epoch{epoch}.pth")
 
-        if val_perfect_matches >= 1.:
-            if perfect_epochs_in_a_row >= val_perfects_100_patience:
+        if val_decoder_perfect_matches >= 1.:
+            if perfect_epochs_in_a_row >= val_autoencoder_perfects_100_patience:
                 print(
-                    f"The model has reached 100% perfect matches in the validation set for {val_perfects_100_patience} epoch(s) in a row, and has stopped training")
+                    f"The model has reached 100% perfect matches in the validation set for {val_autoencoder_perfects_100_patience} epoch(s) in a row, and has stopped training")
                 break
 
             perfect_epochs_in_a_row += 1
@@ -1465,8 +1512,8 @@ def train_autoencoder(model,
 
         if epoch < num_epochs:
             print(f"Refreshing training and validation set for Epoch {epoch + 1}...", end="")
-            train_set.refresh_data()
-            val_set.refresh_data()
+            train_autoencoder_set.refresh_data()
+            val_autoencoder_set.refresh_data()
 
 
 def reward_model_df_is_wide(df):
@@ -1606,8 +1653,10 @@ def generate_reward_model_file(batch_size=8,
 
             fitness_log["IsConstant"] = [int(all_features_are_constants(ind)) for ind in fitness_log["Individual"]]
 
-            if not evaluating_constant_individuals and len(fitness_log) != (batch_size + additional_constants_per_batch):
-                raise Exception(f"Length of fitness log {len(fitness_log)} does not match expected size {batch_size + additional_constants_per_batch}")
+            if not evaluating_constant_individuals and len(fitness_log) != (
+                    batch_size + additional_constants_per_batch):
+                raise Exception(
+                    f"Length of fitness log {len(fitness_log)} does not match expected size {batch_size + additional_constants_per_batch}")
 
             if long:
                 fitness_log = reward_model_df_wide_to_long(fitness_log)
