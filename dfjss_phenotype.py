@@ -38,6 +38,16 @@ class PhenotypeMapper:
             elif len(self.scenarios) < reference_scenarios_amount:
                 raise Exception(f"Number of scenarios in phenotype mapper is unexpectedly below specified amount {reference_scenarios_amount}")
 
+            # ad-hoc changes to some variables
+            self.rng = np.random.default_rng(scenarios_seed)
+            for scenario in self.scenarios:
+                scenario['job_initialization_time'] = self.rng.lognormal(mean=1., sigma=7.)
+                scenario['job_time_alive'] = self.rng.lognormal(mean=1., sigma=5.)
+
+                scenario['machine_start_time'] = self.rng.lognormal(mean=1., sigma=7.)
+
+                scenario['warehouse_utilization_rate'] = self.rng.uniform()
+
             if reference_rule is None:
                 rng = np.random.default_rng(seed=scenarios_seed)
                 order = rng.permutation(x=reference_scenarios_amount)

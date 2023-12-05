@@ -17,6 +17,7 @@ import dfjss_objects as dfjss
 import dfjss_priorityfunction as pf
 import dfjss_genetic as genetic
 import dfjss_misc as misc
+import dfjss_phenotype as pht
 
 torch.autograd.set_detect_anomaly(True)
 
@@ -783,32 +784,37 @@ class EncoderSimilarityDataset(data.Dataset):
 
         self.refresh_data()
 
-    def get_sets_of_features(self, seed=123, center_std=3., features_std=1., feature_abs=True):
-        rng = torch.Generator()
+    def get_sets_of_features(self, from_warehouse=True, seed=123, center_std=3., features_std=1., feature_abs=True):
+        if from_warehouse:
+            pht_map = pht.PhenotypeMapper(reference_scenarios_amount=self.sets_of_features_size, scenarios_seed=seed)
 
-        rng.manual_seed(seed)
+            return pht_map.scenarios
+        else:
+            rng = torch.Generator()
 
-        centers = dict()
+            rng.manual_seed(seed)
 
-        sets_of_features = []
+            centers = dict()
 
-        for c in INDIVIDUALS_FEATURES:
-            centers[c] = torch.normal(mean=0., std=center_std, size=(1,), generator=rng).item()
-
-        for _ in range(self.sets_of_features_size):
-            feature_values = dict()
+            sets_of_features = []
 
             for c in INDIVIDUALS_FEATURES:
-                feature_values[c] = torch.normal(mean=centers[c], std=features_std, size=(1,), generator=rng)
+                centers[c] = torch.normal(mean=0., std=center_std, size=(1,), generator=rng).item()
 
-                if feature_abs:
-                    feature_values[c] = torch.abs(feature_values[c])
+            for _ in range(self.sets_of_features_size):
+                feature_values = dict()
 
-                feature_values[c] = feature_values[c].item()
+                for c in INDIVIDUALS_FEATURES:
+                    feature_values[c] = torch.normal(mean=centers[c], std=features_std, size=(1,), generator=rng)
 
-            sets_of_features.append(feature_values)
+                    if feature_abs:
+                        feature_values[c] = torch.abs(feature_values[c])
 
-        return sets_of_features
+                    feature_values[c] = feature_values[c].item()
+
+                sets_of_features.append(feature_values)
+
+            return sets_of_features
 
     def get_similarity_matrix(self, priority_functions):
         """
