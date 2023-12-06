@@ -1,0 +1,10 @@
+------------------------------------
+Individual Feed-Forward Auto-Encoder
+Embedding size: N/A (using one-hot)
+Max Length: 32
+Flat size: 2880 (In), 2880 (Out)
+Hidden Size: 2400
+Encoding Size: 1200
+Encoder Dropout: 0.1
+Number of parameters: 19592883 (Learnable), 0 (Fixed)
+------------------------------------

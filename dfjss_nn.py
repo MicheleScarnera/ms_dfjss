@@ -782,6 +782,8 @@ class EncoderSimilarityDataset(data.Dataset):
 
         self.include_self_similarity = include_self_similarity
 
+        self.total_datapoints = 0
+
         self.refresh_data()
 
     def get_sets_of_features(self, from_warehouse=True, seed=123, center_std=3., features_std=1., feature_abs=True):
@@ -886,6 +888,8 @@ class EncoderSimilarityDataset(data.Dataset):
 
             self.similarities[i] = self.sim_matrix[*pairs_idx[i]]
 
+        self.total_datapoints += self.num_of_pairs
+
     def __iter__(self):
         return self.data_iterator()
 
@@ -925,6 +929,7 @@ def syntax_penalty_term_and_syntax_score(sequence, lam=10., eps=0.01):
 
 def train_autoencoder(model,
                       num_epochs=10,
+                      encoder_only_epochs=2,
                       batch_size=16,
                       max_depth=8,
                       flatten_trees=True,
@@ -940,6 +945,8 @@ def train_autoencoder(model,
                       val_encoder_size=1000,
                       encoder_sets_of_features_size=250,
                       encoder_include_self_similarity=True,
+                      start_lr_encoder=1e-4,
+                      start_lr_decoder=1e-5,
                       raw_criterion_weight=0.3,
                       raw_criterion_weight_inc=0.05,
                       reduced_criterion_weight=0.7,
@@ -947,7 +954,6 @@ def train_autoencoder(model,
                       feature_classes_weight=4,
                       operation_classes_weight=2,
                       other_classes_weight=1,
-                      syntax_score_coefficient=0.,
                       gradient_value_threshold=1.,
                       clipping_is_norm=True,
                       gradient_norm_threshold=1.,
@@ -996,6 +1002,9 @@ def train_autoencoder(model,
 
     print(f"Model(s) will be saved in \"{folder_name}\"")
 
+    with open(f"{folder_name}/model_summary.txt", "w") as model_summary_file:
+        model_summary_file.write(model.summary())
+
     df_cols = ["Epoch", "Criterion_Weight_Raw", "Criterion_Weight_Reduced"]
 
     for tv in ("Train", "Val"):
@@ -1016,7 +1025,8 @@ def train_autoencoder(model,
 
     df_examples = pd.DataFrame(columns=df_examples_cols)
 
-    print("Making training dataset...")
+    print("Making training dataset... ", end="")
+    t = time.time()
     train_autoencoder_set = AutoencoderDataset(max_depth=max_depth,
                                                size=train_autoencoder_size,
                                                refresh_rate=train_autoencoder_refresh_rate,
@@ -1030,7 +1040,10 @@ def train_autoencoder(model,
                                                  include_self_similarity=encoder_include_self_similarity,
                                                  rng_seed=train_autoencoder_seed)
 
-    print("Making validation dataset...")
+    print(f"Took {misc.timeformat(time.time() - t)}")
+
+    print("Making validation dataset... ", end="")
+    t = time.time()
     val_autoencoder_set = AutoencoderDataset(max_depth=max_depth,
                                              size=val_autoencoder_size,
                                              refresh_rate=val_autoencoder_refresh_rate,
@@ -1043,6 +1056,8 @@ def train_autoencoder(model,
                                                sets_of_features_size=encoder_sets_of_features_size,
                                                include_self_similarity=encoder_include_self_similarity,
                                                rng_seed=val_autoencoder_seed)
+
+    print(f"Took {misc.timeformat(time.time() - t)}")
 
     implied_length = train_autoencoder_set.max_sequence_length()
     if model.sequence_length != implied_length:
@@ -1105,14 +1120,12 @@ def train_autoencoder(model,
         else:
             decoder_params.append(param)
 
-    start_lr = 0.001
-
-    encoder_optimizer = optim.Adam(encoder_params, lr=start_lr)
-    decoder_optimizer = optim.Adam(decoder_params, lr=start_lr)
+    encoder_optimizer = optim.Adam(encoder_params, lr=start_lr_encoder)
+    decoder_optimizer = optim.Adam(decoder_params, lr=start_lr_decoder)
 
     threshold, patience, factor = 0.005, 10, 0.1 ** 0.25
 
-    encoder_scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer=encoder_optimizer, mode="max",
+    encoder_scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer=encoder_optimizer, mode="min",
                                                              threshold=threshold, patience=patience, cooldown=0,
                                                              factor=factor,
                                                              verbose=False)
@@ -1139,6 +1152,8 @@ def train_autoencoder(model,
         val_encoder_progress_needed = None
 
         # DECODER
+
+        skip_decoder = epoch <= encoder_only_epochs
 
         # Training
         train_decoder_loss = 0.
@@ -1176,8 +1191,10 @@ def train_autoencoder(model,
         val_decoder_progress_needed = None
 
         # Raw/Reduced criterion weights
-        criterion_weights_raw = (epoch - 1) * raw_criterion_weight_inc + raw_criterion_weight
-        criterion_weights_reduced = (epoch - 1) * reduced_criterion_weight_inc + reduced_criterion_weight
+        e = max(epoch - encoder_only_epochs - 1, 0)
+
+        criterion_weights_raw = e * raw_criterion_weight_inc + raw_criterion_weight
+        criterion_weights_reduced = e * reduced_criterion_weight_inc + reduced_criterion_weight
         criterion_weights_norm = criterion_weights_raw + criterion_weights_reduced
         criterion_weights_raw /= criterion_weights_norm
         criterion_weights_reduced /= criterion_weights_norm
@@ -1228,7 +1245,8 @@ def train_autoencoder(model,
 
                             train_encoder_progress += 1
 
-                            datapoints_per_second = train_encoder_progress / (time.time() - train_encoder_start) * batch_size
+                            datapoints_per_second = train_encoder_progress / (
+                                        time.time() - train_encoder_start) * batch_size
                         else:
                             val_encoder_loss += loss.item()
 
@@ -1237,7 +1255,8 @@ def train_autoencoder(model,
 
                             val_encoder_progress += 1
 
-                            datapoints_per_second = val_encoder_progress / (time.time() - val_encoder_start) * batch_size
+                            datapoints_per_second = val_encoder_progress / (
+                                        time.time() - val_encoder_start) * batch_size
 
                         dps_text = f"{datapoints_per_second:.2f} datapoints per second" if datapoints_per_second > 1. else f"{misc.timeformat(1. / datapoints_per_second)} per datapoint"
 
@@ -1250,7 +1269,7 @@ def train_autoencoder(model,
                                 f"\rEpoch {epoch}: Validating (Encoder)... {val_encoder_progress / val_encoder_progress_needed:.1%} ETA {misc.timeformat(misc.timeleft(val_encoder_start, time.time(), val_encoder_progress, val_encoder_progress_needed))}, {dps_text}",
                                 end="", flush=True)
 
-                else:
+                elif not skip_decoder:
                     loader = train_decoder_loader if is_train else val_decoder_loader
 
                     for true_sequences in loader:
@@ -1425,36 +1444,44 @@ def train_autoencoder(model,
         l_d_v = val_decoder_progress
         L_d_v = val_decoder_progress / batch_size
 
-        train_decoder_loss /= L_d_t
-        train_decoder_raw_criterion /= L_d_t
-        train_decoder_reduced_criterion /= L_d_t
-        train_decoder_total_criterion /= L_d_t
+        if not skip_decoder:
+            train_decoder_loss /= L_d_t
+            train_decoder_raw_criterion /= L_d_t
+            train_decoder_reduced_criterion /= L_d_t
+            train_decoder_total_criterion /= L_d_t
 
-        train_decoder_accuracy /= l_d_t
-        train_decoder_valid /= l_d_t
-        train_decoder_perfect_matches /= l_d_t
+            train_decoder_accuracy /= l_d_t
+            train_decoder_valid /= l_d_t
+            train_decoder_perfect_matches /= l_d_t
 
         de_facto_raw_weight = (train_decoder_total_criterion - train_decoder_reduced_criterion) / (
                 train_decoder_raw_criterion - train_decoder_reduced_criterion) if train_decoder_raw_criterion > train_decoder_reduced_criterion else 1.
         de_facto_reduced_weight = 1. - de_facto_raw_weight
 
-        val_decoder_loss /= L_d_v
-        val_decoder_raw_criterion /= L_d_v
-        val_decoder_reduced_criterion /= L_d_v
-        val_decoder_total_criterion = de_facto_raw_weight * val_decoder_raw_criterion + de_facto_reduced_weight * val_decoder_reduced_criterion
+        if not skip_decoder:
+            val_decoder_loss /= L_d_v
+            val_decoder_raw_criterion /= L_d_v
+            val_decoder_reduced_criterion /= L_d_v
+            val_decoder_total_criterion = de_facto_raw_weight * val_decoder_raw_criterion + de_facto_reduced_weight * val_decoder_reduced_criterion
 
-        val_decoder_accuracy /= l_d_v
-        val_decoder_valid /= l_d_v
-        val_decoder_perfect_matches /= l_d_v
+            val_decoder_accuracy /= l_d_v
+            val_decoder_valid /= l_d_v
+            val_decoder_perfect_matches /= l_d_v
 
         current_encoder_lr = encoder_optimizer.param_groups[0]['lr']
         current_decoder_lr = decoder_optimizer.param_groups[0]['lr']
 
+        encoder_scheduler.step(val_encoder_loss)
+
         if val_decoder_perfect_matches > 0.:
             decoder_scheduler.step(val_decoder_perfect_matches)
 
+        if skip_decoder:
+            train_decoder_start = val_encoder_start
+            val_decoder_start = time.time()
+
         print(
-            f"\rEpoch {epoch}: Encode/Autoencode/Valid/Accuracy/Perfects: (Train: {train_encoder_loss:.5e}/{train_decoder_total_criterion:.4f} ({de_facto_raw_weight:.2f}*{train_decoder_raw_criterion:.3f}+{de_facto_reduced_weight:.2f}*{train_decoder_reduced_criterion:.3f})/{train_decoder_valid:.2%}/{train_decoder_accuracy:.2%}/{train_decoder_perfect_matches:.2%}) (Val: {val_encoder_loss:.5e}/{val_decoder_total_criterion:.4f} ({de_facto_raw_weight:.2f}*{val_decoder_raw_criterion:.3f}+{de_facto_reduced_weight:.2f}*{val_decoder_reduced_criterion:.3f})/{val_decoder_valid:.2%}/{val_decoder_accuracy:.2%}/{val_decoder_perfect_matches:.2%}) (Total data: {train_autoencoder_set.total_datapoints}, {val_autoencoder_set.total_datapoints}) LR (En/De): {current_encoder_lr:.0e}/{current_decoder_lr:.0e} Took {misc.timeformat(time.time() - train_decoder_start)} ({misc.timeformat(val_decoder_start - train_decoder_start)}, {misc.timeformat(time.time() - val_decoder_start)})"
+            f"\rEpoch {epoch}: Encode/Autoencode/Valid/Accuracy/Perfects: (Train: {train_encoder_loss:.5e}/{train_decoder_total_criterion:.4f} ({de_facto_raw_weight:.2f}*{train_decoder_raw_criterion:.3f}+{de_facto_reduced_weight:.2f}*{train_decoder_reduced_criterion:.3f})/{train_decoder_valid:.2%}/{train_decoder_accuracy:.2%}/{train_decoder_perfect_matches:.2%}) (Val: {val_encoder_loss:.5e}/{val_decoder_total_criterion:.4f} ({de_facto_raw_weight:.2f}*{val_decoder_raw_criterion:.3f}+{de_facto_reduced_weight:.2f}*{val_decoder_reduced_criterion:.3f})/{val_decoder_valid:.2%}/{val_decoder_accuracy:.2%}/{val_decoder_perfect_matches:.2%}) (Total data: {train_autoencoder_set.total_datapoints}, {val_autoencoder_set.total_datapoints}) LR (En/De): {current_encoder_lr:.0e}/{current_decoder_lr:.0e} Took {misc.timeformat(time.time() - train_encoder_start)} ({misc.timeformat(train_decoder_start - train_encoder_start)}, {misc.timeformat(val_encoder_start - train_decoder_start)}, {misc.timeformat(val_decoder_start - val_encoder_start)}, {misc.timeformat(time.time() - val_decoder_start)})"
         )
 
         new_row = dict()
@@ -1463,28 +1490,44 @@ def train_autoencoder(model,
         new_row["Criterion_Weight_Reduced"] = de_facto_reduced_weight
         new_row["Train_Autoencoder_TotalDatapoints"] = train_autoencoder_set.total_datapoints
         new_row["Train_Encoder_Loss"] = train_encoder_loss
-        new_row["Train_Autoencoder_Loss"] = train_decoder_loss
-        new_row["Train_Autoencoder_Total_Criterion"] = train_decoder_total_criterion
-        new_row["Train_Autoencoder_Raw_Criterion"] = train_decoder_raw_criterion
-        new_row["Train_Autoencoder_Reduced_Criterion"] = train_decoder_reduced_criterion
-        new_row["Train_Autoencoder_Valid"] = train_decoder_valid
-        new_row["Train_Autoencoder_Accuracy"] = train_decoder_accuracy
-        new_row["Train_Autoencoder_Perfects"] = train_decoder_perfect_matches
+
+        if not skip_decoder:
+            new_row["Train_Autoencoder_Loss"] = train_decoder_loss
+            new_row["Train_Autoencoder_Total_Criterion"] = train_decoder_total_criterion
+            new_row["Train_Autoencoder_Raw_Criterion"] = train_decoder_raw_criterion
+            new_row["Train_Autoencoder_Reduced_Criterion"] = train_decoder_reduced_criterion
+            new_row["Train_Autoencoder_Valid"] = train_decoder_valid
+            new_row["Train_Autoencoder_Accuracy"] = train_decoder_accuracy
+            new_row["Train_Autoencoder_Perfects"] = train_decoder_perfect_matches
+
         new_row["Train_Encoder_LR"] = current_encoder_lr
         new_row["Train_Decoder_LR"] = current_decoder_lr
 
         new_row["Val_Autoencoder_TotalDatapoints"] = val_autoencoder_set.total_datapoints
         new_row["Val_Encoder_Loss"] = val_encoder_loss
-        new_row["Val_Autoencoder_Loss"] = val_decoder_loss
-        new_row["Val_Autoencoder_Total_Criterion"] = val_decoder_total_criterion
-        new_row["Val_Autoencoder_Raw_Criterion"] = val_decoder_raw_criterion
-        new_row["Val_Autoencoder_Reduced_Criterion"] = val_decoder_reduced_criterion
-        new_row["Val_Autoencoder_Valid"] = val_decoder_valid
-        new_row["Val_Autoencoder_Accuracy"] = val_decoder_accuracy
-        new_row["Val_Autoencoder_Perfects"] = val_decoder_perfect_matches
 
-        new_row["Example"] = val_decoder_example
-        new_row["AutoencodedExample"] = val_decoder_autoencoded
+        if not skip_decoder:
+            new_row["Val_Autoencoder_Loss"] = val_decoder_loss
+            new_row["Val_Autoencoder_Total_Criterion"] = val_decoder_total_criterion
+            new_row["Val_Autoencoder_Raw_Criterion"] = val_decoder_raw_criterion
+            new_row["Val_Autoencoder_Reduced_Criterion"] = val_decoder_reduced_criterion
+            new_row["Val_Autoencoder_Valid"] = val_decoder_valid
+            new_row["Val_Autoencoder_Accuracy"] = val_decoder_accuracy
+            new_row["Val_Autoencoder_Perfects"] = val_decoder_perfect_matches
+
+            new_row["Example"] = val_decoder_example
+            new_row["AutoencodedExample"] = val_decoder_autoencoded
+
+            if len(df_examples) > 0:
+                df_examples = pd.concat(
+                    [df_examples, pd.DataFrame(val_decoder_examples, index=range(len(val_decoder_examples)))],
+                    ignore_index=True)
+            else:
+                df_examples = pd.DataFrame(val_decoder_examples, index=range(len(val_decoder_examples)))
+
+            df_examples.sort_values(by=["Example", "Epoch"], inplace=True)
+
+            df_examples.to_csv(path_or_buf=f"{folder_name}/examples.csv", index=False)
 
         if len(df) > 0:
             df = pd.concat([df, pd.DataFrame(new_row, index=[0])], ignore_index=True)
@@ -1492,17 +1535,6 @@ def train_autoencoder(model,
             df = pd.DataFrame(new_row, index=[0])
 
         df.to_csv(path_or_buf=f"{folder_name}/log.csv", index=False)
-
-        if len(df_examples) > 0:
-            df_examples = pd.concat(
-                [df_examples, pd.DataFrame(val_decoder_examples, index=range(len(val_decoder_examples)))],
-                ignore_index=True)
-        else:
-            df_examples = pd.DataFrame(val_decoder_examples, index=range(len(val_decoder_examples)))
-
-        df_examples.sort_values(by=["Example", "Epoch"], inplace=True)
-
-        df_examples.to_csv(path_or_buf=f"{folder_name}/examples.csv", index=False)
 
         torch.save(model.state_dict(), f"{folder_name}/model_epoch{epoch}.pth")
 
@@ -1519,7 +1551,9 @@ def train_autoencoder(model,
         if epoch < num_epochs:
             print(f"Refreshing training and validation set for Epoch {epoch + 1}...", end="")
             train_autoencoder_set.refresh_data()
+            train_encoder_set.refresh_data()
             val_autoencoder_set.refresh_data()
+            val_encoder_set.refresh_data()
 
 
 def reward_model_df_is_wide(df):
