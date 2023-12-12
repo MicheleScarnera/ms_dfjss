@@ -326,7 +326,14 @@ class IndividualFeedForwardAutoEncoder(nn.Module):
 
 
 def one_hot_sequence(individual, vocab=None):
-    return torch.stack([token_to_one_hot(s, vocab=vocab) for s in tokenize_with_vocab(individual, vocab=vocab)])
+    if type(individual) == str:
+        S = tokenize_with_vocab(individual, vocab=vocab)
+    elif type(individual) == list and type(individual[0]) == str:
+        S = individual
+    else:
+        raise ValueError(f"individual neither a str or list of str ({type(individual)})")
+
+    return torch.stack([token_to_one_hot(s, vocab=vocab) for s in S])
 
 
 def sparse_sequence(individual, vocab=None):
@@ -747,8 +754,8 @@ def random_unordered_pairs(no_elements, no_pairs=None, torch_rng=None, include_s
 
 
 class EncoderSimilarityDataset(data.Dataset):
-    def __init__(self, autoencoder_dataset, rng_seed=450, num_of_pairs=1000, sets_of_features_size=250,
-                 include_self_similarity=True):
+    def __init__(self, autoencoder_dataset, rng_seed=450, number_of_individuals_percent=1., sets_of_features_size=2000,
+                 num_of_mutated_per_individual=4, mutated_avg_changes_percent=0.2):
         """
         :type autoencoder_dataset: AutoencoderDataset
 
@@ -757,30 +764,27 @@ class EncoderSimilarityDataset(data.Dataset):
         """
         super().__init__()
 
+        number_of_individuals_percent = np.clip(number_of_individuals_percent, 0., 1.)
+
         self.autoencoder_dataset = autoencoder_dataset
 
-        self.size_from_dataset = num_diagonals_inverse(num_of_pairs,
-                                                       include_self_diagonals=include_self_similarity,
-                                                       return_int=True)
+        self.size_from_dataset = int(self.autoencoder_dataset.size * number_of_individuals_percent)
+        self.num_of_mutated_per_individual = num_of_mutated_per_individual
+        self.size = self.size_from_dataset * self.num_of_mutated_per_individual
 
-        max_pairs = num_diagonals(self.size_from_dataset, include_self_similarity)
+        self.mutated_avg_changes_percent = torch.tensor(mutated_avg_changes_percent, dtype=torch.float32)
 
-        if num_of_pairs is None:
-            num_of_pairs = float('inf')
-
-        self.num_of_pairs = min(num_of_pairs, max_pairs)
         self.rng = torch.Generator()
         self.rng.manual_seed(rng_seed)
 
         self.sets_of_features_size = sets_of_features_size
         self.sets_of_features = self.get_sets_of_features()
-        self.sim_matrix = None
 
-        self.individual_pairs = torch.zeros(size=(self.num_of_pairs, 2, *tuple(autoencoder_dataset[0].shape)))
-        self.similarities = torch.zeros(size=(self.num_of_pairs,), dtype=torch.float32)
+        self.original_individuals_data = torch.zeros(size=(self.size_from_dataset, *tuple(autoencoder_dataset[0].shape)))
+        self.mutated_individuals_data = torch.zeros(size=(self.size, *tuple(autoencoder_dataset[0].shape)))
+
+        self.similarities = torch.zeros(size=(self.size,), dtype=torch.float32)
         self.last_times_refreshed = float("-inf")
-
-        self.include_self_similarity = include_self_similarity
 
         self.total_datapoints = 0
 
@@ -818,11 +822,13 @@ class EncoderSimilarityDataset(data.Dataset):
 
             return sets_of_features
 
-    def get_similarity_matrix(self, priority_functions):
+    def get_sim_and_values(self, priority_functions, precomputed_priority_values=None):
         """
         :type priority_functions: list[pf.PriorityFunctionTree]
+        :type precomputed_priority_values: list[torch.Tensor]
 
         :param sets_of_features:
+        :param precomputed_priority_values:
         :return:
         """
         with torch.no_grad():
@@ -835,11 +841,56 @@ class EncoderSimilarityDataset(data.Dataset):
 
             priority_values = torch.zeros(size=(num_functions, k), dtype=torch.float32)
 
-            for i in range(k):
-                for f in range(num_functions):
-                    priority_values[f, i] = priority_functions[f].run(features=self.sets_of_features[i])
+            for f in range(num_functions):
+                has_precompute = precomputed_priority_values is not None and f < len(precomputed_priority_values)
 
-            return torch.corrcoef(priority_values).nan_to_num_()
+                if has_precompute:
+                    priority_values[f] = precomputed_priority_values[f]
+                else:
+                    for i in range(k):
+                        priority_values[f, i] = priority_functions[f].run(features=self.sets_of_features[i])
+
+            return torch.corrcoef(priority_values).nan_to_num_(), priority_values
+
+    def mutate_priority_function(self, pf_original):
+        if not self.autoencoder_dataset.flatten_trees:
+            raise NotImplementedError()
+
+        flat = pf_original.flatten()
+        num_changes = 0
+        while not (0 < num_changes < len(flat)):
+            #num_changes = int(torch.poisson(input=self.mutated_avg_changes, generator=self.rng).item())
+            num_changes = int(torch.multinomial(input=torch.tensor([1. - self.mutated_avg_changes_percent, self.mutated_avg_changes_percent]),
+                                                num_samples=len(flat),
+                                                replacement=True,
+                                                generator=self.rng).sum().item())
+
+        change_at = torch.randperm(len(flat), generator=self.rng)[0:num_changes]
+
+        for j in change_at:
+            if flat[j] in FEATURES_AND_CONSTANTS:
+                k = FEATURES_AND_CONSTANTS.index(flat[j])
+                K = list(range(len(FEATURES_AND_CONSTANTS)))
+                K.remove(k)
+
+                flat[j] = FEATURES_AND_CONSTANTS[
+                    K[torch.randint(low=0, high=len(FEATURES_AND_CONSTANTS) - 1, size=(1,), generator=self.rng).item()]]
+            elif flat[j] in OPERATIONS:
+                k = OPERATIONS.index(flat[j])
+                K = list(range(len(OPERATIONS)))
+                K.remove(k)
+
+                flat[j] = OPERATIONS[
+                    K[torch.randint(low=0, high=len(OPERATIONS) - 1, size=(1,),
+                                    generator=self.rng).item()]]
+            else:
+                raise Exception("flat[j] neither in FEATURES_AND_CONSTANTS or OPERATIONS")
+
+        result = pf.representation_to_priority_function_tree("({0.0}+{0.0})", features=INDIVIDUALS_FEATURES)
+        result.fill(self.autoencoder_dataset.max_depth)
+        result.set_from_flattened(flat)
+
+        return result
 
     def refresh_data(self):
         # note: this does not refresh the autoencoder dataset itself
@@ -854,54 +905,71 @@ class EncoderSimilarityDataset(data.Dataset):
         # make priority functions
         start = time.time()
 
-        priority_functions = []
-        for i in indices:
-            individual_tensor = self.autoencoder_dataset[i]
+        for i, ind in enumerate(indices):
+            individual_tensor = self.autoencoder_dataset[ind]
+
+            self.original_individuals_data[i] = self.autoencoder_dataset[ind]
 
             if self.autoencoder_dataset.flatten_trees:
                 ind_tokens = string_from_onehots(individual_tensor, list_mode=True)
-                pr_func = pf.representation_to_priority_function_tree("({0.0}+{0.0})", features=INDIVIDUALS_FEATURES)
-                pr_func.fill(self.autoencoder_dataset.max_depth)
-                pr_func.set_from_flattened(ind_tokens)
+                pr_func_original = pf.representation_to_priority_function_tree("({0.0}+{0.0})", features=INDIVIDUALS_FEATURES)
+                pr_func_original.fill(self.autoencoder_dataset.max_depth)
+                pr_func_original.set_from_flattened(ind_tokens)
 
-                priority_functions.append(pr_func)
+                pr_func_original_precompute = None
+                mutated_pr_funcs = []
+                bulk_corr = True
+
+                for j in range(self.num_of_mutated_per_individual):
+                    pr_func_mutated = self.mutate_priority_function(pr_func_original)
+
+                    if self.autoencoder_dataset.flatten_trees:
+                        mutated_tensor = one_hot_sequence(pr_func_mutated.flatten() + ["EOS"])
+                    else:
+                        raise NotImplementedError()
+
+                    k = self.num_of_mutated_per_individual * i + j
+
+                    self.mutated_individuals_data[k] = mutated_tensor
+
+                    if bulk_corr:
+                        mutated_pr_funcs.append(pr_func_mutated)
+                    else:
+                        sim, values = self.get_sim_and_values([pr_func_original, pr_func_mutated], pr_func_original_precompute)
+
+                        if pr_func_original_precompute is None:
+                            pr_func_original_precompute = [values[0]]
+
+                        self.similarities[k] = sim[0, 1]
+
+                if bulk_corr:
+                    sim, values = self.get_sim_and_values([pr_func_original] + mutated_pr_funcs)
+
+                    for j in range(self.num_of_mutated_per_individual):
+                        k = self.num_of_mutated_per_individual * i + j
+
+                        self.similarities[k] = sim[0, j+1]
             else:
                 raise NotImplementedError()
 
-        # print(f"Evaluating the priority functions took {misc.timeformat(time.time() - start)}")
+            print(f"\r{misc.timeformat(misc.timeleft(start, time.time(), i+1, self.size_from_dataset))}", end="")
 
-        # similarity matrix
-        start = time.time()
-        self.sim_matrix = self.get_similarity_matrix(priority_functions)
-
-        # print(f"Computing the similarity matrix took {misc.timeformat(time.time() - start)}")
-
-        # create non-duplicate pairings
-        pairs_idx = random_unordered_pairs(self.size_from_dataset, None,
-                                           torch_rng=self.rng,
-                                           include_self_pairs=self.include_self_similarity)
-
-        # make pairs and similarities
-        for i in range(self.num_of_pairs):
-            for p in (0, 1):
-                self.individual_pairs[i, p] = self.autoencoder_dataset[pairs_idx[i, p]]
-
-            self.similarities[i] = self.sim_matrix[*pairs_idx[i]]
-
-        self.total_datapoints += self.num_of_pairs
+        self.total_datapoints += self.size_from_dataset
 
     def __iter__(self):
         return self.data_iterator()
 
     def __getitem__(self, idx):
-        return self.individual_pairs[idx], self.similarities[idx]
+        return torch.stack([self.original_individuals_data[idx // self.num_of_mutated_per_individual],
+                            self.mutated_individuals_data[idx]], dim=0),\
+               self.similarities[idx]
 
     def __len__(self):
-        return self.num_of_pairs
+        return self.size
 
     def data_iterator(self):
-        for individual, sim in zip(self.individual_pairs, self.similarities):
-            yield individual, sim
+        for i in range(self.size):
+            yield self[i]
 
 
 def individual_sequence_collate(batch):
@@ -941,10 +1009,11 @@ def train_autoencoder(model,
                       val_autoencoder_refresh_rate=0.,
                       val_autoencoder_seed=1337,
                       val_autoencoder_perfects_100_patience=5,
-                      train_encoder_size=1000,
-                      val_encoder_size=1000,
-                      encoder_sets_of_features_size=250,
-                      encoder_include_self_similarity=True,
+                      train_encoder_size_percent=1.,
+                      train_encoder_size_mutated=4,
+                      val_encoder_size_percent=1.,
+                      val_encoder_size_mutated=4,
+                      encoder_sets_of_features_size=4000,
                       start_lr_encoder=1e-4,
                       start_lr_decoder=1e-3,
                       raw_criterion_weight=0.3,
@@ -1035,12 +1104,15 @@ def train_autoencoder(model,
                                                rng_seed=train_autoencoder_seed)
 
     train_encoder_set = EncoderSimilarityDataset(autoencoder_dataset=train_autoencoder_set,
-                                                 num_of_pairs=train_encoder_size,
+                                                 number_of_individuals_percent=train_encoder_size_percent,
+                                                 num_of_mutated_per_individual=train_encoder_size_mutated,
                                                  sets_of_features_size=encoder_sets_of_features_size,
-                                                 include_self_similarity=encoder_include_self_similarity,
                                                  rng_seed=train_autoencoder_seed)
 
     print(f"Took {misc.timeformat(time.time() - t)}")
+
+    print(
+        f"Deciles of similarities:\n{torch.quantile(train_encoder_set.similarities, q=torch.linspace(0., 1., 10)).numpy()}")
 
     print("Making validation dataset... ", end="")
     t = time.time()
@@ -1052,12 +1124,15 @@ def train_autoencoder(model,
                                              rng_seed=val_autoencoder_seed)
 
     val_encoder_set = EncoderSimilarityDataset(autoencoder_dataset=val_autoencoder_set,
-                                               num_of_pairs=val_encoder_size,
+                                               number_of_individuals_percent=val_encoder_size_percent,
+                                               num_of_mutated_per_individual=val_encoder_size_mutated,
                                                sets_of_features_size=encoder_sets_of_features_size,
-                                               include_self_similarity=encoder_include_self_similarity,
                                                rng_seed=val_autoencoder_seed)
 
     print(f"Took {misc.timeformat(time.time() - t)}")
+
+    print(
+        f"Deciles of similarities:\n{torch.quantile(train_encoder_set.similarities, q=torch.linspace(0., 1., 10)).numpy()}")
 
     implied_length = train_autoencoder_set.max_sequence_length()
     if model.sequence_length != implied_length:
@@ -1102,7 +1177,7 @@ def train_autoencoder(model,
         else:
             return other_classes_weight
 
-    encoder_criterion = nn.MSELoss()
+    encoder_criterion = nn.SmoothL1Loss(beta=0.01)
 
     raw_criterion_class_weights = torch.tensor([class_weight(token) for token in VOCAB], dtype=torch.float32)
     decoder_criterion_raw = nn.NLLLoss(weight=raw_criterion_class_weights)
@@ -1234,6 +1309,20 @@ def train_autoencoder(model,
                         loss = encoder_criterion(predicted_sims, sim_batch)
 
                         loss.backward()
+
+                        if clipping_is_norm:
+                            grad_norm = nn.utils.clip_grad_norm_(model.parameters(),
+                                                                 max_norm=gradient_norm_threshold,
+                                                                 norm_type=clipping_norm_type,
+                                                                 error_if_nonfinite=True)
+                        else:
+                            grads = torch.cat([torch.flatten(p.grad) for p in model.parameters()])
+                            gradients_thrown_out.append(
+                                np.mean(np.max([(grads - gradient_value_threshold) / grads, np.zeros(len(grads))],
+                                               axis=0,
+                                               where=grads > 0., initial=0.)))
+
+                            nn.utils.clip_grad_value_(model.parameters(), gradient_value_threshold)
 
                         encoder_optimizer.step()
 
