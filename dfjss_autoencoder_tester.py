@@ -10,7 +10,7 @@ flatten_trees = True
 fill_trees = True
 
 test_set_N = 16384
-generated_N = 32768
+generated_N = 100000
 
 # test set
 dataset = dfjss_nn.AutoencoderDataset(size=test_set_N, flatten_trees=flatten_trees, fill_trees=fill_trees, rng_seed=55338)
@@ -28,9 +28,13 @@ for datapoint in dataset:
 example_reduced = dfjss_nn.reduce_sequence(example)
 example_reduced_target = torch.argmax(example_reduced, dim=-1)
 
-state_path = r"C:\Users\micsc\Documents\GitHub\ms_dfjss\AUTOENCODER FEEDFORWARD 2023-11-01 17-04-22\model_epoch376.pth"
+state_path = r"C:\Users\micsc\Documents\GitHub\ms_dfjss\AUTOENCODER 200 100 STILL GOOD\model_epoch279.pth"
 
-autoencoder = dfjss_nn.IndividualFeedForwardAutoEncoder(sequence_length=dataset.max_sequence_length())
+autoencoder = dfjss_nn.IndividualFeedForwardAutoEncoder(sequence_length=dataset.max_sequence_length(),
+                                                        encoding_size=100,
+                                                        encoder_layers_widths=(200,),
+                                                        decoder_layers_widths=(200,),
+                                                        dropout=0.)
 
 autoencoder.import_state(state_path)
 
@@ -47,7 +51,7 @@ autoencoder.eval()
 for i, datapoint in enumerate(dataset):
     datapoint_reduced = dfjss_nn.reduce_sequence(datapoint)
 
-    output = autoencoder(datapoint)
+    output = autoencoder(datapoint.unsqueeze(0)).squeeze(0)
     output_reduced = dfjss_nn.reduce_sequence(output, input_is_logs=True)
 
     target = torch.argmax(datapoint, dim=-1)
@@ -78,7 +82,7 @@ losses_generated = []
 for m in range(1, generated_N + 1):
     random_encode = torch.tensor(rng.uniform(low=-1, high=1, size=autoencoder.encoding_size), device=dfjss_nn.device).float()
 
-    decoded = autoencoder.decoder(random_encode)
+    decoded = autoencoder.decoder(random_encode.unsqueeze(0)).squeeze(0)
     decoded_reduced = dfjss_nn.reduce_sequence(decoded, input_is_logs=True)
 
     unique_generations.add(dfjss_nn.string_from_onehots(decoded))

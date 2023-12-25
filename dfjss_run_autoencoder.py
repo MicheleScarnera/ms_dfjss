@@ -15,28 +15,39 @@ for datapoint in dataset:
     break
 
 # create the untrained model
-autoencoder = dfjss_nn.IndividualFeedForwardAutoEncoder(sequence_length=dataset.max_sequence_length())
+autoencoder = dfjss_nn.IndividualFeedForwardAutoEncoder(sequence_length=dataset.max_sequence_length(),
+                                                        encoding_size=100,
+                                                        encoder_layers_widths=(200,),
+                                                        decoder_layers_widths=(200,),
+                                                        dropout=0.)
 
 try:
     autoencoder.eval()
-    autoencoded = autoencoder(example).detach()
+    autoencoded = autoencoder(example.unsqueeze(0)).squeeze(0).detach()
     print(f"Autoencoded (Untrained): {dfjss_nn.string_from_onehots(autoencoded)}")
     # print(autoencoded)
     print(f"Output size: {autoencoded.size()}")
 finally:
     print(autoencoder.summary())
 
+checkpoint_path = r"AUTOENCODER SHALLOW PART 1/model_epoch23.pth"
+
+if False:
+    autoencoder.import_state(checkpoint_path)
+    print(f"Checkpointing from {checkpoint_path}")
+
 dfjss_nn.train_autoencoder(autoencoder,
                            batch_size=64,
                            max_depth=dataset.max_depth,
-                           num_epochs=500,
-                           encoder_only_epochs=50,
+                           num_epochs=2000,
+                           encoder_only_epochs=25,
+                           enable_encoder_specific_training=False,
                            train_autoencoder_size=16384,
                            train_encoder_size_percent=0.125,
-                           train_encoder_size_mutated=6,
+                           train_encoder_size_mutated=32,
                            val_autoencoder_size=16384,
                            val_encoder_size_percent=0.125,
-                           val_encoder_size_mutated=6,
+                           val_encoder_size_mutated=32,
                            encoder_sets_of_features_size=500,
                            flatten_trees=flatten_trees,
                            fill_trees=fill_trees)
