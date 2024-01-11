@@ -93,8 +93,8 @@ def new_first_decoder_token(confidence=1, dtype=torch.float32):
 # hidden_size=2400, encoding_size=1200
 
 class IndividualFeedForwardAutoEncoder(nn.Module):
-    def __init__(self, sequence_length, embedding_dim=-1, encoder_layers_widths=(2400,), encoding_size=1200,
-                 decoder_layers_widths=(2400,), dropout=0.1, enable_batch_norm=True):
+    def __init__(self, sequence_length, embedding_dim=-1, encoder_layers_widths=(200,), encoding_size=100,
+                 decoder_layers_widths=(200,), dropout=0., enable_batch_norm=True):
         super(IndividualFeedForwardAutoEncoder, self).__init__()
 
         if embedding_dim > 0:
@@ -262,6 +262,9 @@ class IndividualFeedForwardAutoEncoder(nn.Module):
 
     def encoder(self, sequence):
         if torch.is_floating_point(sequence):
+            if sequence.dim() == 2:
+                return self.encoder(sequence.unsqueeze(0)).squeeze(0)
+
             indices = torch.argmax(sequence, dim=-1)
         else:
             indices = sequence
@@ -286,6 +289,9 @@ class IndividualFeedForwardAutoEncoder(nn.Module):
         return result
 
     def decoder(self, encoding):
+        if encoding.dim() == 1:
+            return self.decoder(encoding.unsqueeze(0)).squeeze(0)
+
         result = encoding
 
         last_i = len(self.decoder_layers) - 1
@@ -1598,7 +1604,8 @@ def train_autoencoder(model,
 
                             # zero out NaN gradients
                             for p in model.parameters():
-                                p.grad[torch.isnan(p.grad)] = 0
+                                if p.grad is not None:
+                                    p.grad[torch.isnan(p.grad)] = 0.
 
                             if clipping_is_norm:
                                 grad_norm = nn.utils.clip_grad_norm_(model.parameters(),
@@ -1949,6 +1956,7 @@ def end_with_eos(string):
 
 class RewardModelDataset(data.Dataset):
     def __init__(self, autoencoder, autoencoder_folder, force_num_nonmean_seeds=None, anti_decode=False,
+                 refresh_strength=0.002, refresh_max_attempts=5, rng_seed=100,
                  verbose=1):
         """
         :type autoencoder: IndividualFeedForwardAutoEncoder
@@ -1959,6 +1967,8 @@ class RewardModelDataset(data.Dataset):
         :param verbose:
         """
         super().__init__()
+
+        self.autoencoder = autoencoder
 
         try:
             self.df = pd.read_csv(REWARDMODEL_FILENAME)
@@ -1995,7 +2005,16 @@ class RewardModelDataset(data.Dataset):
                                                                  anti_decode=anti_decode,
                                                                  verbose=verbose)
 
-        self._individuals_data = torch.stack([self.precompute_table[end_with_eos(ind)] for ind in self.raw_individuals])
+        self.refresh_strength = refresh_strength
+        self.refresh_max_attempts = refresh_max_attempts
+
+        self.rng = torch.Generator()
+        self.rng.manual_seed(rng_seed)
+
+        self._original_individuals_data = torch.stack([self.precompute_table[end_with_eos(ind)] for ind in self.raw_individuals])
+        self._original_individuals_sparse = torch.stack([sparse_sequence(end_with_eos(ind)) for ind in self.raw_individuals])
+
+        self._individuals_data = self._original_individuals_data.clone()
 
         self.individual_sequence_length = self._individuals_data.shape[1]
 
@@ -2023,6 +2042,29 @@ class RewardModelDataset(data.Dataset):
 
         return "\n".join(result)
 
+    def refresh_data(self):
+        if True:
+            self._individuals_data = perturb(self._original_individuals_data, strength=self.refresh_strength, generator=self.rng)
+        else:
+            I = self._original_individuals_data.shape[0]
+            start = time.time()
+            for i in range(I):
+                attempt = 1
+                candidate = None
+                while attempt <= self.refresh_max_attempts:
+                    candidate = perturb(self._original_individuals_data[i], strength=self.refresh_strength, generator=self.rng)
+
+                    candidate_sparse = self.autoencoder.decoder(candidate).argmax(dim=-1)
+
+                    if torch.equal(candidate_sparse, self._original_individuals_sparse[i]):
+                        break
+                    else:
+                        attempt += 1
+
+                self._individuals_data[i] = candidate
+                print(f"\rRefreshing data... {misc.timeformat(misc.timeleft(start, time.time(), i + 1, I))}", end="",
+                      flush=True)
+
     def get_individual(self, idx):
         return self.individual_to_data[self.df.loc[idx, "Individual"]]
 
@@ -2040,16 +2082,17 @@ class RewardModelDataset(data.Dataset):
             yield self[i]
 
 
-def perturb(encoding, v=10, p=0., generator=None):
+def perturb(encoding, strength=0.01, p=0., generator=None):
     shape = tuple(encoding.shape)
     with torch.no_grad():
-        noise = torch.empty(size=shape).uniform_(-1. / v, 1. / v, generator=generator)
+        noise = torch.empty(size=shape).uniform_(-strength, strength, generator=generator)
 
         result = torch.clamp(encoding + noise, min=-1, max=1)
 
-        peg = torch.bernoulli(torch.full_like(encoding, fill_value=p), generator=generator)
+        if p > 0.:
+            peg = torch.bernoulli(torch.full_like(encoding, fill_value=p), generator=generator)
 
-        result = (1. - peg) * result + peg * encoding
+            result = (1. - peg) * result + peg * encoding
 
         return result
 
@@ -2198,6 +2241,7 @@ def train_reward_model(model,
                        contributions_degree=2):
     """
     :type model: RewardModel
+    :type dataset: RewardModelDataset
 
     :param model:
     :param dataset:
@@ -2371,8 +2415,8 @@ def train_reward_model(model,
                 if is_train:
                     optimizer.zero_grad()
 
-                if individual_perturbation is not None:
-                    individual_batch = perturb(individual_batch, v=individual_perturbation)
+                #if individual_perturbation is not None:
+                    #individual_batch = perturb(individual_batch, v=individual_perturbation)
 
                 predicted_rewards = model(individual_batch, seed_batch)
 
@@ -2467,6 +2511,10 @@ def train_reward_model(model,
         df.to_csv(path_or_buf=f"{folder_name}/log.csv", index=False)
 
         torch.save(model.state_dict(), f"{folder_name}/model_epoch{epoch}.pth")
+
+        start = time.time()
+        dataset.refresh_data()
+        #print(f"Took {misc.timeformat(time.time() - start)}")
 
 
 def optimize_reward(model,

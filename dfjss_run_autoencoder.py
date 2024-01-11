@@ -19,6 +19,7 @@ autoencoder = dfjss_nn.IndividualFeedForwardAutoEncoder(sequence_length=dataset.
                                                         encoding_size=100,
                                                         encoder_layers_widths=(200,),
                                                         decoder_layers_widths=(200,),
+                                                        enable_batch_norm=False,
                                                         dropout=0.)
 
 try:
