@@ -12,18 +12,23 @@ names = ["P", "P-2", "P-4", "P-8", "P-16", "P-32", "P-64"]
 what_to_plot = [[0, 1], [0, 5]]
 titles = ["JIT Penalty of non-waiting vs waiting priority function P", "JIT Penalty of non-waiting vs overly patient priority function P"]
 
-cols = [c for c in df.columns if misc.begins_with(containing_string=c, contained_string="Fitness_")]
+cols = [c for c in df.columns if misc.begins_with(string=c, prefix="Fitness_")]
 
 values = [np.array(df.loc[i, cols], dtype=np.float64) for i in range(len(names))]
 
 for w, wtp in enumerate(what_to_plot):
     fig, ax1 = plt.subplots(nrows=1, sharex="all")
+    plt.xscale("log")
 
-    no_bins = 50
+    x0 = 10 ** 2
+    x1 = 10 ** 3.5
+
+    bins = np.floor(np.geomspace(x0, x1, num=100))
 
     textstr = ""
     for j, i in enumerate(wtp):
-        ax1.hist(values[i], bins=no_bins, density=True, alpha=0.5, label=names[i])
+        ax1.set_xlim(x0, x1)
+        ax1.hist(values[i], bins=bins, density=True, alpha=0.5, label=names[i])
 
         if textstr != "":
             textstr += "\n"

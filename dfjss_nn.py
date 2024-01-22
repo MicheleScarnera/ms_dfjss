@@ -237,8 +237,13 @@ class IndividualFeedForwardAutoEncoder(nn.Module):
             arg_individuals = set([end_with_eos(seq) for seq in individuals])
             table_individuals = set(df["Individual"])
 
-            if not arg_individuals <= table_individuals:
-                make_table = True
+            for arg_ind in arg_individuals:
+                if arg_ind not in table_individuals:
+                    make_table = True
+                    break
+
+            # if not arg_individuals <= table_individuals:
+                # make_table = True
         else:
             make_table = True
 
@@ -1955,7 +1960,7 @@ def end_with_eos(string):
 
 
 class RewardModelDataset(data.Dataset):
-    def __init__(self, autoencoder, autoencoder_folder, force_num_nonmean_seeds=None, anti_decode=False,
+    def __init__(self, autoencoder, autoencoder_folder, force_seeds=None, anti_decode=False,
                  refresh_strength=0.002, refresh_max_attempts=5, rng_seed=100,
                  verbose=1):
         """
@@ -1963,7 +1968,7 @@ class RewardModelDataset(data.Dataset):
 
         :param autoencoder:
         :param autoencoder_folder:
-        :param force_num_nonmean_seeds:
+        :param force_seeds:
         :param verbose:
         """
         super().__init__()
@@ -1986,11 +1991,11 @@ class RewardModelDataset(data.Dataset):
 
         self.df = pd.concat([self.df, df_seedmean], ignore_index=True)
 
-        self.seeds = torch.tensor(np.unique(self.df.loc[self.df["Seed"] != -1, "Seed"]))
-
-        if type(force_num_nonmean_seeds) == int:
-            self.seeds = self.seeds[0:force_num_nonmean_seeds]
-            self.df = self.df[[(seed in self.seeds or seed == -1) for seed in self.df.loc[:, "Seed"]]].reset_index()
+        if force_seeds is not None:
+            self.seeds = torch.tensor(np.unique(force_seeds))
+            self.df = self.df[[(seed in self.seeds) for seed in self.df.loc[:, "Seed"]]].reset_index()
+        else:
+            self.seeds = torch.tensor(np.unique(self.df["Seed"])) # self.df.loc[self.df["Seed"] != -1, "Seed"]
 
         self.N = len(self.df)
 
@@ -2031,6 +2036,21 @@ class RewardModelDataset(data.Dataset):
         counter = Counter([int(seed.item()) for seed in self.seeds_data])
         perpl = np.exp(np.sum([-freq / S * np.log(freq / S) for seed, freq in counter.most_common()]))
 
+        print("Grouping rewards by seed to calculate baseline L1 and L2... ", end="")
+
+        rewards_dict = defaultdict(list)
+
+        for i in range(self.N):
+            rewards_dict[self.seeds_data[i].item()].append(self.rewards_data[i].item())
+
+        print("Done")
+
+        for key in rewards_dict.keys():
+            rewards_dict[key] = np.array(rewards_dict[key])
+
+        base_l2 = dict([(key, np.round(np.var(rewards_dict[key]), decimals=2)) for key in rewards_dict.keys()])
+        base_l1 = dict([(key, np.round(np.abs(rewards_dict[key] - np.mean(rewards_dict[key])).mean(), decimals=2)) for key in rewards_dict.keys()])
+
         longdash = '------------------------------------'
         result = [longdash, "Reward Model Dataset",
                   f"Number of Individuals: {len(self.raw_individuals)}",
@@ -2038,6 +2058,8 @@ class RewardModelDataset(data.Dataset):
                   f"Sample size (number of individual-seed pairs): {self.N}",
                   f"Counter of seeds: {counter}",
                   f"Perplexity of seed distribution: {perpl:.3f}",
+                  f"Unconditional L2 loss: {base_l2}",
+                  f"Unconditional L1 loss: {base_l1}",
                   longdash]
 
         return "\n".join(result)
@@ -2162,7 +2184,11 @@ class RewardModel(nn.Module):
         if self.seed_to_index is not None:
             raise Exception("seed_to_index already created")
 
-        self.seed_to_index = dict([(seed.item(), torch.tensor(i + 1)) for i, seed in enumerate(self.seeds)])
+        S = list(self.seeds)
+        if -1 in S:
+            S.pop(S.index(-1))
+
+        self.seed_to_index = dict([(seed.item(), torch.tensor(i + 1)) for i, seed in enumerate(S)])
         self.seed_to_index[-1] = torch.tensor(0)
 
     def get_layers_are_residual(self):
@@ -2348,7 +2374,7 @@ def train_reward_model(model,
     print(f"Weight decay = {weight_decay}")
 
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, mode="min",
-                                                     threshold=0.005, patience=5, cooldown=0, factor=0.1 ** 0.25,
+                                                     patience=5, cooldown=0, factor=0.1 ** 0.25,
                                                      verbose=False)
 
     for epoch in range(1, num_epochs + 1):

@@ -7,16 +7,19 @@ state_path = f"{folder}/model_epoch279.pth"
 
 autoencoder.import_state(state_path)
 
+force_seeds = None
+embedding_dim = 256
+
 dataset = dfjss_nn.RewardModelDataset(autoencoder=autoencoder,
                                       autoencoder_folder=folder,
                                       anti_decode=True,
-                                      force_num_nonmean_seeds=None)
+                                      force_seeds=force_seeds)
 
 reward_model = dfjss_nn.RewardModel(input_size=autoencoder.encoding_size,
                                     seeds=dataset.seeds,
-                                    embedding_dim=128,
-                                    num_layers=2,
-                                    layer_widths=(50,),
+                                    embedding_dim=-1 if force_seeds is not None and len(force_seeds) == 1 else embedding_dim,
+                                    num_layers=6,
+                                    layer_widths=(256,),
                                     layers_are_residual=True,
                                     layer_dropout=0.)
 

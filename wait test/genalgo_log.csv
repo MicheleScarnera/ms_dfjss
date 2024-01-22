@@ -1,0 +1,5 @@
+Step,Individual,Fitness
+1,(((job_time_alive/(job_relative_deadline>0.0))*job_remaining_number_of_operations)-0.0),326.8926684863627
+1,(((job_time_alive/(job_relative_deadline>0.0))*job_remaining_number_of_operations)-16.0),354.82391513721376
+1,(((job_time_alive/(job_relative_deadline>0.0))*job_remaining_number_of_operations)-32.0),365.21768113561467
+1,(((job_time_alive/(job_relative_deadline>0.0))*job_remaining_number_of_operations)-64.0),370.7402019592476

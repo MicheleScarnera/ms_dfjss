@@ -9,17 +9,21 @@ plt.rcParams['figure.dpi'] = 300
 df_sixty = pd.read_csv("FIFO cooldown 0 60/fitness_log.csv")
 df_fifteen = pd.read_csv("FIFO cooldown 0 15/fitness_log.csv")
 
-cols = [c for c in df_sixty.columns if misc.begins_with(containing_string=c, contained_string="Fitness_")]
+cols = [c for c in df_sixty.columns if misc.begins_with(string=c, prefix="Fitness_")]
 
 values_sixty = np.array(df_sixty.loc[0, cols], dtype=np.float64)
 values_fifteen = np.array(df_fifteen.loc[0, cols], dtype=np.float64)
 
 fig, ax1 = plt.subplots(nrows=1, sharex="all")
+plt.xscale("log")
 
-no_bins = 50
+x0 = 10 ** 2
+x1 = 10 ** 3.5
 
-ax1.hist(values_sixty, bins=no_bins, density=True, alpha=0.5, label="U(0,60)")
-ax1.hist(values_fifteen, bins=no_bins, density=True, alpha=0.5, label="U(0,15)")
+bins = np.floor(np.geomspace(x0, x1, num=100))
+
+ax1.hist(values_sixty, bins=bins, density=True, alpha=0.5, label="U(0,60)")
+ax1.hist(values_fifteen, bins=bins, density=True, alpha=0.5, label="U(0,15)")
 
 # these are matplotlib.patch.Patch properties
 props = dict(boxstyle='round', facecolor='silver', alpha=0.5)
