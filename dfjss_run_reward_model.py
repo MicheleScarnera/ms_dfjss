@@ -7,7 +7,7 @@ state_path = f"{folder}/model_epoch279.pth"
 
 autoencoder.import_state(state_path)
 
-force_seeds = None
+force_seeds = [50]
 embedding_dim = 256
 
 dataset = dfjss_nn.RewardModelDataset(autoencoder=autoencoder,

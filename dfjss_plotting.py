@@ -27,6 +27,18 @@ def plot_evolution(folder_name):
     plt.show()
 
 
+def annotate_axis_with_value(axis, df, y_name, epoch_range, color="white", valueformat=".2f", distort=False,
+                             distortion=lambda x: x):
+    bbox_props = dict(boxstyle="round", fc=color, ec="0.5", alpha=0.25, edgecolor=None)
+    for i, (x, y) in enumerate(zip(df["Epoch"], distortion(df[y_name]) if distort else df[y_name])):
+        if i + (df["Epoch"][0]) not in epoch_range:  # i % text_box_step_size != 0:
+            continue
+
+        value = df[y_name][i] if distort else y
+
+        axis.annotate(f"{value:^{valueformat}}", xy=(x, y), fontsize="x-small", bbox=bbox_props)
+
+
 def plot_autoencoder_training(folder_name,
                               epoch_ticks_amount=5,
                               epoch_range_fontsize="x-small",
@@ -39,7 +51,6 @@ def plot_autoencoder_training(folder_name,
                               subplots_sharex=False,
                               dpi=200,
                               show_plots=False, suptitles=True):
-
     filename = f"{folder_name}/log.csv"
     plot_title = folder_name.split("\\")[-1]
 
@@ -69,16 +80,6 @@ def plot_autoencoder_training(folder_name,
 
     epoch_labels = [epoch_label(epoch) for epoch in epoch_range]
 
-    def annotate_axis_with_value(axis, y_name, color="white", valueformat=".2f", distort=False):
-        bbox_props = dict(boxstyle="round", fc=color, ec="0.5", alpha=0.25, edgecolor=None)
-        for i, (x, y) in enumerate(zip(df["Epoch"], distortion(df[y_name]) if distort else df[y_name])):
-            if i + (df["Epoch"][0]) not in epoch_range:  # i % text_box_step_size != 0:
-                continue
-
-            value = df[y_name][i] if distort else y
-
-            axis.annotate(f"{value:^{valueformat}}", xy=(x, y), fontsize="x-small", bbox=bbox_props)
-
     # fig, ((ax_total, ax_tbd), (ax_raw, ax_reduced)) = plt.subplots(nrows=2, ncols=2, sharex=subplots_sharex)
 
     # Total criterion, weights
@@ -94,7 +95,7 @@ def plot_autoencoder_training(folder_name,
     ax_total.plot(df["Epoch"], df["Val_Autoencoder_Total_Criterion"], color=val_color, label="Validation")
     ax_total.plot([0], [0], color=weight_color, label="Raw criterion weight (de facto)")
 
-    annotate_axis_with_value(ax_total, "Train_Autoencoder_Total_Criterion", train_color)
+    annotate_axis_with_value(ax_total, df, "Train_Autoencoder_Total_Criterion", epoch_range, train_color)
 
     ax_total.set_xticks(ticks=epoch_range, labels=epoch_labels, fontsize=epoch_range_fontsize)
 
@@ -118,7 +119,7 @@ def plot_autoencoder_training(folder_name,
     ax_raw.plot(df["Epoch"], df["Train_Autoencoder_Raw_Criterion"], color=train_color)
     ax_raw.plot(df["Epoch"], df["Val_Autoencoder_Raw_Criterion"], color=val_color)
 
-    annotate_axis_with_value(ax_raw, "Train_Autoencoder_Raw_Criterion", train_color)
+    annotate_axis_with_value(ax_raw, df, "Train_Autoencoder_Raw_Criterion", epoch_range, train_color)
 
     ax_raw.set_xticks(ticks=epoch_range, labels=epoch_labels, fontsize=epoch_range_fontsize)
 
@@ -141,7 +142,7 @@ def plot_autoencoder_training(folder_name,
     ax_reduced.plot(df["Epoch"], df["Train_Autoencoder_Reduced_Criterion"], color=train_color)
     ax_reduced.plot(df["Epoch"], df["Val_Autoencoder_Reduced_Criterion"], color=val_color)
 
-    annotate_axis_with_value(ax_reduced, "Train_Autoencoder_Reduced_Criterion", train_color)
+    annotate_axis_with_value(ax_reduced, df, "Train_Autoencoder_Reduced_Criterion", epoch_range, train_color)
 
     ax_reduced.set_xticks(ticks=epoch_range, labels=epoch_labels, fontsize=epoch_range_fontsize)
 
@@ -159,7 +160,7 @@ def plot_autoencoder_training(folder_name,
 
     # [0,1] metrics
 
-    #fig, ((ax_syntax, ax_accuracy), (ax_tbd2, ax_perfects)) = plt.subplots(nrows=2, ncols=2, sharex=subplots_sharex)
+    # fig, ((ax_syntax, ax_accuracy), (ax_tbd2, ax_perfects)) = plt.subplots(nrows=2, ncols=2, sharex=subplots_sharex)
 
     distortion_max_value = zeroone_yticks_amount
 
@@ -171,58 +172,43 @@ def plot_autoencoder_training(folder_name,
     zerone_y_labels = ["{:.2%}".format(x) for x in zerone_y_labels_numeric]
     zerone_y_ticks = distortion(zerone_y_labels_numeric)
 
-    """
-    # Syntax Score, Valid
-    
-    fig, ax_syntax = plt.subplots()
-    fig.set_size_inches(fig_size_h, fig_size_v)
-    
-    ax_valid = ax_syntax.twinx()
+    def annotate_lr_decreases(axis):
+        bbox_props = dict(boxstyle="roundtooth", fc="w", ec="0.5", alpha=0.7, edgecolor=None)
+        for i, (epoch, lr) in enumerate(zip(df["Epoch"], df["Train_Autoencoder_LR"])):
+            if i == 0:
+                continue
 
-    valid_linestyle = "dotted"
+            prev_lr = df["Train_Autoencoder_LR"][i - 1]
 
-    ax_valid.plot(df["Epoch"], distortion(df["Train_Autoencoder_Valid"]), color=train_color, linestyle=valid_linestyle)
-    ax_valid.plot(df["Epoch"], distortion(df["Val_Autoencoder_Valid"]), color=val_color, linestyle=valid_linestyle)
+            if lr < prev_lr:
+                axis.axvline(x=epoch - 0.5, linestyle="dotted", color=lr_color, alpha=0.25)
 
-    annotate_axis_with_value(ax_valid, "Train_Autoencoder_Valid", train_color, ".2%", True)
+                axis.annotate(f"Epoch {epoch}+: {lr:.1e}", xy=(epoch, np.sqrt(lr * prev_lr)), fontsize="x-small",
+                              bbox=bbox_props)
 
-    ax_valid.set_ylabel("Valid")
-    ax_valid.set_yticks(zerone_y_ticks, zerone_y_labels)
-
-    ax_syntax.plot(df["Epoch"], distortion(df["Train_Autoencoder_SyntaxScore"]), color=train_color, label="Syntax Score",
-                   linestyle="solid")
-    ax_syntax.plot(df["Epoch"], distortion(df["Val_Autoencoder_SyntaxScore"]), color=val_color)
-    ax_syntax.plot([0], [0], color=train_color, label="Valid", linestyle=valid_linestyle)
-
-    annotate_axis_with_value(ax_syntax, "Train_Autoencoder_SyntaxScore", train_color, ".2%", True)
-
-    ax_syntax.set_xticks(ticks=epoch_range, labels=epoch_labels, fontsize=epoch_range_fontsize)
-
-    ax_syntax.set_title("Syntax Score, Valid")
-    ax_syntax.set_xlabel("Epoch (Training Data, Validation Data)")
-    ax_syntax.set_ylabel("Syntax Score")
-    ax_syntax.set_yticks(zerone_y_ticks, zerone_y_labels)
-    ax_syntax.grid(which="major")
-    ax_syntax.legend()
-
-    if suptitles:
-        plt.suptitle(f"{plot_title}")
-
-    fig.savefig(f"{folder_name}/syntax_plot", dpi=dpi)
-
-    if show_plots:
-        plt.show()
-    """
     # Accuracy
 
     fig, ax_accuracy = plt.subplots()
     fig.set_size_inches(fig_size_h, fig_size_v)
 
+    if "Train_Autoencoder_LR" in df.columns:
+        ax_perfects_lr = ax_accuracy.twinx()
+        ax_perfects_lr.semilogy(df["Epoch"], df["Train_Autoencoder_LR"],
+                                color=lr_color, alpha=.75,
+                                label="Learning Rate", drawstyle="steps-mid")
+
+        annotate_lr_decreases(ax_perfects_lr)
+
+        ax_perfects_lr.set_ylabel("Learning Rate")
+        ax_perfects_lr.legend()
+
     ax_accuracy.plot(df["Epoch"], distortion(df["Train_Autoencoder_Accuracy"]), color=train_color)
     ax_accuracy.plot(df["Epoch"], distortion(df["Val_Autoencoder_Accuracy"]), color=val_color)
 
-    annotate_axis_with_value(ax_accuracy, "Train_Autoencoder_Accuracy", train_color, ".2%", True)
-    annotate_axis_with_value(ax_accuracy, "Val_Autoencoder_Accuracy", val_color, ".2%", True)
+    annotate_axis_with_value(ax_accuracy, df, "Train_Autoencoder_Accuracy", epoch_range, train_color, ".2%", True,
+                             distortion)
+    annotate_axis_with_value(ax_accuracy, df, "Val_Autoencoder_Accuracy", epoch_range, val_color, ".2%", True,
+                             distortion)
 
     ax_accuracy.set_xticks(ticks=epoch_range, labels=epoch_labels, fontsize=epoch_range_fontsize)
 
@@ -245,35 +231,13 @@ def plot_autoencoder_training(folder_name,
     fig, ax_perfects = plt.subplots()
     fig.set_size_inches(fig_size_h, fig_size_v)
 
-    def annotate_lr_decreases(axis):
-        bbox_props = dict(boxstyle="roundtooth", fc="w", ec="0.5", alpha=0.7, edgecolor=None)
-        for i, (epoch, lr) in enumerate(zip(df["Epoch"], df["Train_Autoencoder_LR"])):
-            if i == 0:
-                continue
-
-            prev_lr = df["Train_Autoencoder_LR"][i-1]
-
-            if lr < prev_lr:
-                axis.axvline(x=epoch - 0.5, linestyle="dotted", color=lr_color, alpha=0.25)
-
-                axis.annotate(f"Epoch {epoch}+: {lr:.1e}", xy=(epoch, np.sqrt(lr*prev_lr)), fontsize="x-small", bbox=bbox_props)
-
-    if "Train_Autoencoder_LR" in df.columns:
-        ax_perfects_lr = ax_perfects.twinx()
-        ax_perfects_lr.semilogy(df["Epoch"], df["Train_Autoencoder_LR"],
-                                color=lr_color, alpha=.75,
-                                label="Learning Rate", drawstyle="steps-mid")
-
-        annotate_lr_decreases(ax_perfects_lr)
-
-        ax_perfects_lr.set_ylabel("Learning Rate")
-        ax_perfects_lr.legend()
-
     ax_perfects.plot(df["Epoch"], distortion(df["Train_Autoencoder_Perfects"]), color=train_color)
     ax_perfects.plot(df["Epoch"], distortion(df["Val_Autoencoder_Perfects"]), color=val_color)
 
-    annotate_axis_with_value(ax_perfects, "Train_Autoencoder_Perfects", train_color, ".2%", True)
-    annotate_axis_with_value(ax_perfects, "Val_Autoencoder_Perfects", val_color, ".2%", True)
+    annotate_axis_with_value(ax_perfects, df, "Train_Autoencoder_Perfects", epoch_range, train_color, ".2%", True,
+                             distortion)
+    annotate_axis_with_value(ax_perfects, df, "Val_Autoencoder_Perfects", epoch_range, val_color, ".2%", True,
+                             distortion)
 
     ax_perfects.set_xticks(ticks=epoch_range, labels=epoch_labels, fontsize=epoch_range_fontsize)
 
@@ -290,3 +254,73 @@ def plot_autoencoder_training(folder_name,
 
     if show_plots:
         plt.show()
+
+
+def plot_reward_model_training(folder_name,
+                               baseline_values=None,
+                               epoch_ticks_amount=5,
+                               epoch_range_fontsize="x-small",
+                               train_color="blue",
+                               val_color="orange",
+                               baseline_color="purple",
+                               baseline_alpha=0.5,
+                               baseline_linestyle="dashed",
+                               dpi=200,
+                               show_plots=False,
+                               suptitles=True):
+    filename = f"{folder_name}/log.csv"
+    plot_title = folder_name.split("\\")[-1]
+
+    df = pd.read_csv(filename)
+
+    fig_size_h = 8 + 0.25 * np.log2(len(df))
+    fig_size_v = fig_size_h / np.sqrt(2)
+
+    epoch_step_size = len(df) // epoch_ticks_amount
+
+    def epoch_label(epoch):
+        return f"{epoch}"
+
+    if df["Epoch"][0] == 0:
+        epoch_range = range(0, df["Epoch"][len(df) - 1] + 1, epoch_step_size)
+    else:
+        epoch_range = [1]
+        epoch_range.extend(list(range(epoch_step_size, df["Epoch"][len(df) - 1] + 1, epoch_step_size)))
+
+    epoch_labels = [epoch_label(epoch) for epoch in epoch_range]
+
+    loss_names = ("L1", "SmoothL1", "L2")
+
+    for i in range(3):
+        loss_name = loss_names[i]
+        fig, ax_loss = plt.subplots()
+        fig.set_size_inches(fig_size_h, fig_size_v)
+
+        train_col = f"Train_{loss_name}_Loss"
+        val_col = f"Val_{loss_name}_Loss"
+
+        ax_loss.plot(df["Epoch"], df[train_col], color=train_color, label="Train")
+        ax_loss.plot(df["Epoch"], df[val_col], color=val_color, label="Validation")
+
+        if baseline_values is not None and baseline_values[i] is not None:
+            ax_loss.axhline(baseline_values[i], color=baseline_color, alpha=baseline_alpha, linestyle=baseline_linestyle, label="Baseline")
+
+        annotate_axis_with_value(ax_loss, df, train_col, epoch_range, train_color)
+        annotate_axis_with_value(ax_loss, df, val_col, epoch_range, val_color)
+
+        ax_loss.set_xticks(ticks=epoch_range, labels=epoch_labels, fontsize=epoch_range_fontsize)
+
+        ax_loss.set_title(loss_name)
+        ax_loss.set_xlabel("Epoch")
+        ax_loss.set_ylabel(loss_name)
+        ax_loss.grid(which="major")
+
+        ax_loss.legend()
+
+        if suptitles:
+            plt.suptitle(f"{plot_title}")
+
+        fig.savefig(f"{folder_name}/plot_{loss_name}", dpi=dpi)
+
+        if show_plots:
+            plt.show()

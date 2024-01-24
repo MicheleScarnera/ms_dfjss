@@ -28,7 +28,7 @@ for datapoint in dataset:
 example_reduced = dfjss_nn.reduce_sequence(example)
 example_reduced_target = torch.argmax(example_reduced, dim=-1)
 
-state_path = r"C:\Users\micsc\Documents\GitHub\ms_dfjss\AUTOENCODER 200 100 STILL GOOD\model_epoch279.pth"
+state_path = r"Autoencoder input-200-100-200-output\model_epoch297.pth"
 
 autoencoder = dfjss_nn.IndividualFeedForwardAutoEncoder(sequence_length=dataset.max_sequence_length(),
                                                         encoding_size=100,
