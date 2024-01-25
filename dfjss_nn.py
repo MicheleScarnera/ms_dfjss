@@ -651,6 +651,13 @@ def syntax_score(x, aggregate_with_gmean=True):
     return gmean(torch.stack(chosen_scores, dim=0)) if aggregate_with_gmean else torch.stack(chosen_scores,
                                                                                              dim=0).mean()
 
+def zero_tree_of_depth(depth):
+    tree = pf.representation_to_priority_function_tree("({0.0}+{0.0})")
+
+    tree.fill(depth)
+
+    return tree
+
 
 class AutoencoderDataset(data.Dataset):
     def __init__(self, rng_seed=100, max_depth=4, size=5000,
@@ -2124,9 +2131,9 @@ class RewardModel(nn.Module):
 
     def __init__(self, input_size,
                  seeds,
-                 embedding_dim=128,
-                 num_layers=2,
-                 layer_widths=(1024,),
+                 embedding_dim=256,
+                 num_layers=6,
+                 layer_widths=(256,),
                  layer_dropout=0.1,
                  layers_are_residual=False,
                  reward_activation="elu"):
@@ -2139,7 +2146,7 @@ class RewardModel(nn.Module):
 
         self.register_buffer("input_size", torch.tensor(input_size))
 
-        self.register_buffer("seeds", seeds.clone().detach())
+        self.register_buffer("seeds", torch.tensor(seeds).clone().detach())
 
         self.seed_to_index = None
         self.make_seed_to_index()
@@ -2546,6 +2553,7 @@ def train_reward_model(model,
 def optimize_reward(model,
                     autoencoder,
                     dataset,
+                    tree_depth=None,
                     seed_to_optimize=-1,
                     mode="adam",
                     init="best_of_dataset",
@@ -2561,6 +2569,7 @@ def optimize_reward(model,
 
     :param model:
     :param dataset:
+    :param tree_depth:
     :param seed_to_optimize:
     :param mode:
     :param init:
@@ -2571,6 +2580,9 @@ def optimize_reward(model,
     :param verbose:
     :return:
     """
+    if tree_depth is None:
+        raise ValueError("Must specify 'tree_depth' argument")
+
     if max_iters <= 0:
         raise ValueError("max_iters must be strictly positive")
 
@@ -2599,6 +2611,9 @@ def optimize_reward(model,
                 best_fitness = fitness
 
         x = best_individual
+
+        if verbose > 0:
+            print(f"Best-of-dataset individual has fitness {best_fitness:.2f}")
     elif init == "zeros":
         x = torch.zeros(size=(model.input_size.item(),))
     elif init == "random":
@@ -2609,10 +2624,12 @@ def optimize_reward(model,
     optimizer, scheduler = None, None
 
     def sa_neighbor(y):
+        alpha = 0.5
         with torch.no_grad():
             result = y.clone()
             k = torch.randint(size=(1,), low=0, high=y.shape[0], generator=rng)
-            result[k] = -1. + 2. * torch.rand(size=(1,), generator=rng)
+            rand = -1. + 2. * torch.rand(size=(1,), generator=rng)
+            result[k] = alpha * result[k] + (1 - alpha) * rand
 
         return result
 
@@ -2625,8 +2642,8 @@ def optimize_reward(model,
 
         return result
 
-    def sa_acceptance_prob(energy_x, energy_y, T):
-        return torch.exp(-torch.abs((energy_x - energy_y) / T)).clamp_(max=1.)
+    def sa_acceptance_prob(energy_before, energy_proposed, T):
+        return torch.exp(((energy_before - energy_proposed) / T)).clamp_(max=1.)
 
     if mode == "adam":
         x.requires_grad_()
@@ -2665,9 +2682,30 @@ def optimize_reward(model,
         else:
             raise NotImplementedError(f"mode '{mode}' not implemented in the optimization step")
 
-        if verbose > 0 and (iteration % iters_per_print == 0 or iteration == 1 or iteration == max_iters):
-            print(
-                f"Iteration {str(iteration).ljust(6)}: Fitness = {fitness.item():.3f}, Individual = {string_from_onehots(autoencoder.decoder(x))}")
+        if iteration % iters_per_print == 0 or iteration == 1 or iteration == max_iters:
+            # Get true value
+            current_aslist = string_from_onehots(autoencoder.decoder(x), list_mode=True)
+
+            if current_aslist[-1] == "EOS":
+                current_aslist.pop()
+
+            priority_func = zero_tree_of_depth(tree_depth)
+            priority_func.set_from_flattened(current_aslist)
+
+            warehouse_settings = dfjss.WarehouseSettings()
+            warehouse_settings.decision_rule = pf.PriorityFunctionTreeDecisionRule(priority_func)
+            warehouse = dfjss.Warehouse(rng_seed=seed_to_optimize)
+
+            warehouse_result = warehouse.simulate()
+
+            true_value = warehouse_result.get_objectives()["mean_jit_penalty"]
+
+            if verbose > 0:
+                print(
+                    f"Iteration {str(iteration).ljust(6)}: Fitness = {fitness.item():.3f} (True Fitness = {true_value:.3f}), Individual = {string_from_onehots(autoencoder.decoder(x))}")
+
+
+
     if verbose > 0:
         print(f"Final result:\n{x}")
 

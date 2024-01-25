@@ -330,7 +330,7 @@ class Warehouse:
     warehouse_features: Dict[str, Any]
 
     def __init__(self, settings=None, rng_seed=None):
-        self.rng = np.random.default_rng(seed=rng_seed)
+        self.rng = np.random.default_rng(seed=int(rng_seed))
 
         if settings is None:
             settings = WarehouseSettings()
