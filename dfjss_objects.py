@@ -798,40 +798,6 @@ class Warehouse:
                     print(
                         f"\tAvailable: Job with \'{waiting_job.job.operations[0].features['operation_family']}\' operation")
 
-        """
-        # random job arrivals
-        if len(self.jobs) > 0:
-            jobarrival_rate = last_time_passed * self.simulation_features["simulation_random_job_arrival_rate"]
-            if jobarrival_rate > 0.:
-                new_jobs = self.rng.poisson(lam=jobarrival_rate, size=None)
-
-                if new_jobs > 0:
-                    for _ in range(new_jobs):
-                        new_job = self.add_job()
-
-                    if verbose > 1:
-                        print(
-                            f"\tJob arrivals: {new_jobs} jobs have been added"
-                        )
-
-        if len(self.jobs) == 0 and self.simulation_features["simulation_random_job_arrival_end_state_prevention_batch_size"] > 0 and self.simulation_features["simulation_random_job_arrival_rate"] > 0:
-            to_spawn = self.simulation_features["simulation_random_job_arrival_end_state_prevention_batch_size"]
-
-            for _ in range(to_spawn):
-                wait_time = self.rng.exponential(
-                                scale=self.simulation_features["simulation_random_job_arrival_end_state_prevention_average_waiting_time"],
-                                size=None)
-
-                new_job = self.add_job(initialization_time_shift=wait_time)
-                self.make_job_wait(job=new_job,
-                                   time_needed=wait_time)
-
-            if verbose > 1:
-                print(
-                    f"\t{to_spawn} jobs have been added at once to prevent the simulation from ending abruptly"
-                )
-        """
-
         # REAL-TIME FEATURES
 
         # utilization rate
