@@ -1,30 +1,176 @@
 import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
+from scipy.stats import kurtosis
 
 import dfjss_misc as misc
 
+aspect_ratio = 1.6
+dpi = 200
 
-def plot_evolution(folder_name):
+plt.rcParams['figure.dpi'] = dpi
+
+
+def plot_wait_dist(folder_name,
+                   show_plot=False):
+    df = pd.read_csv(f"{folder_name}/fitness_log.csv")
+
+    names = ["P", "P-2", "P-4", "P-8", "P-16", "P-32", "P-64"]
+    what_to_plot = [[0, 1], [0, 5]]
+    titles = ["JIT Penalty of non-waiting vs waiting priority function P",
+              "JIT Penalty of non-waiting vs overly patient priority function P"]
+    file_names = ["nonwaiting_vs_waiting", "nonwaiting_vs_overwaiting"]
+
+    cols = [c for c in df.columns if misc.begins_with(string=c, prefix="Fitness_")]
+
+    values = [np.array(df.loc[i, cols], dtype=np.float64) for i in range(len(names))]
+
+    fig_size_h = 8
+    fig_size_v = fig_size_h / aspect_ratio
+
+    for w, wtp in enumerate(what_to_plot):
+        fig, ax1 = plt.subplots(nrows=1, sharex="all")
+
+        fig.set_size_inches(fig_size_h, fig_size_v)
+        plt.xscale("log")
+
+        x0 = 10 ** 2
+        x1 = 10 ** 3.5
+
+        bins = np.floor(np.geomspace(x0, x1, num=100))
+
+        textstr = ""
+        for j, i in enumerate(wtp):
+            ax1.set_xlim(x0, x1)
+            ax1.hist(values[i], bins=bins, density=True, alpha=0.5, label=names[i])
+
+            if textstr != "":
+                textstr += "\n"
+
+            textstr += f"{names[i]}: "
+
+            # textstr += f"{np.mean(values[i]):.2f}, {np.std(values[i]):.2f}, {stats.kurtosis(a=values[i], fisher=True, bias=False):.2f}"
+
+            if j > 0:
+                textstr += f"Better than baseline {np.mean(values[i] < values[wtp[0]]):.0%} of the time"
+            else:
+                textstr += "Baseline"
+
+        # these are matplotlib.patch.Patch properties
+        props = dict(boxstyle='round', facecolor='silver', alpha=0.5)
+
+        # place a text box in upper left in axes coords
+        ax1.text(0.95, 0.5, textstr, transform=ax1.transAxes, fontsize=10,
+                 verticalalignment='bottom', horizontalalignment="right", bbox=props)
+
+        plt.legend()
+
+        plt.title(titles[w])
+
+        fig.savefig(f"{folder_name}/{file_names[w]}", dpi=dpi)
+
+        if show_plot:
+            plt.show()
+
+
+def plot_heaviness_dist(folder_name_sixty,
+                        folder_name_fifteen,
+                        show_plot=False):
+    df_sixty = pd.read_csv(f"{folder_name_sixty}/fitness_log.csv")
+    df_fifteen = pd.read_csv(f"{folder_name_fifteen}/fitness_log.csv")
+
+    cols = [c for c in df_sixty.columns if misc.begins_with(string=c, prefix="Fitness_")]
+
+    values_sixty = np.array(df_sixty.loc[0, cols], dtype=np.float64)
+    values_fifteen = np.array(df_fifteen.loc[0, cols], dtype=np.float64)
+
+    fig, ax1 = plt.subplots(nrows=1, sharex="all")
+    plt.xscale("log")
+
+    x0 = 10 ** 2
+    x1 = 10 ** 3.5
+
+    bins = np.floor(np.geomspace(x0, x1, num=100))
+
+    ax1.hist(values_sixty, bins=bins, density=True, alpha=0.5, label="U(0,60)")
+    ax1.hist(values_fifteen, bins=bins, density=True, alpha=0.5, label="U(0,15)")
+
+    # these are matplotlib.patch.Patch properties
+    props = dict(boxstyle='round', facecolor='silver', alpha=0.5)
+
+    textstr = f"""Mean, StdDev, (Fisher) Kurtosis
+    U(0,60): {np.mean(values_sixty):.2f}, {np.std(values_sixty):.2f}, {kurtosis(a=values_sixty, fisher=True, bias=False):.2f}
+    U(0,15): {np.mean(values_fifteen):.2f}, {np.std(values_fifteen):.2f}, {kurtosis(a=values_fifteen, fisher=True, bias=False):.2f}"""
+
+    # place a text box in upper left in axes coords
+    ax1.text(0.95, 0.5, textstr, transform=ax1.transAxes, fontsize=10,
+             verticalalignment='bottom', horizontalalignment="right", bbox=props)
+
+    plt.legend()
+
+    plt.title("FIFO individual's JIT penalty with different cooldown/windup distributions")
+
+    fig.savefig(f"cooldown_windup_heavy_tail", dpi=dpi)
+
+    if show_plot:
+        plt.show()
+
+
+def plot_evolution(folder_name,
+                   show_plot=False,
+                   best_color="dodgerblue", best_lw=2,
+                   median_color="grey", median_alpha=0.75, median_ls="dashed",
+                   mean_color="brown", mean_alpha=0.5, mean_ls="dotted",
+                   others_color="teal", others_alpha=0.15):
     filename = f"{folder_name}/genalgo_log.csv"
 
     df = pd.read_csv(filename)
+
+    fig_size_h = 8 + 0.25 * np.log2(len(df))
+    fig_size_v = fig_size_h / aspect_ratio
 
     evolution_dict = dict()
 
     steps = np.unique(df["Step"])
 
+    x = np.arange(len(steps))
+    best_each_step = np.empty(shape=len(steps))
+    mean_each_step = np.empty(shape=len(steps))
+    median_each_step = np.empty(shape=len(steps))
+    third_quartile_each_step = np.empty(shape=len(steps))
+
     for step in steps:
         evolution_dict[step] = df[df["Step"] == step]["Fitness"]
+        best_each_step[step - 1] = np.amin(evolution_dict[step])
+        mean_each_step[step - 1] = np.mean(evolution_dict[step])
+        median_each_step[step - 1] = np.median(evolution_dict[step])
+        third_quartile_each_step[step - 1] = np.quantile(evolution_dict[step], q=0.75)
 
     fig, ax1 = plt.subplots(nrows=1, sharex="all")
+    fig.set_size_inches(fig_size_h, fig_size_v)
 
-    ax1.boxplot(evolution_dict.values())
-    ax1.set_xticklabels(evolution_dict.keys())
+    # ax1.boxplot(evolution_dict.values())
+    ax1.fill_between(x, y1=best_each_step, y2=third_quartile_each_step,
+                     color=others_color, alpha=others_alpha, label="[Min, Q3]")
 
+    ax1.plot(x, mean_each_step,
+             color=mean_color, alpha=mean_alpha, ls=mean_ls, label="Mean")
+    ax1.plot(x, median_each_step,
+             color=median_color, alpha=median_alpha, ls=median_ls, label="Median")
+    ax1.plot(x, best_each_step,
+             color=best_color, lw=best_lw, label="Minimum")
+
+    ax1.set_xticks(x, x + 1)
+
+    ax1.grid(axis="x", alpha=0.5)
+
+    ax1.legend()
     ax1.set_title(f"Fitness over generations ({folder_name})")
 
-    plt.show()
+    fig.savefig(f"{folder_name}/plot_evolution", dpi=dpi)
+
+    if show_plot:
+        plt.show()
 
 
 def annotate_axis_with_value(axis, df, y_name, epoch_range, color="white", valueformat=".2f", distort=False,
@@ -49,7 +195,6 @@ def plot_autoencoder_training(folder_name,
                               lr_color="darkred",
                               weight_color="grey",
                               subplots_sharex=False,
-                              dpi=200,
                               show_plots=False, suptitles=True):
     filename = f"{folder_name}/log.csv"
     plot_title = folder_name.split("\\")[-1]
@@ -65,7 +210,7 @@ def plot_autoencoder_training(folder_name,
         print(f"Setting zeroone_yticks_amount to {zeroone_yticks_amount}")
 
     fig_size_h = 8 + 0.25 * np.log2(len(df))
-    fig_size_v = fig_size_h / np.sqrt(2)
+    fig_size_v = fig_size_h / aspect_ratio
 
     def epoch_label(epoch):
         return f"{epoch}\nT: {misc.large_number_format(df['Train_Autoencoder_TotalDatapoints'][epoch - 1])}\n V: {misc.large_number_format(df['Val_Autoencoder_TotalDatapoints'][epoch - 1])}"
@@ -265,7 +410,6 @@ def plot_reward_model_training(folder_name,
                                baseline_color="purple",
                                baseline_alpha=0.5,
                                baseline_linestyle="dashed",
-                               dpi=200,
                                show_plots=False,
                                suptitles=True):
     filename = f"{folder_name}/log.csv"
@@ -274,7 +418,7 @@ def plot_reward_model_training(folder_name,
     df = pd.read_csv(filename)
 
     fig_size_h = 8 + 0.25 * np.log2(len(df))
-    fig_size_v = fig_size_h / np.sqrt(2)
+    fig_size_v = fig_size_h / aspect_ratio
 
     epoch_step_size = len(df) // epoch_ticks_amount
 
@@ -303,7 +447,8 @@ def plot_reward_model_training(folder_name,
         ax_loss.plot(df["Epoch"], df[val_col], color=val_color, label="Validation")
 
         if baseline_values is not None and baseline_values[i] is not None:
-            ax_loss.axhline(baseline_values[i], color=baseline_color, alpha=baseline_alpha, linestyle=baseline_linestyle, label="Baseline")
+            ax_loss.axhline(baseline_values[i], color=baseline_color, alpha=baseline_alpha,
+                            linestyle=baseline_linestyle, label="Baseline")
 
         annotate_axis_with_value(ax_loss, df, train_col, epoch_range, train_color)
         annotate_axis_with_value(ax_loss, df, val_col, epoch_range, val_color)
