@@ -1,0 +1,12 @@
+------------------------------------
+Individual Feed-Forward Auto-Encoder
+Embedding size: N/A (using one-hot)
+Max Length: 32
+Flat size: 2880 (In), 2880 (Out)
+Encoder layers: 2 (2880->200, 200->100)
+Encoding Size: 100
+Decoder layers: 2 (100->200, 200->2880)
+Dropout: 0.0
+Batch Normalization: Yes
+Number of parameters: 1202143 (Learnable), 0 (Fixed)
+------------------------------------

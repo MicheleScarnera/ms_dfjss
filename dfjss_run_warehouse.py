@@ -7,27 +7,14 @@ import time
 
 rng_seed = 14825
 max_steps = -1
-verbose = 1
+verbose = 2
 
 start = time.time()
 
-# random decision
-
-#randomdecision_warehouse = dfjss.Warehouse(rng_seed=rng_seed)
-
-#randomdecision_sim_out = randomdecision_warehouse.simulate(max_routine_steps=max_steps, verbose=verbose)
-
-# priority function decision
-
 pf_features = DEFAULTS.MANDATORY_FEATURES
 
-#print(pf_features)
-
-# "((job_remaining_number_of_operations/(job_relative_deadline>0))/(pair_number_of_compatible_machines*pair_number_of_compatible_operations))"
-# "(((job_remaining_number_of_operations/(job_relative_deadline>0))/((pair_number_of_alternative_machines^warehouse_utilization_rate)*(pair_number_of_alternative_operations^(1-warehouse_utilization_rate))))-2.0)"
-# '((job_relative_deadline*-4.5)<(-5.0<pair_number_of_alternative_machines))'
 branch = pf.representation_to_root_branch(
-    representation="(((job_remaining_number_of_operations/(job_relative_deadline>0))/((pair_number_of_alternative_machines^warehouse_utilization_rate)*(pair_number_of_alternative_operations^(1-warehouse_utilization_rate))))-0.0)",
+    representation="(((job_remaining_number_of_operations/(job_relative_deadline>{0.0}))/((pair_number_of_alternative_machines^warehouse_utilization_rate)*(pair_number_of_alternative_operations^({1.0}-warehouse_utilization_rate))))-{0.0})",
     features=pf_features)
 
 priorityfunc = pf.PriorityFunctionTree(
@@ -44,9 +31,6 @@ prioritydecision_settings.decision_rule = pf.PriorityFunctionTreeDecisionRule(
 prioritydecision_warehouse = dfjss.Warehouse(settings=prioritydecision_settings, rng_seed=rng_seed)
 
 prioritydecision_sim_out = prioritydecision_warehouse.simulate(max_routine_steps=max_steps, verbose=verbose)
-
-#print("RANDOM DECISION RULE")
-#print(randomdecision_sim_out.summary())
 
 print("PRIORITY FUNCTION DECISION RULE")
 print(repr(priorityfunc.root_branch))

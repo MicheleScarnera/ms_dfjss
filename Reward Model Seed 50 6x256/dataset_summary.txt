@@ -1,0 +1,10 @@
+------------------------------------
+Reward Model Dataset
+Number of Individuals: 121896
+Number of Seeds: 1
+Sample size (number of individual-seed pairs): 121896
+Counter of seeds: Counter({50: 121896})
+Perplexity of seed distribution: 1.000
+Unconditional L2 loss: {50: 1566.28}
+Unconditional L1 loss: {50: 23.81}
+------------------------------------
